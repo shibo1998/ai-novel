@@ -62,11 +62,17 @@ def _split_sentences(paragraph: str) -> list[str]:
 
 
 def check(body: str, *, word_range: list[int] | None = None,
-          thresholds: dict[str, Any] | None = None) -> list[Hit]:
-    """body = 纯正文（无 frontmatter）。返回命中列表。"""
+          thresholds: dict[str, Any] | None = None,
+          whitelist: list[str] | None = None) -> list[Hit]:
+    """body = 纯正文（无 frontmatter）。返回命中列表。
+
+    whitelist：书级禁词豁免（config.json lint_whitelist）——目标文风作者
+    的招牌词与通用禁词冲突时豁免（如"骤然"）。仅豁免 M-02 禁词，不豁免敏感词。
+    """
     th = dict(settings.load().get("mechcheck", {}))
     if thresholds:
         th.update(thresholds)
+    banned = [w for w in load_banned_words() if w not in (whitelist or [])]
     hits: list[Hit] = []
     lines = body.splitlines()
     para_idx = [(i + 1, l.strip()) for i, l in enumerate(lines) if l.strip()]
@@ -79,8 +85,8 @@ def check(body: str, *, word_range: list[int] | None = None,
             hits.append(Hit("M-01", "block", 0, str(n),
                             f"字数 {n} 不在区间 [{word_range[0]}, {word_range[1]}]"))
 
-    # M-02 禁词（阻断）
-    for word in load_banned_words():
+    # M-02 禁词（阻断；书级白名单豁免）
+    for word in banned:
         for ln, line in para_idx:
             if word in line:
                 hits.append(Hit("M-02", "block", ln, word, f"禁词命中: {word}"))

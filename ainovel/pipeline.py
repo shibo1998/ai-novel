@@ -445,9 +445,17 @@ def run_mech_check(book: str, no: int, client=None, auto_fix: bool = True) -> li
     return hits2
 
 
+def _lint_whitelist(book: str) -> list[str]:
+    """书级禁词豁免：目标文风作者的招牌词与通用禁词冲突时豁免。"""
+    try:
+        return list(books.load_config(book).get("lint_whitelist", []))
+    except Exception:
+        return []
+
+
 def _check(book: str, no: int, wr: list[int]) -> list[mechcheck.Hit]:
     prose = chapters.read_prose(book, no)
-    return mechcheck.check(prose["_body"], word_range=wr)
+    return mechcheck.check(prose["_body"], word_range=wr, whitelist=_lint_whitelist(book))
 
 
 def _version(book: str, no: int) -> int:
@@ -683,7 +691,8 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
     prose = chapters.read_prose(book, no)
     old_body = prose["_body"]
     old_wc = mechcheck.count_words(old_body)
-    banned = "\n".join(f"- {w}" for w in mechcheck.load_banned_words()) or "（词库为空）"
+    banned = "\n".join(f"- {w}" for w in mechcheck.load_banned_words()
+                       if w not in _lint_whitelist(book)) or "（词库为空）"
     variables = {
         "系统段": assembler.render_system(book),
         "正文": old_body,
@@ -698,7 +707,9 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
     if old_wc and abs(new_wc - old_wc) / old_wc > 0.10:
         result.update(ok=False, reason=f"字数浮动 {abs(new_wc - old_wc) / old_wc:.0%} 超 ±10%，输出已丢弃")
         return result
-    blocks = [h.to_dict() for h in mechcheck.check(new_body, word_range=wr) if h.level == "block"]
+    blocks = [h.to_dict() for h in mechcheck.check(new_body, word_range=wr,
+                                                    whitelist=_lint_whitelist(book))
+              if h.level == "block"]
     if blocks:
         result.update(ok=False, reason="机械检查仍有阻断，输出已丢弃", blocks=blocks)
         return result

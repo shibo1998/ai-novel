@@ -78,3 +78,14 @@ def test_clean_mock_prose_passes_blocks():
 
     hits = mechcheck.check(make_prose((2200, 2800)), word_range=WR)
     assert not mechcheck.has_block(hits)
+
+
+def test_book_lint_whitelist():
+    """书级禁词豁免：目标文风招牌词（如"骤然"）不再阻断，敏感词不可豁免。"""
+    body = "他瞳孔骤然收缩。" + "正常句子。" * 300
+    hits = mechcheck.check(body, whitelist=["骤然"])
+    assert not any(h.rule == "M-02" and h.word == "骤然" for h in hits)
+    # 敏感词不豁免
+    body2 = "他提到了国家领导人。" + "正常句子。" * 300
+    hits2 = mechcheck.check(body2, whitelist=["国家领导人"])
+    assert any(h.rule == "M-04" for h in hits2)
