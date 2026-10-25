@@ -70,7 +70,7 @@ ainovel/            Python 包（核心引擎 + FastAPI）
   api               全部 HTTP 路由 + SSE
 prompts/            23 条提示词（文件化，可整体替换、书级覆盖）
 lint/               禁词/敏感词/对话后缀禁式（每行一个，# 注释）
-web/                静态 UI（免构建）
+web/                前端 UI（定案重写 Vue3，见偏差 9；落地前仍为 vanilla 静态页）
 books/<书名>/       数据：档案 + 章节 + config.json（单一真相源）
 data/               SQLite、设置、裁决队列、装配预览（可随时重建）
 tests/              pytest（74 项）
@@ -90,6 +90,7 @@ tests/              pytest（74 项）
 6. rebuild 保留 generation_log/snapshots/review_records（运行历史不在文件里，DB 文件丢失则该历史不可恢复）
 7. 前 3 章直接走 W3 黄金三章专项提示词（规格02 P-W1 改造点3 的等价实现）
 8. 卷首新建章节的 `pending_finalize` 与 `mech_check` 在 rebuild 时不可区分 → 统一停靠 mech_check
+9. **前端 UI 技术栈重做定案（2026-10-26）**：初版按规格04"免构建"意图以 vanilla JS/CSS 交付。现定案重写为 Vue3 + TypeScript + vue-router + pinia + element-plus + vite + sass + tailwindcss（补充项与共存约束见规格04 §0）。迁移原则：只换前端壳，后端 API 契约 / 页面清单 / 人工确认关不变；构建产物 `web/dist/` 由 FastAPI 静态挂载，PyInstaller 分发对象同步改为 `web/dist`。迁移完成前旧 vanilla 版继续可用。
 
 ## M0 检查单（规格04 §4）状态
 
@@ -100,7 +101,7 @@ tests/              pytest（74 项）
 | FTS5 trigram 中文检索 | ✅ 已实测（SQLite 3.49.1 trigram 可用；bigram 降级路径也有实现与提示） |
 | Windows 打包 exe | ⚠️ 提供 `ainovel.spec` + 打包说明；PyInstaller 构建未在本机实测（见下） |
 
-打包：`pip install pyinstaller && pyinstaller ainovel.spec`，然后把 `prompts/ lint/ web/` 三个目录拷到 `dist/ai-novel/` 下（数据目录 books/data 自动在 exe 旁创建）。
+打包：`pip install pyinstaller && pyinstaller ainovel.spec`，然后把 `prompts/ lint/ web/` 三个目录拷到 `dist/ai-novel/` 下（数据目录 books/data 自动在 exe 旁创建）。UI 迁移到 Vue3 后（偏差 9）拷贝对象改为 `prompts/ lint/ web/dist`。
 
 ## lint 词库说明
 

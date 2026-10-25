@@ -8,3 +8,4 @@ data/*
 !data/.gitkeep
 books/*
 !books/.gitkeep
+node_modules/
