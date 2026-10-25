@@ -1,0 +1,5 @@
+/* Tailwind v4：只引入 theme + utilities，跳过 preflight/base——
+   避免 reset 破坏 element-plus 组件默认外观（规格04 §0 共存约束）。 */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);

@@ -1,6 +1,6 @@
 # AGENTS.md — AI 编码助手项目约束
 
-本地单机 AI 网文创作工作台：文件档案 + SQLite 索引/状态机 + 23 条提示词体系 + 单章生成闭环管线 + Web UI（前端技术栈已定案 Vue3、迁移中，见规格04 §0 与 README 偏差 9）。Windows 主环境，Python ≥3.11，Python 依赖仅 requirements.txt 里 5 个包（不要引入新 Python 依赖，除非规格明确要求且无标准库替代）；前端依赖独立在 `web/package.json`（迁移落地后），不受该条约束。
+本地单机 AI 网文创作工作台：文件档案 + SQLite 索引/状态机 + 23 条提示词体系 + 单章生成闭环管线 + Web UI（前端 Vue3 + TypeScript + element-plus + Vite，见规格04 §0）。Windows 主环境，Python ≥3.11，Python 依赖仅 requirements.txt 里 5 个包（不要引入新 Python 依赖，除非规格明确要求且无标准库替代）；前端依赖独立在 `web/package.json`，不受该条约束。
 
 ## 规格是唯一真相源
 
@@ -11,9 +11,13 @@
 ## 命令
 
 ```bash
-python -m pytest tests/        # 全绿为验收线（当前基线 74 项，只增不减）
+python -m pytest tests/        # 全绿为验收线（当前基线 82 项，只增不减）
 python scripts/smoke.py        # 端到端冒烟，跑在临时目录，不污染仓库
 python run.py                  # 启动 Web UI（http://127.0.0.1:8765）
+cd web && npm install          # 首次或依赖变更后
+npm run build                  # 前端构建（产物 web/dist/，FastAPI 静态挂载）
+npm run typecheck              # 前端严格类型检查（vue-tsc）
+npm run dev                    # 前端开发模式（/api 代理到 8765，与 python run.py 并行）
 ```
 
 日常开发验证只用 pytest + smoke。**不要运行 run.py**：它读写仓库真实的 `books/`、`data/`，还会自动开浏览器。
@@ -34,8 +38,8 @@ python run.py                  # 启动 Web UI（http://127.0.0.1:8765）
 
 - 路径解析顺序：`AINOVEL_HOME` → PyInstaller frozen（exe 所在目录）→ 包父目录。改路径逻辑要同时照顾三种模式。
 - FTS5 trigram 不可用时自动降级 bigram；trigram 模式下 2 字关键词（角色名）走 Python 子串兜底——这是有意设计，删掉会坏中文角色名检索。
-- `web/` 前端技术栈已定案 Vue3 + TS + vue-router + pinia + element-plus + vite + sass + tailwindcss（详见规格04 §0）。**迁移落地前** `web/` 仍是 vanilla 静态页（三个文件可直接改）；**迁移落地后** UI 改动走 npm 流程（`npm run build` 通过才算完成），`web/dist/` 是构建产物**禁止手改**。
-- `dist/`、`build/` 是 PyInstaller 产物，不要编辑；打包后需手工把 `prompts/ lint/ web/` 拷到 exe 旁（流程见 README）；UI 迁移落地后拷贝对象改为 `prompts/ lint/ web/dist`。
+- `web/` 是 Vue3 + TS + vue-router + pinia + element-plus + vite + sass + tailwindcss 前端工程（规格04 §0）。UI 改动走 npm 流程，`npm run build` 通过才算完成；`web/dist/` 是构建产物**禁止手改**；改页面涉及接口时以 `ainovel/api.py` 契约为准。
+- `dist/`、`build/` 是 PyInstaller 产物，不要编辑；打包后需手工把 `prompts/ lint/ web/dist` 拷到 exe 旁（流程见 README）。
 - 仓库已 git init。`data/settings.json` 含 API key，`.gitignore` 已挡住 `data/`、`books/`、`node_modules/`——**绝不能**把 key 写进代码、日志或任何会进入版本控制的文件。
 
 ## 提示词与词库

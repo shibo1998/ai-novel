@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller 打包配置（M0 检查单 §4.4：Windows 打包 exe 可运行）
 # 构建：pip install pyinstaller && pyinstaller ainovel.spec
-# 产物：dist/ai-novel/ai-novel.exe（prompts/ lint/ web/ 随 exe 同目录分发，见 README）
+# 产物：dist/ai-novel/ai-novel.exe（prompts/ lint/ web/dist 随 exe 同目录分发，见 README）
 import os
 
 block_cipher = None

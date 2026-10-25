@@ -1,0 +1,81 @@
+// 全局样式：element-plus 暗色变量微调（沿用旧 UI 配色）+ 高密度面板工具类（规格04：信息密度优先）。
+html.dark {
+  --el-bg-color-page: #14161a;
+  --el-bg-color: #1d2026;
+  --el-bg-color-overlay: #24282f;
+  --el-border-color: #32363e;
+  --el-border-color-light: #32363e;
+  --el-border-color-lighter: #2a2e35;
+  --el-fill-color-blank: #1d2026;
+}
+
+body {
+  margin: 0;
+  background: var(--el-bg-color-page);
+  font-family: "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+// 高密度内容面板
+.panel {
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.dim {
+  opacity: 0.65;
+  font-size: 12px;
+}
+.mono {
+  font-family: Consolas, "Courier New", monospace;
+}
+.cost-warn {
+  color: var(--el-color-warning);
+  font-weight: 700;
+}
+
+// 正文流式预览框
+.stream-box {
+  background: var(--el-bg-color-page);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  padding: 10px;
+  min-height: 120px;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+// 审校/机检问题条目
+.issue {
+  border-left: 3px solid var(--el-color-warning);
+  padding: 4px 10px;
+  margin: 6px 0;
+  background: var(--el-bg-color-page);
+  border-radius: 0 4px 4px 0;
+}
+.issue.blocking {
+  border-left-color: var(--el-color-danger);
+}
+
+// 顶栏菜单融入 header 背景
+header .el-menu {
+  border-bottom: none;
+  background: transparent;
+  flex: 1;
+}

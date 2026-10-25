@@ -823,9 +823,18 @@ def export_zip(book: str):
 
 
 # ---------------------------------------------------------------------------
-# 静态 UI
+# 静态 UI（规格04 §0：Vue3 构建产物 web/dist/，源码在 web/，禁止手改 dist）
 # ---------------------------------------------------------------------------
 
-_web_dir = project_root() / "web"
-if _web_dir.exists():
-    app.mount("/", StaticFiles(directory=str(_web_dir), html=True), name="web")
+_web_dist = project_root() / "web" / "dist"
+if _web_dist.exists():
+    app.mount("/", StaticFiles(directory=str(_web_dist), html=True), name="web")
+else:
+
+    @app.get("/")
+    def _ui_not_built():
+        """前端未构建时的兜底提示（构建：cd web && npm install && npm run build）。"""
+        return {
+            "hint": "前端未构建：在 web/ 下执行 npm install && npm run build，"
+            "或开发模式 npm run dev（/api 已代理到本端口）",
+        }

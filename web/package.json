@@ -1,0 +1,32 @@
+{
+  "name": "ai-novel-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vueuse/core": "^13.0.0",
+    "axios": "^1.7.0",
+    "element-plus": "^2.14.7",
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "sass": "^1.80.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.0",
+    "unplugin-auto-import": "^21.1.0",
+    "unplugin-vue-components": "^32.1.0",
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.3.13"
+  }
+}
