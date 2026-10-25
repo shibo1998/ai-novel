@@ -1,0 +1,175 @@
+"""书 CRUD：建目录结构 / config.json / meta.md（规格01 §1-§2.1）。"""
+from __future__ import annotations
+
+import json
+import shutil
+from typing import Any
+
+from . import atomic, db, frontmatter as FM
+from .paths import book_dir, books_dir
+
+GENRE_TEMPLATES: dict[str, str] = {
+    "urban": "都市",
+    "xuanhuan": "玄幻",
+    "romance": "言情",
+    "suspense": "悬疑",
+}
+
+META_SCHEMA: FM.Schema = {
+    "required": ["title", "genre", "target_words", "status"],
+    "non_empty": ["title"],
+    "types": {"title": str, "author": str, "genre": str, "target_words": int,
+              "chapter_word_range": list, "platform": str, "status": str},
+    "enums": {"status": ["drafting", "serializing", "done"]},
+}
+
+BIBLE_SECTIONS = ["基础设定", "力量体系", "势力格局", "历史脉络", "隐藏规则", "术语表", "日常细节"]
+
+
+def create_book(
+    name: str,
+    *,
+    genre_template: str = "urban",
+    target_words: int = 1_000_000,
+    author: str = "",
+    platform: str = "番茄",
+    chapter_word_range: list[int] | None = None,
+    model_stages: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    name = name.strip()
+    if not name or any(c in name for c in '\\/:*?"<>|'):
+        raise ValueError(f"非法书名: {name!r}")
+    bdir = book_dir(name)
+    if bdir.exists():
+        raise FileExistsError(f"书已存在: {name}")
+    word_range = chapter_word_range or [2200, 2800]
+    bdir.mkdir(parents=True)
+    (bdir / "characters").mkdir()
+    (bdir / "chapters").mkdir()
+
+    meta_fm = {
+        "title": name,
+        "author": author,
+        "genre": GENRE_TEMPLATES.get(genre_template, genre_template),
+        "tags": [],
+        "target_words": target_words,
+        "chapter_word_range": word_range,
+        "platform": platform,
+        "benchmark_book": "",
+        "compliance_note": "AI辅助创作，人工主导；本目录即创作日志证据链",
+        "status": "drafting",
+    }
+    meta_md = FM.dump(meta_fm, "（待填：一句话故事核、核心卖点、金手指概述）\n")
+    atomic.write_text(bdir / "meta.md", meta_md)
+
+    config = {
+        "genre_template": genre_template,
+        "model_stages": model_stages or {
+            "plan": "deepseek-chat",
+            "prose": "gemini-2.5-pro",
+            "polish": "gemini-2.5-pro",
+            "review": "deepseek-chat",
+            "longctx": "gemini-2.5-pro",
+        },
+        "chapter_word_range": word_range,
+        "review_fix_max_rounds": 2,
+        "assembly_budget_overrides": {},
+    }
+    atomic.write_text(bdir / "config.json", json.dumps(config, ensure_ascii=False, indent=2))
+
+    bible_body = "\n".join(f"## {s}\n\n（待生成）\n" for s in BIBLE_SECTIONS)
+    atomic.write_text(bdir / "STORY_BIBLE.md", f"# 世界观圣经\n\n{bible_body}\n")
+    atomic.write_text(bdir / "OUTLINE.md", FM.dump(
+        {"logline": "", "ending_direction": "", "volumes": []},
+        "## 章节总表\n\n| 章 | 卷 | 本章目标 | 冲突来源 | 爽点/揭露 | 钩子类型 | 重要度★ |\n"
+        "|----|----|---------|---------|----------|---------|--------|\n\n"
+        "## 爽点节奏总谱\n\n（待规划）\n",
+    ))
+    atomic.write_text(bdir / "PLOT_POINTS.md",
+                      "# 伏笔台账\n\n"
+                      "| 编号 | 内容 | 埋设章 | 推进章 | 预计回收章 | 状态 | 备注 |\n"
+                      "|------|------|--------|--------|-----------|------|------|\n")
+    atomic.write_text(bdir / "LOCATIONS.md",
+                      "# 地点档案\n\n"
+                      "| 名称 | 特征 | 方位/距离 | 首现章 | 关联剧情 |\n"
+                      "|------|------|----------|--------|----------|\n")
+
+    with db.tx() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO books (name, path, created_at) VALUES (?,?,?)",
+            (name, str(bdir), db.now()),
+        )
+    return {"name": name, "path": str(bdir)}
+
+
+def list_books() -> list[dict[str, Any]]:
+    books = []
+    if not books_dir().exists():
+        return []
+    for bdir in sorted(books_dir().glob("*")):
+        if bdir.is_dir() and (bdir / "meta.md").exists():
+            books.append(read_meta(bdir.name) | {"name": bdir.name})
+    return books
+
+
+def delete_book(name: str) -> None:
+    """删除 = 删整个 books/<书名>/ 目录（API 层负责二次确认）。"""
+    from . import fts
+
+    bdir = book_dir(name)
+    if not bdir.exists():
+        raise FileNotFoundError(name)
+    shutil.rmtree(bdir)
+    with db.tx() as conn:
+        fts.ensure_table(conn)  # FTS 表懒创建：从未入库时先确保存在
+        row = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
+        if row:
+            conn.execute("DELETE FROM chapters_fts WHERE book_id=?", (row["id"],))
+            conn.execute("DELETE FROM books WHERE id=?", (row["id"],))
+
+
+def read_meta(name: str) -> dict[str, Any]:
+    fm, body = FM.validate_file(book_dir(name) / "meta.md", META_SCHEMA)
+    return fm | {"_body": body}
+
+
+def write_meta(name: str, fm: dict[str, Any], body: str | None = None) -> None:
+    FM.validate(fm, META_SCHEMA)
+    _, old_body = FM.read_file(book_dir(name) / "meta.md")
+    atomic.write_text(book_dir(name) / "meta.md", FM.dump(fm, body if body is not None else old_body))
+
+
+def load_config(name: str) -> dict[str, Any]:
+    path = book_dir(name) / "config.json"
+    if not path.exists():
+        raise FileNotFoundError(f"config.json 不存在: {path}")
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+    defaults = {
+        "genre_template": "urban",
+        "model_stages": {},
+        "chapter_word_range": [2200, 2800],
+        "review_fix_max_rounds": 2,
+        "assembly_budget_overrides": {},
+    }
+    for k, v in defaults.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def save_config(name: str, cfg: dict[str, Any]) -> None:
+    atomic.write_text(book_dir(name) / "config.json", json.dumps(cfg, ensure_ascii=False, indent=2))
+
+
+def book_id(name: str) -> int:
+    with db.tx() as conn:
+        row = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
+    if row is None:
+        # 兼容：books 表缺行时自动补（文件为准）
+        with db.tx() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO books (name, path, created_at) VALUES (?,?,?)",
+                (name, str(book_dir(name)), db.now()),
+            )
+            row2 = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
+        return row2["id"]
+    return row["id"]

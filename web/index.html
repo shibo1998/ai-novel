@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI 网文工作台</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>AI 网文工作台</h1>
+  <nav id="nav">
+    <button data-page="shelf">书架</button>
+    <button data-page="overview">书总览</button>
+    <button data-page="workbench">章节工作台</button>
+    <button data-page="conflicts">裁决队列 <span id="conflict-badge"></span></button>
+    <button data-page="settings">设置</button>
+  </nav>
+  <span class="grow"></span>
+  <span id="global-book" class="dim small"></span>
+</header>
+<main>
+
+<!-- ============ 书架 ============ -->
+<section id="page-shelf" class="page">
+  <div class="panel">
+    <h2 style="margin-top:0">新建书</h2>
+    <div class="row">
+      <label>书名 <input id="nb-name" placeholder="书名"></label>
+      <label>题材 <select id="nb-genre">
+        <option value="urban">都市</option><option value="xuanhuan">玄幻</option>
+        <option value="romance">言情</option><option value="suspense">悬疑</option>
+      </select></label>
+      <label>目标字数 <input id="nb-words" type="number" value="1000000" style="width:110px"></label>
+      <label>笔名 <input id="nb-author" placeholder="可空"></label>
+      <label>平台 <input id="nb-platform" value="番茄" style="width:80px"></label>
+      <button class="btn primary" onclick="createBook()">创建</button>
+    </div>
+  </div>
+  <h2>书列表</h2>
+  <div id="shelf-list" class="grid"></div>
+</section>
+
+<!-- ============ 书总览 ============ -->
+<section id="page-overview" class="page">
+  <div class="panel"><div class="row">
+    <span id="ov-title" style="font-size:16px;font-weight:bold"></span>
+    <span class="grow"></span>
+    <span id="ov-cost" class="dim small"></span>
+    <span id="ov-conflicts" class="small"></span>
+  </div>
+  <div class="row small dim" id="ov-meta-line"></div></div>
+
+  <div class="flex2">
+    <div>
+      <div class="panel">
+        <h2 style="margin-top:0">档案导航 · AI 生成</h2>
+        <div class="row">
+          <button class="btn" onclick="aiArchive('G1')">G1 世界观</button>
+          <button class="btn" onclick="aiArchive('G2')">G2 力量体系</button>
+          <button class="btn" onclick="aiArchive('G3')">G3 角色卡</button>
+          <button class="btn" onclick="aiArchive('G4')">G4 关系网</button>
+          <button class="btn" onclick="aiArchive('G5')">G5 全书大纲</button>
+        </div>
+        <div class="dim small" style="margin-top:6px">流程：生成 → diff 预览 → 人工改定 → 采纳落盘（AI 永不静默覆盖）</div>
+        <details id="ai-preview-box" style="display:none">
+          <summary>AI 生成结果预览（可改后采纳）</summary>
+          <div class="row" style="margin:6px 0">
+            <button class="btn primary" onclick="adoptAI()">采纳落盘</button>
+            <span class="dim small" id="ai-target"></span>
+          </div>
+          <textarea id="ai-text" rows="18"></textarea>
+        </details>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">世界观圣经（固定 H2 节）</h2>
+        <div id="bible-editor"></div>
+        <button class="btn" onclick="saveBible()">保存圣经</button>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">文风系统（M5）</h2>
+        <div class="dim small">把你喜欢的书的正文段落（≥500字，建议 3000-10000 字）贴进语料 → 分析生成特征卡 → 人工改定 → 启用后每次生成都注入该文风</div>
+        <label style="margin-top:6px;display:block">语料（你认可的目标文风）</label>
+        <textarea id="style-corpus" rows="6" placeholder="粘贴你喜欢的小说正文片段…"></textarea>
+        <div class="row" style="margin-top:6px">
+          <button class="btn" onclick="saveCorpus()">保存语料</button>
+          <button class="btn primary" onclick="analyzeStyle()">分析生成特征卡（F1）</button>
+          <label><input type="checkbox" id="style-enabled" onchange="toggleStyle()"> 启用文风注入</label>
+        </div>
+        <label style="margin-top:8px;display:block">特征卡（可手改，改完保存）</label>
+        <textarea id="style-card" rows="8"></textarea>
+        <button class="btn" style="margin-top:6px" onclick="saveCard()">保存特征卡</button>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">伏笔台账</h2>
+        <div class="dim small">状态只允许 planted→building→paid 单向；paid 后不可回退</div>
+        <textarea id="pp-editor" rows="10"></textarea>
+        <div class="row" style="margin-top:6px">
+          <button class="btn" onclick="savePP()">保存台账</button>
+          <span class="dim small">直接编辑表格文本（Markdown 表格）</span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">角色档案</h2>
+        <div id="char-list" class="row"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="char-new-name" placeholder="新角色名" style="width:120px">
+          <select id="char-new-role"><option>龙套</option><option>重要配角</option><option>反派</option><option>女主</option><option>主角</option></select>
+          <button class="btn" onclick="createChar()">建档</button>
+        </div>
+        <details id="char-edit-box" style="display:none">
+          <summary>编辑角色：<span id="char-edit-name"></span></summary>
+          <textarea id="char-edit-fm" rows="10"></textarea>
+          <textarea id="char-edit-body" rows="14" style="margin-top:6px"></textarea>
+          <button class="btn primary" style="margin-top:6px" onclick="saveChar()">保存角色卡</button>
+        </details>
+      </div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2 style="margin-top:0">章节列表</h2>
+        <div class="row">
+          <input id="goto-no" type="number" min="1" value="1" style="width:80px">
+          <button class="btn primary" onclick="openWorkbench(+document.getElementById('goto-no').value)">进入工作台</button>
+          <span style="width:20px"></span>
+          <input id="audit-no" type="number" placeholder="审计至第N章" style="width:120px">
+          <button class="btn" onclick="runAudit()">卷末审计（V6）</button>
+        </div>
+        <div style="max-height:520px;overflow:auto">
+          <table id="ov-chapters"><thead><tr>
+            <th>章</th><th>状态</th><th>版本</th><th>修复轮</th><th>成本</th><th></th>
+          </tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">大纲（章节总表）</h2>
+        <details><summary>编辑大纲行（Markdown 表格）</summary>
+          <textarea id="outline-rows" rows="12"></textarea>
+          <button class="btn" style="margin-top:6px" onclick="saveOutlineRows()">保存大纲</button>
+        </details>
+        <div style="max-height:300px;overflow:auto"><table id="ov-outline"></table></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 章节工作台 ============ -->
+<section id="page-workbench" class="page">
+  <div class="panel">
+    <div class="row">
+      <button class="btn" onclick="wbNav(-1)">← 上一章</button>
+      <span id="wb-no" style="font-size:16px;font-weight:bold"></span>
+      <button class="btn" onclick="wbNav(1)">下一章 →</button>
+      <span>状态 <span id="wb-status" class="badge"></span></span>
+      <span class="dim small">版本 <span id="wb-version"></span></span>
+      <span class="dim small">本章成本 <span id="wb-cost"></span></span>
+      <span id="wb-golden" class="badge warn" style="display:none">黄金三章专项</span>
+      <span class="grow"></span>
+      <button class="btn" onclick="loadWorkbench(wbNo)">刷新</button>
+    </div>
+  </div>
+
+  <div class="flex2">
+    <div>
+      <div class="panel">
+        <h2 style="margin-top:0">① 细纲（章合同）</h2>
+        <div class="row" style="margin-bottom:6px">
+          <button class="btn primary" onclick="wbGenerateOutline()">生成细纲（P-G6）</button>
+          <button class="btn" onclick="wbConfirmOutline()">确认细纲（锁定）</button>
+          <button class="btn" onclick="wbEditOutlineRaw()">编辑细纲原文</button>
+        </div>
+        <div id="wb-outline-view"></div>
+        <details id="wb-outline-edit" style="display:none">
+          <summary>细纲原文（YAML frontmatter + 场景清单）</summary>
+          <textarea id="wb-outline-raw" rows="18"></textarea>
+          <button class="btn primary" style="margin-top:6px" onclick="wbSaveOutlineRaw()">保存细纲</button>
+        </details>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin-top:0">② 正文生成</h2>
+        <div class="row">
+          <button class="btn primary" id="btn-generate" onclick="wbGenerate()">开始生成（流式）</button>
+          <label>场景专项 <select id="wb-prompt-id">
+            <option value="">自动（卷首三章W3 / 其余W1）</option>
+            <option value="W2">W2 对话专场</option>
+            <option value="W4">W4 突破场景</option>
+            <option value="W5">W5 高潮场景</option>
+          </select></label>
+        </div>
+        <pre id="wb-stream" class="chat-stream" style="margin-top:8px">（生成区）</pre>
+      </div>
+
+      <div class="panel">
+        <h2 style="margin-top:0">装配预览（13 槽位 · 排查跑偏第一入口）</h2>
+        <button class="btn" onclick="wbPreview()">生成装配预览</button>
+        <div id="wb-preview"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <h2 style="margin-top:0">③ 机械检查（零 token）</h2>
+        <div class="row">
+          <button class="btn primary" onclick="wbMech()">跑机械检查（含自动修复1轮）</button>
+          <span class="dim small">阻断→自动 P-V5 修复一轮→重查；敏感词直接转人工</span>
+        </div>
+        <div id="wb-mech"></div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">④ LLM 审校（P-V1 五维）</h2>
+        <button class="btn primary" onclick="wbReview()">跑审校</button>
+        <div id="wb-review"></div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">⑤ 人工关口 / 定稿</h2>
+        <div class="row" style="margin-bottom:6px">
+          <button class="btn" onclick="wbFix()">定向修复（P-V5）</button>
+          <button class="btn" onclick="wbPolish()">整章润色（P-V2+V3）</button>
+          <button class="btn" onclick="wbExempt()">豁免（必填理由）</button>
+          <button class="btn" onclick="wbBackOutline()">改细纲重写</button>
+        </div>
+        <div class="row">
+          <button class="btn primary" id="btn-finalize" onclick="wbFinalize()">定稿（二次确认→快照+回写）</button>
+          <button class="btn danger" onclick="wbRewrite()">从版本重写</button>
+          <select id="wb-rewrite-ver"></select>
+        </div>
+        <div id="wb-versions" class="small dim" style="margin-top:6px"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 裁决队列 ============ -->
+<section id="page-conflicts" class="page">
+  <h2>待裁决冲突（非空时禁止开新章细纲）</h2>
+  <div id="conflict-list"></div>
+</section>
+
+<!-- ============ 设置 ============ -->
+<section id="page-settings" class="page">
+  <div class="flex2">
+    <div>
+      <div class="panel">
+        <h2 style="margin-top:0">API 连接（OpenAI 兼容协议，官方/中转站通用）</h2>
+        <div class="row" style="margin-bottom:6px">
+          <label>API key <input id="prov-openai-key" placeholder="未配置" style="width:260px"></label>
+          <label>base_url <input id="prov-openai-url" value="" style="width:320px"></label>
+        </div>
+        <div class="row" style="margin-bottom:6px">
+          <label>默认模型（一键覆盖全部档位，如 deepseek-chat / gemini-2.5-pro，须是中转站支持的模型名）
+            <input id="default-model" placeholder="留空则用各书 config.json 的 model_stages" style="width:420px"></label>
+        </div>
+        <div class="row">
+          <button class="btn primary" onclick="saveProviders()">保存连接</button>
+          <button class="btn" onclick="testConn()">测试连接</button>
+          <span id="conn-result" class="small"></span>
+        </div>
+        <div class="dim small" style="margin-top:4px">base_url 填到 /v1 为止（例：https://your-relay.com/v1），不要带 /chat/completions</div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">单价（分/百万token）</h2>
+        <textarea id="price-editor" rows="8"></textarea>
+        <button class="btn" style="margin-top:6px" onclick="savePrices()">保存单价</button>
+      </div>
+    </div>
+    <div>
+      <div class="panel">
+        <h2 style="margin-top:0">lint 词库</h2>
+        <div class="row">
+          <select id="lint-which">
+            <option value="banned_words">禁词表（M-02）</option>
+            <option value="sensitive_words">敏感词红线（M-04）</option>
+            <option value="dialog_suffix">对话后缀禁式（M-03）</option>
+          </select>
+          <button class="btn" onclick="loadLint()">载入</button>
+          <button class="btn primary" onclick="saveLint()">保存</button>
+        </div>
+        <textarea id="lint-editor" rows="14" style="margin-top:6px"></textarea>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">系统维护</h2>
+        <div class="row">
+          <button class="btn" onclick="rebuildDB()">从文件重建 SQLite 索引</button>
+          <span id="rebuild-result" class="small"></span>
+        </div>
+        <div class="dim small" style="margin-top:6px">
+          FTS 模式：<span id="fts-mode"></span>（trigram 不可用时自动 bigram）
+        </div>
+      </div>
+      <div class="panel">
+        <h2 style="margin-top:0">导出</h2>
+        <div class="row">
+          <button class="btn" onclick="exportTxt()">导出定稿合并 txt</button>
+          <button class="btn" onclick="exportZip()">全书打包 zip</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

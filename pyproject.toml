@@ -1,0 +1,9 @@
+[project]
+name = "ai-novel"
+version = "0.1.0"
+description = "AI 辅助网文创作工作台：文件档案 + SQLite 索引 + 单章生成闭环管线"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
