@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from typing import Any, Callable
 import httpx
 
 from . import settings
+
+logger = logging.getLogger(__name__)
 
 TIMEOUT_SECONDS = 300.0
 RETRY_BASE_DELAY = 1.0
@@ -119,14 +122,18 @@ def _with_retry(fn) -> LLMResult:
         try:
             return fn()
         except LLMError as e:
-            # 429/5xx/限流可重试；4xx 参数错误不重试
-            if re.search(r"HTTP (4\d\d)", str(e)) and "429" not in str(e):
+            # 429/5xx/限流可重试；其余 4xx 参数类错误不重试
+            m = re.search(r"HTTP (\d{3})", str(e))
+            if m and m.group(1) != "429" and 400 <= int(m.group(1)) < 500:
                 raise
             last_err = e
         except _RETRYABLE as e:
             last_err = e
         if attempt < MAX_RETRIES - 1:
-            time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+            delay = RETRY_BASE_DELAY * (2**attempt)
+            logger.warning("LLM 调用失败（第 %d/%d 次），%.0fs 后重试: %s",
+                           attempt + 1, MAX_RETRIES, delay, last_err)
+            time.sleep(delay)
     raise LLMError(f"重试 {MAX_RETRIES} 次后仍失败: {last_err}")
 
 
@@ -134,9 +141,7 @@ def client() -> OpenAICompatClient:
     """唯一连接：OpenAI 兼容协议（官方 / 第三方中转站通用）。"""
     s = settings.load()
     prov = s.get("providers", {}).get("openai")
-    if not prov:
-        raise LLMError("设置缺少 providers.openai 配置")
-    if not prov.get("api_key"):
+    if not isinstance(prov, dict) or not prov.get("api_key"):
         raise LLMError("未配置 API key（设置页或 data/settings.json 填写）")
     return OpenAICompatClient(prov["base_url"], prov["api_key"])
 

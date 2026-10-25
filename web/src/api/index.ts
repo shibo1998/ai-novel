@@ -86,7 +86,7 @@ export const putStyleEnabled = (book: string, enabled: boolean): Promise<unknown
 export const analyzeStyleF1 = (
   book: string,
 ): Promise<{ ok: boolean; card: string; digest: string }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/style/analyze`))
+  unwrap(http.post(`/api/books/${enc(book)}/style/analyze`, null, { timeout: 0 }))
 
 // —— G 链：AI 生成档案 → 人工改定 → 采纳落盘 ——
 export interface AIGenResult {
@@ -101,7 +101,7 @@ export const aiGenerate = (
   prompt_id: string,
   variables: Record<string, string>,
 ): Promise<AIGenResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/ai/generate`, { prompt_id, variables }))
+  unwrap(http.post(`/api/books/${enc(book)}/ai/generate`, { prompt_id, variables }, { timeout: 0 }))
 
 export const adoptArchive = (
   book: string,
@@ -114,7 +114,7 @@ export const adoptArchive = (
 export const getWorkbench = (book: string, no: number): Promise<WorkbenchData> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}`))
 export const generateOutlineG6 = (book: string, no: number): Promise<unknown> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/outline/generate`))
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/outline/generate`, null, { timeout: 0 }))
 export const confirmOutline = (
   book: string,
   no: number,
@@ -140,11 +140,11 @@ export const runMechcheck = (
 ): Promise<{ hits: MechHit[]; status: string }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/mechcheck`))
 export const runReview = (book: string, no: number): Promise<ReviewResult & { status: string }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/review`))
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/review`, null, { timeout: 0 }))
 export const runFix = (book: string, no: number): Promise<{ ok: boolean; word_count: number }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/fix`, {}))
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/fix`, {}, { timeout: 0 }))
 export const runPolish = (book: string, no: number): Promise<PolishResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish`))
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish`, null, { timeout: 0 }))
 export const runExempt = (book: string, no: number, reason: string): Promise<unknown> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/exempt`, { reason }))
 export const backToOutline = (book: string, no: number): Promise<unknown> =>
@@ -160,7 +160,7 @@ export const rewriteFrom = (
 ): Promise<{ ok: boolean; new_version: number }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/rewrite`, { base_version }))
 export const runAudit = (book: string, lastChapter: number): Promise<AuditResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/audit/${lastChapter}`))
+  unwrap(http.post(`/api/books/${enc(book)}/audit/${lastChapter}`, null, { timeout: 0 }))
 
 // —— 裁决队列 ——
 export const listConflicts = (): Promise<Conflict[]> => unwrap(http.get('/api/conflicts'))
@@ -182,7 +182,7 @@ export interface ConnTestResult {
   error?: string
 }
 export const testConnection = (): Promise<ConnTestResult> =>
-  unwrap(http.post('/api/settings/test', {}))
+  unwrap(http.post('/api/settings/test', {}, { timeout: 60_000 }))
 export const getLint = (which: string): Promise<{ which: string; content: string }> =>
   unwrap(http.get(`/api/lint/${which}`))
 export const putLint = (which: string, content: string): Promise<unknown> =>

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import threading
 import time
 import webbrowser
@@ -14,6 +15,12 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
+
+    # 业务日志（管线阻断/越权丢弃/LLM 重试等关键事件）输出到控制台
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     if not args.no_browser:
         url = f"http://127.0.0.1:{args.port}"

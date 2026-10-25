@@ -152,9 +152,8 @@ def apply_status_updates(
                 continue
             status[field] = new_val
         if block:
+            # 有阻断冲突则本角色整卡不写（含已通过字段，避免半新半旧的不一致状态）
             conflicts.extend(block)
-            if not applied or data["name"] not in applied:
-                pass  # 部分字段被拦时不整体回退已通过字段？——策略：有阻断冲突则本角色整卡不写
             continue
         status["updated_chapter"] = chapter_no
         fm = {k: v for k, v in data.items() if not k.startswith("_")}

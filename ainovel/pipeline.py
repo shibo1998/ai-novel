@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Callable
@@ -19,6 +20,8 @@ from typing import Any, Callable
 from . import (assembler, bible, books, chapters, characters, conflicts, db,
                fts, frontmatter as FM, llm, mechcheck, outline, prompts,
                settings, statemachine, summaries)
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineError(Exception):
@@ -512,9 +515,11 @@ def run_mech_check(book: str, no: int, client=None, auto_fix: bool = True) -> li
         statemachine.transition(book, no, "pass")  # → llm_review
         return hits
     if mechcheck.has_sensitive(hits) or not auto_fix:
+        logger.warning("第%s章 命中敏感词红线，阻断转人工（禁止自动改写）", no)
         statemachine.transition(book, no, "blocked_after_fix")  # → human_review（敏感词禁止自动改写）
         return hits
 
+    logger.info("第%s章 机检阻断 %d 条，自动定向修复一轮", no, len(hits))
     statemachine.transition(book, no, "blocked")  # → lint_fix
     try:
         run_targeted_fix(book, no, hits, client=client)
@@ -580,6 +585,7 @@ def run_targeted_fix(book: str, no: int, issues: list[Any], client=None) -> str:
     res, _p, _t = _call(book, no, "fix", "V5", variables, client=client)
     new_body = res.text.strip() + "\n"
     if _overreach(old_body, new_body, issues):
+        logger.warning("第%s章 V5 越权护栏触发：未涉及句段改动率 >10%%，输出已丢弃", no)
         raise FixOverreach("未涉及问题句段的改动率 >10%，本次输出已丢弃")
     fm = dict(prose)
     fm.pop("_body")
@@ -747,6 +753,7 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
         try:
             run_targeted_fix(book, no, result.get("issues", []), client=client)
         except FixOverreach:
+            logger.warning("第%s章 V5 越权护栏触发（审校修复轮），转人工", no)
             statemachine.set_fix_rounds(book, no, rounds + 1)
             statemachine.transition(book, no, "recheck")  # targeted_fix → mech_check
             statemachine.transition(book, no, "blocked_after_fix")  # → human_review

@@ -80,12 +80,17 @@ const auditNo = ref<number | undefined>(undefined)
 
 async function load(): Promise<void> {
   store.setCurrentBook(name.value)
-  const o = await getOverview(name.value)
+  // 四个读请求并行（老版串行串成 4×RTT）
+  const [o, b, pp, st] = await Promise.all([
+    getOverview(name.value),
+    getBible(name.value),
+    getPlotPoints(name.value),
+    getStyle(name.value),
+  ])
   ov.value = o
-  bible.value = await getBible(name.value)
-  ppText.value = toMdTable(PP_COLS, await getPlotPoints(name.value))
+  bible.value = b
+  ppText.value = toMdTable(PP_COLS, pp)
   outlineText.value = toMdTable(OC_COLS, o.outline_rows)
-  const st = await getStyle(name.value)
   styleCorpus.value = st.corpus
   styleCard.value = st.card
   styleEnabled.value = st.enabled

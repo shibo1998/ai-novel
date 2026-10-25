@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from typing import Any
 
 from . import atomic
 from .paths import data_dir
+
+logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
@@ -53,13 +56,33 @@ def _settings_path():
     return data_dir() / "settings.json"
 
 
+def _validate_structure(s: dict[str, Any]) -> None:
+    """结构校验（P1：写坏 settings.json 会让 masked()/llm.client() 持续 500，UI 无法自愈）。"""
+    provs = s.get("providers")
+    if provs is not None:
+        if not isinstance(provs, dict):
+            raise ValueError("providers 必须是对象")
+        for name, p in provs.items():
+            if not isinstance(p, dict):
+                raise ValueError(f"providers.{name} 必须是对象")
+    prices = s.get("prices")
+    if prices is not None and not isinstance(prices, dict):
+        raise ValueError("prices 必须是对象")
+    mech = s.get("mechcheck")
+    if mech is not None and not isinstance(mech, dict):
+        raise ValueError("mechcheck 必须是对象")
+
+
 def load() -> dict[str, Any]:
     path = _settings_path()
     merged = json.loads(json.dumps(DEFAULTS))  # deep copy
     if path.exists():
         try:
             stored = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            _validate_structure(stored)
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            # 手改坏文件不致命：回退默认值并留痕，避免整个应用起不来
+            logger.warning("settings.json 结构非法，已回退默认值: %s", e)
             stored = {}
         _deep_merge(merged, stored)
     else:
@@ -87,19 +110,22 @@ def save(settings: dict[str, Any]) -> None:
 
 
 def update(partial: dict[str, Any]) -> dict[str, Any]:
-    """部分更新（PUT 语义：给什么覆盖什么），落盘后返回完整设置。"""
+    """部分更新（PUT 语义：给什么覆盖什么），校验后落盘并返回完整设置。"""
     current = load()
     _deep_merge(current, partial)
+    _validate_structure(current)  # 非法结构直接拒绝，绝不落盘
     save(current)
     return current
 
 
 def masked() -> dict[str, Any]:
-    """给 UI 的掩码视图：api_key 只保留前 4 位 + 长度。"""
+    """给 UI 的掩码视图：api_key 不回显任何原文（前端留空即保持不变）。"""
     s = load()
     for prov in s.get("providers", {}).values():
+        if not isinstance(prov, dict):
+            continue
         key = prov.get("api_key", "")
-        prov["api_key"] = (key[:4] + "…" + f"({len(key)}位)") if key else ""
+        prov["api_key"] = "已配置（留空保持不变…）" if key else ""
         prov["has_key"] = bool(key)
     return s
 

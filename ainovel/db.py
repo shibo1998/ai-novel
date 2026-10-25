@@ -174,10 +174,12 @@ def add_review(
 
 def add_snapshot(*, book_id: int, chapter_no: int, version: int, label: str, content: str) -> int:
     with tx() as conn:
+        # 快照是定稿历史（只增不改）：同版本重放时保留先到的快照，绝不覆盖
         conn.execute(
-            """INSERT OR REPLACE INTO snapshots
+            """INSERT INTO snapshots
                (book_id, chapter_no, version, label, content, created_at)
-               VALUES (?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(book_id, chapter_no, version) DO NOTHING""",
             (book_id, chapter_no, version, label, content, now()),
         )
         cur = conn.execute(
@@ -268,6 +270,13 @@ def _scan_chapters(bdir: Path) -> Iterator[tuple[int, str, str, int]]:
     for chapter_no in sorted(nos):
         title = ""
         version = 1
+        outline_p = bdir / "chapters" / f"{chapter_no:03d}_细纲.md"
+        if outline_p.exists():
+            try:
+                fm, _ = FM.parse(outline_p.read_text(encoding="utf-8"))
+                title = str(fm.get("title") or "")
+            except Exception:
+                pass
         status = _derive_status(bdir, chapter_no)
         body = chapters_dir / f"{chapter_no:03d}_正文.md"
         if body.exists():

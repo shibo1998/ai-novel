@@ -34,7 +34,7 @@ python run.py            # 打开 http://127.0.0.1:8765
 ## 测试
 
 ```bash
-python -m pytest tests/          # 82 项全绿（管线全链路用 MockLLM，不耗 token）
+python -m pytest tests/          # 104 项全绿（管线全链路用 MockLLM，不耗 token）
 python scripts/smoke.py          # 端到端冒烟（跑在临时目录，不污染仓库）
 cd web && npm run typecheck      # 前端严格类型检查（vue-tsc）
 cd web && npm run lint:check     # 前端 ESLint 检查
@@ -67,7 +67,7 @@ ainovel/            Python 包（核心引擎 + FastAPI）
   mechcheck         机械检查 M-01~M-11（lint 词库同源）
   statemachine      章节状态机（规格01 §4）
   assembler         13 槽位装配器（预算截断顺序 + 预览落盘）
-  llm/mockllm       DeepSeek(OpenAI兼容)/Gemini(SSE流式) 客户端 + 测试 Mock
+  llm/mockllm       OpenAI 兼容客户端（官方/中转站通用，Gemini 等模型一律走兼容协议）+ 测试 Mock
   pipeline          管线编排（细纲→正文→机检→审校→定稿→回写→卷末审计）
   conflicts         人工裁决队列
   api               全部 HTTP 路由 + SSE

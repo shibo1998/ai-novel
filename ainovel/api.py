@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -17,6 +18,8 @@ from . import (assembler, bible, books, chapters, characters, conflicts, db,
                fts, llm, mechcheck, outline, pipeline, prompts, settings,
                statemachine)
 from .paths import book_dir, project_root
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI 网文工作台")
 
@@ -27,7 +30,15 @@ def _ensure_defaults() -> None:
     settings.load()
 
 
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """未处理异常统一兜底：服务端留全量堆栈日志，前端只拿笼统提示（不泄内部细节）。"""
+    logger.exception("未处理异常 %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "内部错误，详见服务端日志"})
+
+
 def _err(e: Exception, code: int = 400) -> HTTPException:
+    logger.warning("请求处理失败: %s", e)
     return HTTPException(status_code=code, detail=str(e))
 
 

@@ -11,7 +11,7 @@
 ## 命令
 
 ```bash
-python -m pytest tests/        # 全绿为验收线（当前基线 82 项，只增不减）
+python -m pytest tests/        # 全绿为验收线（当前基线 104 项，只增不减）
 python scripts/smoke.py        # 端到端冒烟，跑在临时目录，不污染仓库
 python run.py                  # 启动 Web UI（http://127.0.0.1:8765）
 cd web && npm install          # 首次或依赖变更后

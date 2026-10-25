@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 章节工作台（规格04 §2 核心页）：细纲 → 流式生成 → 机检 → 审校 → 人工关口/定稿 + 装配预览。
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -45,6 +45,9 @@ const promptId = ref('')
 const generating = ref(false)
 const streamText = ref('（生成区）')
 const streamBox = ref<HTMLElement | null>(null)
+let abortCtrl: AbortController | null = null
+
+onUnmounted(() => abortCtrl?.abort())
 
 const rawDialog = ref(false)
 const rawText = ref('')
@@ -68,7 +71,14 @@ async function load(): Promise<void> {
   streamText.value = data.value.prose?._body ?? '（生成区）'
   await loadVersions()
 }
-watch([book, no], () => void load().catch(() => {}), { immediate: true })
+watch(
+  [book, no],
+  () => {
+    abortCtrl?.abort() // 切章/切书时取消旧流，避免旧章内容写进新章视图
+    void load().catch(() => {})
+  },
+  { immediate: true },
+)
 
 watch(streamText, () => {
   void nextTick(() => {
@@ -175,6 +185,7 @@ async function saveHook(type: string): Promise<void> {
 async function generate(): Promise<void> {
   generating.value = true
   streamText.value = ''
+  abortCtrl = new AbortController()
   try {
     const res = await fetch(
       `/api/books/${encodeURIComponent(book.value)}/chapters/${no.value}/generate`,
@@ -182,6 +193,7 @@ async function generate(): Promise<void> {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(promptId.value ? { prompt_id: promptId.value } : {}),
+        signal: abortCtrl.signal, // 切章/离开页面时取消读取（后端会继续生成并正常收尾）
       },
     )
     if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
@@ -222,9 +234,14 @@ async function generate(): Promise<void> {
     }
     await reload()
   } catch (e) {
-    ElMessage.error(e instanceof Error ? e.message : String(e))
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      ElMessage.info('已取消本页的流式读取，生成仍在后台继续')
+    } else {
+      ElMessage.error(e instanceof Error ? e.message : String(e))
+    }
   } finally {
     generating.value = false
+    abortCtrl = null
   }
 }
 

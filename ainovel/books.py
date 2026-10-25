@@ -6,7 +6,7 @@ import shutil
 from typing import Any
 
 from . import atomic, db, frontmatter as FM
-from .paths import book_dir, books_dir
+from .paths import book_dir, books_dir, validate_book_name
 
 GENRE_TEMPLATES: dict[str, str] = {
     "urban": "都市",
@@ -37,8 +37,7 @@ def create_book(
     model_stages: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     name = name.strip()
-    if not name or any(c in name for c in '\\/:*?"<>|'):
-        raise ValueError(f"非法书名: {name!r}")
+    validate_book_name(name)
     bdir = book_dir(name)
     if bdir.exists():
         raise FileExistsError(f"书已存在: {name}")
@@ -119,6 +118,9 @@ def delete_book(name: str) -> None:
     bdir = book_dir(name)
     if not bdir.exists():
         raise FileNotFoundError(name)
+    if bdir.parent != books_dir():
+        # 双保险：book_dir 已校验书名，这里再断言目录确实落在 books/ 下
+        raise ValueError(f"非法书目录: {bdir}")
     shutil.rmtree(bdir)
     with db.tx() as conn:
         fts.ensure_table(conn)  # FTS 表懒创建：从未入库时先确保存在
