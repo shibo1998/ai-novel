@@ -43,7 +43,7 @@ class MockLLM:
             if self.outline_factory:
                 return self.outline_factory(no, user)
             return self._default_outline(no)
-        if ("【本章上下文】" in user or "黄金三章" in user or "专写本场景对话" in user
+        if ("本章上下文" in user or "黄金三章" in user or "专写本场景对话" in user
                 or "突破场景" in user or "高潮对决" in user):
             no = self._grab_no(user)
             rng = self._grab_range(user)
@@ -86,8 +86,11 @@ class MockLLM:
         return int(m.group(1)) if m else 1
 
     def _grab_range(self, text: str) -> tuple[int, int]:
-        m = re.search(r"(\d{3,5})\s*-\s*(\d{3,5})", text)
-        return (int(m.group(1)), int(m.group(2))) if m else (2200, 2800)
+        ms = re.findall(r"(\d{3,5})\s*-\s*(\d{3,5})", text)
+        if not ms:
+            return (2200, 2800)
+        lo, hi = ms[-1]  # 取最后一个（场景任务等更具体的指令在文末）
+        return (int(lo), int(hi))
 
     def _default_outline(self, no: int) -> str:
         hook_type = ["悬念", "选择", "反转"][no % 3]

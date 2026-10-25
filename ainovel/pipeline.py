@@ -298,11 +298,53 @@ def _save_preview(book: str, no: int, preview: dict[str, Any]):
     return path
 
 
+def _style_excerpt(book: str, chars: int = 600) -> str:
+    """从书级语料随机取一段真实原文做 few-shot 范文（模仿笔触，禁复制内容）。"""
+    import random
+
+    from . import style as style_mod
+
+    try:
+        corpus = style_mod.read_corpus(book).replace("\u3000", "")
+        corpus = re.sub(r"\n{3,}", "\n\n", corpus).strip()
+    except Exception:
+        return ""
+    if len(corpus) < chars * 2:
+        return corpus
+    start = random.randrange(0, len(corpus) - chars)
+    excerpt = corpus[start:start + chars]
+    nl = excerpt.find("\n\n")
+    if 0 < nl < chars // 2:
+        excerpt = excerpt[nl + 2:]
+    return excerpt.strip()
+
+
+def _style_points(book: str) -> str:
+    """特征卡浓缩（句法特征+禁忌清单）供 V1 审校参照目标文风。"""
+    from . import style as style_mod
+
+    try:
+        card = style_mod.read_card(book)
+        if not card:
+            return "（未启用文风系统）"
+        m1 = re.search(r"(?ms)^##\s*句法特征\s*\n(.*?)(?=^##|\Z)", card)
+        m2 = re.search(r"(?ms)^##\s*禁忌清单\s*\n(.*?)(?=^##|\Z)", card)
+        parts = []
+        if m1:
+            parts.append("句法特征：" + re.sub(r"\s+", " ", m1.group(1))[:400])
+        if m2:
+            parts.append("禁忌清单：" + re.sub(r"\s+", " ", m2.group(1))[:300])
+        return "\n".join(parts) or "（特征卡为空）"
+    except Exception:
+        return "（未启用文风系统）"
+
+
 def generate_prose(book: str, no: int, client=None,
                    stream_cb: Callable[[str], None] | None = None,
                    prompt_id: str | None = None) -> dict[str, Any]:
     """prompt_id 可强制指定场景专项（W2 对话/W4 突破/W5 高潮）；默认自动：
-    卷首三章 W3 黄金三章专项，其余 W1 常规。"""
+    卷首三章 W3 黄金三章专项，其余 W1 常规。
+    书 config scene_mode=true 时逐场景生成再缝合（每场景独立注意力+字数配额）。"""
     st = statemachine.current_status(book, no)
     if st == "outline_locked":
         statemachine.transition(book, no, "start_generate")
@@ -316,11 +358,13 @@ def generate_prose(book: str, no: int, client=None,
 
     contract = chapters.read_outline_contract(book, no)
     contract_text = assembler._render_contract(contract)
+    excerpt = _style_excerpt(book) if cfg.get("style_enabled") else ""
 
     if prompt_id not in ("W1", "W2", "W3", "W4", "W5"):
         prompt_id = "W3" if no <= 3 else "W1"
-    scene_vars = _scene_special_vars(book, no, contract, prompt_id)
-    variables: dict[str, Any] = {"系统段": assembler.render_system(book)}
+
+    variables: dict[str, Any] = {"系统段": assembler.render_system(book),
+                                 "范文样本": excerpt or "（无范文样本）"}
     if prompt_id in ("W1", "W3", "W4", "W5"):
         variables["装配上下文"] = a.context_text()
     variables["章合同"] = contract_text
@@ -332,19 +376,25 @@ def generate_prose(book: str, no: int, client=None,
     elif prompt_id == "W3":
         variables["章号"] = str(no)
 
-    res, _p, _t = _call(book, no, "prose", prompt_id, variables, client=client, stream_cb=stream_cb)
+    # 场景级生成：细纲场景逐个生成再缝合（全章注意力分配到每个场景）
+    scenes = contract.get("scenes") or []
+    if cfg.get("scene_mode") and prompt_id == "W1" and len(scenes) >= 2:
+        body, fr = _generate_by_scenes(book, no, variables, wr, scenes,
+                                       client=client, stream_cb=stream_cb)
+    else:
+        res, _p, _t = _call(book, no, "prose", prompt_id, variables, client=client, stream_cb=stream_cb)
+        body, fr = res.text.strip(), res.finish_reason
+        # 截断/字数越界 → 自动重跑一次并在指令中强调（规格02 P-W1 失败处理）
+        if fr == "length" or not _in_range(body, wr):
+            emphasis = (f"\n\n【重跑强调】上次输出字数 {mechcheck.count_words(body)} "
+                        f"（要求 {wr[0]}-{wr[1]}）或被截断（finish_reason={fr}）。"
+                        f"本次必须输出完整正文且字数落在区间内。")
+            res2, _p2, _t2 = _call(book, no, "prose", prompt_id, variables, client=client,
+                                   stream_cb=stream_cb, extra_instruction=emphasis)
+            if _better(res2.text, body, wr) or fr == "length":
+                body, fr = res2.text.strip(), res2.finish_reason
 
-    # 截断/字数越界 → 自动重跑一次并在指令中强调（规格02 P-W1 失败处理）
-    if res.finish_reason == "length" or not _in_range(res.text, wr):
-        emphasis = (f"\n\n【重跑强调】上次输出字数 {mechcheck.count_words(res.text)} "
-                    f"（要求 {wr[0]}-{wr[1]}）或被截断（finish_reason={res.finish_reason}）。"
-                    f"本次必须输出完整正文且字数落在区间内。")
-        res2, _p2, _t2 = _call(book, no, "prose", prompt_id, variables, client=client,
-                               stream_cb=stream_cb, extra_instruction=emphasis)
-        if _better(res2.text, res.text, wr) or res.finish_reason == "length":
-            res = res2
-
-    body = res.text.strip()
+    body = body.strip()
     row = statemachine.get_row(book, no)
     version = row["current_version"] if row else 1
     fm = {
@@ -353,7 +403,44 @@ def generate_prose(book: str, no: int, client=None,
     }
     chapters.write_prose(book, no, fm, body + "\n")
     statemachine.transition(book, no, "complete")  # → mech_check
-    return {"word_count": fm["word_count"], "version": version, "finish_reason": res.finish_reason}
+    return {"word_count": fm["word_count"], "version": version, "finish_reason": fr,
+            "mode": "scene" if cfg.get("scene_mode") else "whole"}
+
+
+def _generate_by_scenes(book: str, no: int, base_vars: dict[str, Any], wr: list[int],
+                        scenes: list[dict[str, Any]], client=None,
+                        stream_cb: Callable[[str], None] | None = None) -> tuple[str, str]:
+    """逐场景生成：每场景独立调用（全注意力）+ 字数配额 + 前场景结尾衔接。"""
+    n = len(scenes)
+    total_mid = (wr[0] + wr[1]) // 2
+    per_mid = max(500, total_mid // n)
+    # 配额从紧（总和留余量），防止各场景都顶配额导致全章超上限
+    per_lo, per_hi = max(400, int(per_mid * 0.8)), int(per_mid * 1.15)
+    parts: list[str] = []
+    fr = "stop"
+    for i, sc in enumerate(scenes, 1):
+        chars = "、".join(f"{c.get('name')}({c.get('state')})" for c in sc.get("chars", []) or [])
+        task = (
+            f"【本场景生成任务】场景 {i}/{n}（只写这一个场景，禁止写到后续场景内容）\n"
+            f"目标：{sc.get('goal')}\n冲突：{sc.get('conflict')}\n出场：{chars}\n"
+            f"本场景结束状态：{sc.get('end_state')}\n本场景字数：{per_lo}-{per_hi} 字\n"
+        )
+        if i > 1 and parts:
+            task += f"【上一场景结尾（开头直接衔接）】{parts[-1].strip()[-200:]}\n"
+        else:
+            task += "【本章开头】300 字内承接上一章钩子入题。\n"
+        if i == n:
+            task += "【收尾要求】本场景是全章末场景，必须落在章合同钩子指向的画面/台词上，戛然而止。\n"
+        v = dict(base_vars)
+        v["章合同"] = base_vars["章合同"] + "\n\n" + task
+        v["字数区间"] = f"{per_lo}-{per_hi}"
+        v.setdefault("黄金三章附加要求", "")
+        res, _p, _t = _call(book, no, "prose", "W1", v, client=client,
+                            stream_cb=stream_cb if i == n else None)
+        if res.finish_reason == "length":
+            fr = "length"
+        parts.append(res.text.strip())
+    return "\n\n".join(parts), fr
 
 
 def _scene_special_vars(book: str, no: int, contract: dict[str, Any], prompt_id: str) -> dict[str, str]:
@@ -605,6 +692,7 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
         ) or "（台账为空）",
         "字数区间": f"{wr[0]}-{wr[1]}",
         "程序字数": str(mechcheck.count_words(prose["_body"])),
+        "文风要点": _style_points(book),
     }
 
     result: dict[str, Any] | None = None

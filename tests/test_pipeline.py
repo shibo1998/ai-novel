@@ -294,3 +294,41 @@ def test_rubber_stamp_guard(book_env):
     assert len(r["issues"]) == 3
     v1_calls = [c for c in mock.calls if "五维审校" in c["user"] or "评分锚点" in c["user"]]
     assert len(v1_calls) == 2  # 复审确实发生且未被再次触发
+
+
+def test_scene_mode_generation(book_env):
+    """场景级生成：逐场景独立调用再缝合，总字数落区间。"""
+    from ainovel import books as B
+
+    book, _ = book_env
+    cfg = B.load_config(book)
+    cfg["scene_mode"] = True
+    cfg["chapter_word_range"] = [2200, 2800]
+    B.save_config(book, cfg)
+    mock = MockLLM()
+    pipeline.generate_outline(book, 5, client=mock)  # ch5 走 W1
+    pipeline.confirm_outline(book, 5)
+    r = pipeline.generate_prose(book, 5, client=mock)
+    assert r["mode"] == "scene"
+    n_scenes = len(pipeline.chapters.read_outline_contract(book, 5)["scenes"])
+    prose_calls = [c for c in mock.calls if "本章上下文" in c["user"] or "场景生成任务" in c["user"]]
+    assert len(prose_calls) == n_scenes  # 每个细纲场景一次调用
+    body = chapters.read_prose(book, 5)["_body"]
+    assert 2200 <= mechcheck.count_words(body) <= 2800
+    # 每次调用都带场景任务与衔接
+    assert f"场景 1/{n_scenes}" in prose_calls[0]["user"]
+    if n_scenes >= 2:
+        assert "上一场景结尾" in prose_calls[1]["user"]
+
+
+def test_style_excerpt_and_points(book_env):
+    """范文截取与文风要点：有语料时产出非空，无语料时安全为空。"""
+    from ainovel import pipeline as P, style
+
+    book, _ = book_env
+    assert P._style_excerpt(book) == ""
+    assert "未启用" in P._style_points(book)
+    style.write_corpus(book, "他推开门。\n\n屋子很冷。\n\n" * 200)
+    assert len(P._style_excerpt(book)) > 100
+    style.write_card(book, "## 句法特征\n短句为主。\n\n## 禁忌清单\n禁四字成语。\n")
+    assert "短句为主" in P._style_points(book) and "四字成语" in P._style_points(book)
