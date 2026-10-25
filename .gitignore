@@ -9,3 +9,4 @@ data/*
 books/*
 !books/.gitkeep
 node_modules/
+.husky/_/

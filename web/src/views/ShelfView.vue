@@ -1,52 +1,52 @@
 <script setup lang="ts">
 // 书架页（规格04 §1）：新建向导 + 书列表，删除二次确认。
-import { ElMessage, ElMessageBox } from "element-plus";
-import { onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
-import { createBook, deleteBook, listBooks } from "@/api";
-import type { BookCard } from "@/api/types";
-import { useBookStore } from "@/stores/book";
+import { createBook, deleteBook, listBooks } from '@/api'
+import type { BookCard } from '@/api/types'
+import { useBookStore } from '@/stores/book'
 
-const router = useRouter();
-const store = useBookStore();
-const books = ref<BookCard[]>([]);
+const router = useRouter()
+const store = useBookStore()
+const books = ref<BookCard[]>([])
 const genres = [
-  { value: "urban", label: "都市" },
-  { value: "xuanhuan", label: "玄幻" },
-  { value: "romance", label: "言情" },
-  { value: "suspense", label: "悬疑" },
-];
+  { value: 'urban', label: '都市' },
+  { value: 'xuanhuan', label: '玄幻' },
+  { value: 'romance', label: '言情' },
+  { value: 'suspense', label: '悬疑' },
+]
 const form = ref({
-  name: "",
-  genre_template: "urban",
+  name: '',
+  genre_template: 'urban',
   target_words: 1_000_000,
-  author: "",
-  platform: "番茄",
-});
+  author: '',
+  platform: '番茄',
+})
 
 async function load(): Promise<void> {
-  books.value = await listBooks();
+  books.value = await listBooks()
 }
-onMounted(() => void load().catch(() => {}));
+onMounted(() => void load().catch(() => {}))
 
 function open(name: string): void {
-  store.setCurrentBook(name);
-  router.push(`/book/${encodeURIComponent(name)}`);
+  store.setCurrentBook(name)
+  router.push(`/book/${encodeURIComponent(name)}`)
 }
 
 async function create(): Promise<void> {
-  const name = form.value.name.trim();
+  const name = form.value.name.trim()
   if (!name) {
-    ElMessage.warning("书名必填");
-    return;
+    ElMessage.warning('书名必填')
+    return
   }
   try {
-    await createBook({ ...form.value, name });
-    ElMessage.success("已创建");
-    form.value.name = "";
-    await load();
-    open(name);
+    await createBook({ ...form.value, name })
+    ElMessage.success('已创建')
+    form.value.name = ''
+    await load()
+    open(name)
   } catch {
     // 拦截器已提示
   }
@@ -56,18 +56,18 @@ async function del(name: string): Promise<void> {
   try {
     await ElMessageBox.confirm(
       `删除《${name}》将删除 books/${name}/ 整个目录（含全部章节与档案），不可恢复。确认？`,
-      "删除书",
-      { type: "warning" },
-    );
-    await ElMessageBox.confirm(`再次确认：真的删除《${name}》？`, "删除书", { type: "warning" });
+      '删除书',
+      { type: 'warning' },
+    )
+    await ElMessageBox.confirm(`再次确认：真的删除《${name}》？`, '删除书', { type: 'warning' })
   } catch {
-    return; // 用户取消
+    return // 用户取消
   }
   try {
-    await deleteBook(name);
-    ElMessage.success("已删除");
-    if (store.currentBook === name) store.clearBook();
-    await load();
+    await deleteBook(name)
+    ElMessage.success('已删除')
+    if (store.currentBook === name) store.clearBook()
+    await load()
   } catch {
     // 拦截器已提示
   }
@@ -79,7 +79,12 @@ async function del(name: string): Promise<void> {
     <h3 class="panel-title">新建书</h3>
     <el-form inline label-width="auto">
       <el-form-item label="书名">
-        <el-input v-model="form.name" placeholder="书名" style="width: 160px" @keyup.enter="create" />
+        <el-input
+          v-model="form.name"
+          placeholder="书名"
+          style="width: 160px"
+          @keyup.enter="create"
+        />
       </el-form-item>
       <el-form-item label="题材">
         <el-select v-model="form.genre_template" style="width: 100px">
@@ -87,7 +92,12 @@ async function del(name: string): Promise<void> {
         </el-select>
       </el-form-item>
       <el-form-item label="目标字数">
-        <el-input-number v-model="form.target_words" :min="100000" :step="100000" style="width: 140px" />
+        <el-input-number
+          v-model="form.target_words"
+          :min="100000"
+          :step="100000"
+          style="width: 140px"
+        />
       </el-form-item>
       <el-form-item label="笔名">
         <el-input v-model="form.author" placeholder="可空" style="width: 110px" />
@@ -106,8 +116,8 @@ async function del(name: string): Promise<void> {
     <div v-for="b in books" :key="b.name" class="panel mb-0">
       <div class="font-bold">{{ b.title || b.name }}</div>
       <div class="dim mt-1">
-        {{ b.genre }} · {{ ((b.target_words ?? 0) / 10000).toFixed(0) }}万字 ·
-        {{ b.platform }} · {{ b.status }}
+        {{ b.genre }} · {{ ((b.target_words ?? 0) / 10000).toFixed(0) }}万字 · {{ b.platform }} ·
+        {{ b.status }}
       </div>
       <div class="mt-2 flex gap-2">
         <el-button type="primary" @click="open(b.name)">打开</el-button>

@@ -37,6 +37,7 @@ python run.py            # 打开 http://127.0.0.1:8765
 python -m pytest tests/          # 82 项全绿（管线全链路用 MockLLM，不耗 token）
 python scripts/smoke.py          # 端到端冒烟（跑在临时目录，不污染仓库）
 cd web && npm run typecheck      # 前端严格类型检查（vue-tsc）
+cd web && npm run lint:check     # 前端 ESLint 检查
 ```
 
 ## 单章闭环（规格03 §1）

@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
-import { useRoute } from "vue-router";
+import { onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 
-import { useBookStore } from "@/stores/book";
+import { useBookStore } from '@/stores/book'
 
-const store = useBookStore();
-const route = useRoute();
-let timer: number | undefined;
+const store = useBookStore()
+const route = useRoute()
+let timer: number | undefined
 
 onMounted(() => {
-  void store.refreshConflicts();
-  timer = window.setInterval(() => void store.refreshConflicts(), 15000);
-});
+  void store.refreshConflicts()
+  timer = window.setInterval(() => void store.refreshConflicts(), 15000)
+})
 onUnmounted(() => {
-  if (timer !== undefined) window.clearInterval(timer);
-});
+  if (timer !== undefined) window.clearInterval(timer)
+})
 </script>
 
 <template>

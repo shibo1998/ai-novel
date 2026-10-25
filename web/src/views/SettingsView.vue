@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 设置页（规格04 §1）：API 连接 / 单价 / lint 词库 / 系统维护。
-import { ElMessage } from "element-plus";
-import { onMounted, ref } from "vue";
+import { ElMessage } from 'element-plus'
+import { onMounted, ref } from 'vue'
 
 import {
   getFtsMode,
@@ -11,74 +11,74 @@ import {
   putSettings,
   rebuildDb,
   testConnection,
-} from "@/api";
-import type { ConnTestResult } from "@/api";
-import type { AppSettings } from "@/api/types";
+} from '@/api'
+import type { ConnTestResult } from '@/api'
+import type { AppSettings } from '@/api/types'
 
-const settings = ref<AppSettings | null>(null);
-const keyInput = ref("");
-const baseUrl = ref("");
-const defaultModel = ref("");
-const pricesText = ref("");
-const connResult = ref<ConnTestResult | null>(null);
+const settings = ref<AppSettings | null>(null)
+const keyInput = ref('')
+const baseUrl = ref('')
+const defaultModel = ref('')
+const pricesText = ref('')
+const connResult = ref<ConnTestResult | null>(null)
 
 const lintOptions = [
-  { value: "banned_words", label: "禁词表（M-02）" },
-  { value: "sensitive_words", label: "敏感词红线（M-04）" },
-  { value: "dialog_suffix", label: "对话后缀禁式（M-03）" },
-];
-const lintWhich = ref("banned_words");
-const lintText = ref("");
-const ftsMode = ref("");
-const rebuildResult = ref("");
+  { value: 'banned_words', label: '禁词表（M-02）' },
+  { value: 'sensitive_words', label: '敏感词红线（M-04）' },
+  { value: 'dialog_suffix', label: '对话后缀禁式（M-03）' },
+]
+const lintWhich = ref('banned_words')
+const lintText = ref('')
+const ftsMode = ref('')
+const rebuildResult = ref('')
 
 async function load(): Promise<void> {
-  settings.value = await getSettings();
-  const p = settings.value.providers?.openai ?? {};
-  baseUrl.value = p.base_url ?? "";
-  defaultModel.value = settings.value.default_model ?? "";
-  pricesText.value = JSON.stringify(settings.value.prices ?? {}, null, 2);
-  ftsMode.value = (await getFtsMode()).mode;
+  settings.value = await getSettings()
+  const p = settings.value.providers?.openai ?? {}
+  baseUrl.value = p.base_url ?? ''
+  defaultModel.value = settings.value.default_model ?? ''
+  pricesText.value = JSON.stringify(settings.value.prices ?? {}, null, 2)
+  ftsMode.value = (await getFtsMode()).mode
 }
-onMounted(() => void load().catch(() => {}));
+onMounted(() => void load().catch(() => {}))
 
 async function saveProviders(): Promise<void> {
   try {
-    const cur = await getSettings();
-    const key = keyInput.value.trim();
+    const cur = await getSettings()
+    const key = keyInput.value.trim()
     // 输入框留空或仍是掩码占位则保留原 key
-    const apiKey = !key || key.includes("…") ? cur.providers?.openai?.api_key ?? "" : key;
+    const apiKey = !key || key.includes('…') ? (cur.providers?.openai?.api_key ?? '') : key
     await putSettings({
       providers: { openai: { api_key: apiKey, base_url: baseUrl.value.trim() } },
       default_model: defaultModel.value.trim(),
-    });
-    ElMessage.success("已保存");
-    await load();
+    })
+    ElMessage.success('已保存')
+    await load()
   } catch {
     // 拦截器已提示
   }
 }
 
 async function testConn(): Promise<void> {
-  connResult.value = null;
+  connResult.value = null
   try {
-    connResult.value = await testConnection();
+    connResult.value = await testConnection()
   } catch {
     // 拦截器已提示
   }
 }
 
 async function savePrices(): Promise<void> {
-  let prices: unknown;
+  let prices: unknown
   try {
-    prices = JSON.parse(pricesText.value) as unknown;
+    prices = JSON.parse(pricesText.value) as unknown
   } catch {
-    ElMessage.error("单价不是合法 JSON");
-    return;
+    ElMessage.error('单价不是合法 JSON')
+    return
   }
   try {
-    await putSettings({ prices });
-    ElMessage.success("已保存");
+    await putSettings({ prices })
+    ElMessage.success('已保存')
   } catch {
     // 拦截器已提示
   }
@@ -86,7 +86,7 @@ async function savePrices(): Promise<void> {
 
 async function loadLint(): Promise<void> {
   try {
-    lintText.value = (await getLint(lintWhich.value)).content;
+    lintText.value = (await getLint(lintWhich.value)).content
   } catch {
     // 拦截器已提示
   }
@@ -94,8 +94,8 @@ async function loadLint(): Promise<void> {
 
 async function saveLint(): Promise<void> {
   try {
-    await putLint(lintWhich.value, lintText.value);
-    ElMessage.success("词库已保存");
+    await putLint(lintWhich.value, lintText.value)
+    ElMessage.success('词库已保存')
   } catch {
     // 拦截器已提示
   }
@@ -103,9 +103,9 @@ async function saveLint(): Promise<void> {
 
 async function rebuild(): Promise<void> {
   try {
-    const r = await rebuildDb();
-    rebuildResult.value = JSON.stringify(r);
-    ElMessage.success("重建完成");
+    const r = await rebuildDb()
+    rebuildResult.value = JSON.stringify(r)
+    ElMessage.success('重建完成')
   } catch {
     // 拦截器已提示
   }
@@ -147,7 +147,7 @@ async function rebuild(): Promise<void> {
           <el-button @click="testConn">测试连接</el-button>
           <span v-if="connResult" class="text-xs">
             <el-tag :type="connResult.ok ? 'success' : 'danger'" size="small">
-              {{ connResult.ok ? "OK" : "失败" }}
+              {{ connResult.ok ? 'OK' : '失败' }}
             </el-tag>
             {{ connResult.ok ? `${connResult.model}：${connResult.reply}` : connResult.error }}
           </span>
@@ -180,7 +180,7 @@ async function rebuild(): Promise<void> {
           <el-button @click="rebuild">从文件重建 SQLite 索引</el-button>
           <span class="dim mono">{{ rebuildResult }}</span>
         </div>
-        <div class="dim mt-1">FTS 模式：{{ ftsMode || "…" }}（trigram 不可用时自动 bigram）</div>
+        <div class="dim mt-1">FTS 模式：{{ ftsMode || '…' }}（trigram 不可用时自动 bigram）</div>
       </div>
     </div>
   </div>

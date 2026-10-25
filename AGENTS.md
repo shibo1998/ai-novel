@@ -16,6 +16,8 @@ python scripts/smoke.py        # 端到端冒烟，跑在临时目录，不污�
 python run.py                  # 启动 Web UI（http://127.0.0.1:8765）
 cd web && npm install          # 首次或依赖变更后
 npm run build                  # 前端构建（产物 web/dist/，FastAPI 静态挂载）
+npm run lint                   # 前端 ESLint 检查 + 自动修复
+npm run format                 # 前端 Prettier 格式化
 npm run typecheck              # 前端严格类型检查（vue-tsc）
 npm run dev                    # 前端开发模式（/api 代理到 8765，与 python run.py 并行）
 ```
@@ -38,7 +40,7 @@ npm run dev                    # 前端开发模式（/api 代理到 8765，与 
 
 - 路径解析顺序：`AINOVEL_HOME` → PyInstaller frozen（exe 所在目录）→ 包父目录。改路径逻辑要同时照顾三种模式。
 - FTS5 trigram 不可用时自动降级 bigram；trigram 模式下 2 字关键词（角色名）走 Python 子串兜底——这是有意设计，删掉会坏中文角色名检索。
-- `web/` 是 Vue3 + TS + vue-router + pinia + element-plus + vite + sass + tailwindcss 前端工程（规格04 §0）。UI 改动走 npm 流程，`npm run build` 通过才算完成；`web/dist/` 是构建产物**禁止手改**；改页面涉及接口时以 `ainovel/api.py` 契约为准。
+- `web/` 是 Vue3 + TS + vue-router + pinia + element-plus + vite + sass + tailwindcss 前端工程（规格04 §0）。UI 改动走 npm 流程，`npm run build` 通过才算完成；`web/dist/` 是构建产物**禁止手改**；改页面涉及接口时以 `ainovel/api.py` 契约为准。提交暂存的前端文件会触发 pre-commit 钩子（lint-staged：eslint --fix + prettier --write），提交前先 `npm run lint && npm run format`，钩子的自动修改会并入本次提交。
 - `dist/`、`build/` 是 PyInstaller 产物，不要编辑；打包后需手工把 `prompts/ lint/ web/dist` 拷到 exe 旁（流程见 README）。
 - 仓库已 git init。`data/settings.json` 含 API key，`.gitignore` 已挡住 `data/`、`books/`、`node_modules/`——**绝不能**把 key 写进代码、日志或任何会进入版本控制的文件。
 
@@ -49,7 +51,7 @@ npm run dev                    # 前端开发模式（/api 代理到 8765，与 
 
 ## 验收标准
 
-改动算完成 = pytest 全绿 + smoke 通过；若动了管线/状态机/文件格式，README 偏差记录与相关 docstring 的规格引用已同步更新。
+改动算完成 = pytest 全绿 + smoke 通过；改 `web/` 前端时另需 `npm run lint:check`、`npm run typecheck`、`npm run build` 全过；若动了管线/状态机/文件格式，README 偏差记录与相关 docstring 的规格引用已同步更新。
 
 ## 风格
 

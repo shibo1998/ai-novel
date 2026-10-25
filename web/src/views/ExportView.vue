@@ -1,32 +1,32 @@
 <script setup lang="ts">
 // 导出页（规格04 §1）：章节合并导出 txt / 全书打包 zip（后端 POST，blob 下载）。
-import { ElMessage } from "element-plus";
-import { onMounted, ref } from "vue";
+import { ElMessage } from 'element-plus'
+import { onMounted, ref } from 'vue'
 
-import { exportTxt, exportZip, listBooks } from "@/api";
-import type { BookCard } from "@/api/types";
+import { exportTxt, exportZip, listBooks } from '@/api'
+import type { BookCard } from '@/api/types'
 
-const books = ref<BookCard[]>([]);
-const selected = ref("");
+const books = ref<BookCard[]>([])
+const selected = ref('')
 
 onMounted(() => {
   void listBooks()
     .then((bs) => {
-      books.value = bs;
-      if (!selected.value && bs.length) selected.value = bs[0]!.name;
+      books.value = bs
+      if (!selected.value && bs.length) selected.value = bs[0]!.name
     })
-    .catch(() => {});
-});
+    .catch(() => {})
+})
 
-async function download(kind: "txt" | "zip"): Promise<void> {
+async function download(kind: 'txt' | 'zip'): Promise<void> {
   if (!selected.value) {
-    ElMessage.warning("先选书");
-    return;
+    ElMessage.warning('先选书')
+    return
   }
   try {
-    if (kind === "txt") await exportTxt(selected.value);
-    else await exportZip(selected.value);
-    ElMessage.success("已开始下载");
+    if (kind === 'txt') await exportTxt(selected.value)
+    else await exportZip(selected.value)
+    ElMessage.success('已开始下载')
   } catch {
     // 拦截器已提示
   }

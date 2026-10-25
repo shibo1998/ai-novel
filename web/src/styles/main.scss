@@ -12,7 +12,7 @@ html.dark {
 body {
   margin: 0;
   background: var(--el-bg-color-page);
-  font-family: "Microsoft YaHei", system-ui, sans-serif;
+  font-family: 'Microsoft YaHei', system-ui, sans-serif;
   font-size: 14px;
 }
 
@@ -38,7 +38,7 @@ body {
   font-size: 12px;
 }
 .mono {
-  font-family: Consolas, "Courier New", monospace;
+  font-family: Consolas, 'Courier New', monospace;
 }
 .cost-warn {
   color: var(--el-color-warning);
@@ -56,7 +56,7 @@ body {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: Consolas, 'Courier New', monospace;
   font-size: 12.5px;
   line-height: 1.6;
 }

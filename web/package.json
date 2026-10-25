@@ -7,7 +7,21 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "eslint . --fix",
+    "lint:check": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "node scripts/prepare-husky.mjs"
+  },
+  "lint-staged": {
+    "*.{ts,mts,tsx,vue,js,mjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{css,scss,json,html}": [
+      "prettier --write"
+    ]
   },
   "dependencies": {
     "@vueuse/core": "^13.0.0",
@@ -21,6 +35,13 @@
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.0.0",
     "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "@vue/eslint-config-typescript": "^14.9.0",
+    "eslint": "^10.13.0",
+    "eslint-plugin-vue": "^10.11.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
     "sass": "^1.80.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~5.9.0",

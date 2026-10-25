@@ -1,0 +1,6 @@
+# 前端暂存文件：eslint --fix + prettier --write（lint-staged 在 web/ 下按相对路径匹配）
+command -v node >/dev/null 2>&1 || exit 0
+cd "$(git rev-parse --show-toplevel)/web" || exit 0
+if [ -f node_modules/lint-staged/bin/lint-staged.js ]; then
+  exec node node_modules/lint-staged/bin/lint-staged.js
+fi
