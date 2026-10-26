@@ -895,8 +895,13 @@ def check_status(book: str, no: int):
     ineffective = json.loads(last.get("ineffective_json") or "[]")
     issues = json.loads(last.get("issues_json") or "[]")
     checked_fp = st["checked_fingerprint"]
-    stale = bool(checked_fp) and checked_fp != current
-    verdict = "stale" if stale else st["checked_status"]
+    if not checked_fp and last:
+        # 指纹上线前的老记录：无法证明它判的是当前这版正文 → 一律按过期处理。
+        # 宁可让人多点一次「重跑机检」，也不能让旧结论冒充"已通过"。
+        stale = True
+    else:
+        stale = bool(checked_fp) and checked_fp != current
+    verdict = "stale" if stale else (st["checked_status"] or last.get("verdict"))
     return {
         "verdict": verdict,
         "checked_status": st["checked_status"],

@@ -951,7 +951,9 @@ async function rewrite(): Promise<void> {
       <div class="panel">
         <h3 class="panel-title">③ 机械检查（零 token）</h3>
         <div class="mb-2 flex flex-wrap items-center gap-2">
-          <el-button type="primary" @click="mech">跑机械检查（含自动修复1轮）</el-button>
+          <el-button type="primary" :disabled="data?.status === 'finalized'" @click="mech">
+            跑机械检查（含自动修复1轮）
+          </el-button>
           <!-- 章内自动编排（规格01 §4）：机检 → 审校 → 再机检，上限 3 轮，到人工关/待定稿即停 -->
           <el-button :loading="autoRunning" :disabled="autoRunning" @click="runAuto">
             一键跑完本章（机检→审校→再机检）

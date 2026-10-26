@@ -113,6 +113,20 @@ class TestFailClosed:
         assert db.get_check_status(book_id=books.book_id(book),
                                    chapter_no=1)["checked_status"] == "stale"
 
+        # 指纹上线前的老记录（无 checked_fingerprint）不能被当成"已通过"
+        with db.tx() as conn:
+            conn.execute("UPDATE chapters SET checked_fingerprint=NULL, checked_status=NULL "
+                         "WHERE book_id=? AND no=?", (books.book_id(book), 1))
+        old = client.get(f"/api/books/{book}/chapters/1/checkstatus").json()
+        assert old["stale"] is True and old["verdict"] == "stale"
+
+        # 指纹上线前的老记录（无 checked_fingerprint）不能被当成"已通过"
+        with db.tx() as conn:
+            conn.execute("UPDATE chapters SET checked_fingerprint=NULL, checked_status=NULL "
+                         "WHERE book_id=? AND no=?", (books.book_id(book), 1))
+        old = client.get(f"/api/books/{book}/chapters/1/checkstatus").json()
+        assert old["stale"] is True and old["verdict"] == "stale"
+
     def test_t06_fingerprint_is_stable(self):
         body = "他在雨里站了很久。\r\n\n\n第三段。  "
         assert mechcheck.fingerprint(body) == mechcheck.fingerprint(body)
