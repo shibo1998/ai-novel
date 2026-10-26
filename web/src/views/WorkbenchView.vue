@@ -11,17 +11,21 @@ import {
   generateOutlineG6,
   getAssemblyPreview,
   getOutlineRaw,
+  getSnapshot,
   getWorkbench,
   listVersions,
   putChapterOutline,
+  putProse,
+  retryChapter,
   rewriteFrom,
   runExempt,
   runFix,
   runMechcheck,
   runPolish,
   runReview,
+  unlockChapter,
 } from '@/api'
-import type { PreviewResult, VersionInfo, WorkbenchData } from '@/api/types'
+import type { PreviewResult, SnapshotDetail, VersionInfo, WorkbenchData } from '@/api/types'
 import { useBookStore } from '@/stores/book'
 import { tagType } from '@/utils/status'
 
@@ -34,6 +38,7 @@ const no = computed(() => Number(route.params.no ?? 1) || 1)
 const data = ref<WorkbenchData | null>(null)
 const versions = ref<VersionInfo[]>([])
 const rewriteVer = ref<number | null>(null)
+const viewVer = ref<number | null>(null)
 
 const promptOptions = [
   { value: '', label: '自动（卷首三章W3 / 其余W1）' },
@@ -43,8 +48,8 @@ const promptOptions = [
 ]
 const promptId = ref('')
 const generating = ref(false)
+const retrying = ref(false)
 const streamText = ref('（生成区）')
-const streamBox = ref<HTMLElement | null>(null)
 let abortCtrl: AbortController | null = null
 
 onUnmounted(() => abortCtrl?.abort())
@@ -52,6 +57,151 @@ onUnmounted(() => abortCtrl?.abort())
 const rawDialog = ref(false)
 const rawText = ref('')
 const preview = ref<PreviewResult | null>(null)
+
+// —— 正文按行渲染 + 机检/审校命中跳转（规格04 §2「点击跳转正文位置」）——
+// 生成区必须是可定位的：把正文按行拆成 div，机检命中带 line 就直接滚到那一行并高亮 2 秒。
+// 流式生成期间显示流式缓冲（streamText），生成结束后以落盘正文为准。
+const proseLines = computed(() =>
+  (generating.value ? streamText.value : (data.value?.prose?._body ?? streamText.value)).split(
+    /\r?\n/,
+  ),
+)
+const hitLine = ref<number | null>(null)
+const proseBox = ref<HTMLElement | null>(null)
+let hitTimer: number | undefined
+
+function jumpToLine(line: number): void {
+  if (!line || line < 1) return
+  hitLine.value = line
+  void nextTick(() => {
+    const el = proseBox.value?.querySelector<HTMLElement>(`[data-line="${line}"]`)
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  })
+  if (hitTimer !== undefined) window.clearTimeout(hitTimer)
+  hitTimer = window.setTimeout(() => (hitLine.value = null), 2000)
+}
+onUnmounted(() => {
+  if (hitTimer !== undefined) window.clearTimeout(hitTimer)
+})
+
+/** 审校 issue 的 location 字段（形如"第3段/第12行/正文开头"）里抽行号，抽不到返回 0。 */
+function lineFromLocation(location: string): number {
+  const m = /第\s*(\d+)\s*行/.exec(location ?? '')
+  return m ? Number(m[1]) : 0
+}
+
+// —— 快照回看（规格04 §2「版本列表可回看任意快照」；只读，不触发重写）——
+const snapshotDialog = ref(false)
+const snapshotLoading = ref(false)
+const snapshotData = ref<SnapshotDetail | null>(null)
+
+async function viewSnapshot(version: number | null): Promise<void> {
+  if (version == null) {
+    ElMessage.warning('先选一个快照版本')
+    return
+  }
+  snapshotLoading.value = true
+  snapshotDialog.value = true
+  snapshotData.value = null
+  try {
+    snapshotData.value = await getSnapshot(book.value, no.value, version)
+  } catch {
+    snapshotDialog.value = false // 拦截器已提示
+  } finally {
+    snapshotLoading.value = false
+  }
+}
+
+// —— 人工手改正文（规格03 §2.5 人工关三选项之一）——
+// finalized 状态由后端拒绝（400）；前端按钮同时禁用，避免用户白点。
+const proseDialog = ref(false)
+const proseEditText = ref('')
+const proseSaving = ref(false)
+const canEditProse = computed(() =>
+  [
+    'generating',
+    'mech_check',
+    'lint_fix',
+    'llm_review',
+    'targeted_fix',
+    'human_review',
+    'pending_finalize',
+    'error',
+  ].includes(data.value?.status ?? ''),
+)
+
+function openProseEdit(): void {
+  proseEditText.value = data.value?.prose?._body ?? ''
+  proseDialog.value = true
+}
+
+async function saveProseEdit(): Promise<void> {
+  proseSaving.value = true
+  try {
+    const r = await putProse(book.value, no.value, proseEditText.value)
+    ElMessage.success(`正文已保存，${r.word_count} 字`)
+    proseDialog.value = false
+    await reload()
+  } catch {
+    // 拦截器已提示（含 finalized 拒绝）
+  } finally {
+    proseSaving.value = false
+  }
+}
+
+// —— 一键跑完本章（规格01 §4 章内自动编排）——
+// 顺序：机检 → （到 llm_review 则）审校 → （回 mech_check 则）再机检，循环上限 3 轮；
+// 任一步进 human_review / error 就停并说明需人工处理。每步后 reload 取最新状态再决定。
+const autoRunning = ref(false)
+const autoLog = ref<string[]>([])
+
+function autoNote(msg: string): void {
+  autoLog.value = [...autoLog.value, `${new Date().toLocaleTimeString()} ${msg}`]
+}
+
+const AUTO_TERMINAL = ['pending_finalize', 'human_review', 'finalized', 'error']
+
+async function runAuto(): Promise<void> {
+  autoRunning.value = true
+  autoLog.value = []
+  let rounds = 0
+  try {
+    let status = data.value?.status ?? ''
+    if (status !== 'mech_check') {
+      ElMessage.warning(`当前状态 ${status || '未知'} 不能自动编排（需先有正文并进入 mech_check）`)
+      return
+    }
+    while (rounds < 3) {
+      rounds++
+      autoNote(`第 ${rounds} 轮 · 跑机械检查…`)
+      const m = await runMechcheck(book.value, no.value)
+      await reload()
+      status = m.status
+      autoNote(`机检完成 → 状态 ${status}`)
+      if (AUTO_TERMINAL.includes(status)) break
+      if (status !== 'llm_review') break
+      autoNote('跑 LLM 审校（P-V1 五维）…')
+      const r = await runReview(book.value, no.value)
+      await reload()
+      status = r.status
+      autoNote(`审校 verdict=${r.verdict} → 状态 ${status}`)
+      if (AUTO_TERMINAL.includes(status)) break
+      if (status !== 'mech_check') break
+    }
+    const final = data.value?.status ?? status
+    if (final === 'pending_finalize')
+      ElMessage.success('自动编排完成：已到待定稿（可人工通读后定稿）')
+    else if (final === 'human_review')
+      ElMessage.warning('自动编排停止：需人工处理（审校未通过/机检仍阻断）')
+    else if (final === 'error')
+      ElMessage.error('自动编排停止：状态 error，请点上方「重试」恢复后再试')
+    else ElMessage.info(`自动编排停止：当前状态 ${final}（已达轮次上限或状态不适用）`)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    autoRunning.value = false
+  }
+}
 
 const outlineEditable = computed(() =>
   ['awaiting_outline', 'outline_draft', 'error'].includes(data.value?.status ?? ''),
@@ -82,7 +232,8 @@ watch(
 
 watch(streamText, () => {
   void nextTick(() => {
-    if (streamBox.value) streamBox.value.scrollTop = streamBox.value.scrollHeight
+    // 流式生成时自动滚底；命中跳转高亮期间不打扰用户阅读
+    if (proseBox.value && !hitLine.value) proseBox.value.scrollTop = proseBox.value.scrollHeight
   })
 })
 
@@ -91,6 +242,35 @@ async function reload(): Promise<void> {
     await load()
   } catch {
     // 拦截器已提示
+  }
+}
+
+// —— error 救援：把章节从 error 恢复到出错前状态（规格01 §4、规格03 §3） ——
+// 不改正文、不删版本，只是让状态机走 error --retry--> prev_status，
+// 让用户能重新点生成/机检。没有这个入口，error 章只能刷新页面干看。
+// 恢复目标由后端记的 prev_status 决定：正文生成中途失败会被记成 outline_locked
+// （generating 是瞬态，不能作为停留点），机检/审校失败记各自状态。
+// 这里把真实目标显示出来，别让用户猜。
+const restoreTo = computed(() => {
+  const v = data.value?.row?.['prev_status']
+  return typeof v === 'string' && v ? v : '出错前状态'
+})
+
+async function retry(): Promise<void> {
+  retrying.value = true
+  try {
+    const r = await retryChapter(book.value, no.value)
+    // 回到 outline_locked 说明是正文生成失败：状态机已允许重新生成，提示直接点生成
+    ElMessage.success(
+      r.status === 'outline_locked'
+        ? '已退回到 outline_locked：直接点「开始生成（流式）」重新生成本章'
+        : `已恢复到 ${r.status}（可重新执行该步）`,
+    )
+    await reload()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    retrying.value = false
   }
 }
 
@@ -377,6 +557,28 @@ async function finalize(): Promise<void> {
   }
 }
 
+// —— 定稿返工：先解锁，再走手改/修复/重写（规格01 §4 finalized --unlock--> pending_finalize）——
+// 定稿后正文受快照保护，直接改会造成「正文已变/快照未变/导出对不上」。
+// 解锁只是把状态退回 pending_finalize，不动正文、不动快照、不开新版本。
+async function unlock(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      '解锁后本章退回「待定稿」，可重新手改正文或定向修复；已产生的快照与版本历史都会保留。确认解锁？',
+      '定稿返工',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const r = await unlockChapter(book.value, no.value)
+    ElMessage.success(`已解锁，状态 → ${r.status}（现在可以手改正文/修复，改完重新定稿）`)
+    await reload()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
 async function loadVersions(): Promise<void> {
   try {
     versions.value = await listVersions(book.value, no.value)
@@ -423,7 +625,15 @@ async function rewrite(): Promise<void> {
     >
     <el-tag v-if="data?.golden3" type="warning" size="small">黄金三章专项</el-tag>
     <span class="flex-1"></span>
+    <el-button v-if="data?.status === 'error'" type="warning" :loading="retrying" @click="retry">
+      重试（恢复到 {{ restoreTo }}）
+    </el-button>
     <el-button @click="reload">刷新</el-button>
+    <div v-if="data?.status === 'error'" class="dim mt-1 w-full">
+      本章处于 error：上一次生成/检查中途失败（如 LLM
+      网络抖动），正文可能是残稿。点「重试」把状态退回出错前的
+      {{ restoreTo }}，不改已有正文与快照，之后可重新执行该步；只点「刷新」状态不会变。
+    </div>
   </div>
 
   <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
@@ -502,8 +712,27 @@ async function rewrite(): Promise<void> {
               :value="o.value"
             />
           </el-select>
+          <!-- 人工手改正文（规格03 §2.5 三选项之一）：finalized 由后端 400 拒绝，这里同步禁用 -->
+          <el-button :disabled="!canEditProse" @click="openProseEdit">
+            {{ data?.status === 'finalized' ? '编辑正文（已定稿，请先解锁）' : '编辑正文' }}
+          </el-button>
         </div>
-        <pre ref="streamBox" class="stream-box mt-2">{{ streamText }}</pre>
+        <!-- 按行渲染：机检/审校命中可跳到 [data-line] 并高亮（规格04 §2） -->
+        <div ref="proseBox" class="prose-scroll mt-2">
+          <div
+            v-for="(line, idx) in proseLines"
+            :key="idx"
+            :data-line="idx + 1"
+            class="prose-line"
+            :class="{ 'hit-active': hitLine === idx + 1 }"
+          >
+            <span class="line-no">{{ idx + 1 }}</span>
+            <span class="line-text">{{ line || ' ' }}</span>
+          </div>
+        </div>
+        <div class="dim mt-1">
+          共 {{ proseLines.length }} 行 · 点击右侧机械检查/审校命中项可跳到对应行
+        </div>
       </div>
 
       <!-- 装配预览 -->
@@ -534,7 +763,14 @@ async function rewrite(): Promise<void> {
         <h3 class="panel-title">③ 机械检查（零 token）</h3>
         <div class="mb-2 flex flex-wrap items-center gap-2">
           <el-button type="primary" @click="mech">跑机械检查（含自动修复1轮）</el-button>
+          <!-- 章内自动编排（规格01 §4）：机检 → 审校 → 再机检，上限 3 轮，到人工关/待定稿即停 -->
+          <el-button :loading="autoRunning" :disabled="autoRunning" @click="runAuto">
+            一键跑完本章（机检→审校→再机检）
+          </el-button>
           <span class="dim">阻断→自动 P-V5 修复一轮→重查；敏感词直接转人工</span>
+        </div>
+        <div v-if="autoLog.length" class="dim mb-2" style="max-height: 130px; overflow: auto">
+          <div v-for="(l, i) in autoLog" :key="i">{{ l }}</div>
         </div>
         <template v-if="data?.mech">
           <div class="mb-1">
@@ -542,12 +778,15 @@ async function rewrite(): Promise<void> {
               data.mech.verdict
             }}</el-tag>
             （{{ data.mech.issues.length }} 条）
+            <span class="dim">· 点条目跳转到正文对应行</span>
           </div>
           <div
             v-for="(i, idx) in data.mech.issues"
             :key="idx"
-            class="issue"
+            class="issue clickable"
             :class="{ blocking: i.level === 'block' }"
+            :title="`点击跳转到正文第 ${i.line} 行`"
+            @click="jumpToLine(i.line)"
           >
             <b>{{ i.rule }}</b>
             <el-tag :type="tagType(i.level)" size="small">{{ i.level }}</el-tag>
@@ -592,7 +831,16 @@ async function rewrite(): Promise<void> {
             v-for="(i, idx) in data.review.issues ?? []"
             :key="idx"
             class="issue"
-            :class="{ blocking: i.severity === 'blocking' }"
+            :class="{
+              blocking: i.severity === 'blocking',
+              clickable: lineFromLocation(i.location),
+            }"
+            :title="
+              lineFromLocation(i.location)
+                ? `点击跳转到正文第 ${lineFromLocation(i.location)} 行`
+                : ''
+            "
+            @click="jumpToLine(lineFromLocation(i.location))"
           >
             <b>{{ i.category }}</b>
             <el-tag :type="tagType(i.severity)" size="small">{{ i.severity }}</el-tag>
@@ -627,6 +875,33 @@ async function rewrite(): Promise<void> {
               :label="`v${v.version} ${v.label} ${v.created_at.slice(0, 16)}`"
             />
           </el-select>
+          <!-- 定稿返工：解锁后才能手改/修复（定稿后正文受快照保护） -->
+          <el-button v-if="data?.status === 'finalized'" type="warning" plain @click="unlock">
+            解锁返工（退回待定稿）
+          </el-button>
+        </div>
+        <div v-if="data?.status === 'finalized'" class="dim mt-1">
+          本章已定稿，正文受快照保护——「定向修复」「整章润色」「编辑正文」都会被拒绝。
+          要返工请先「解锁返工」：状态退回待定稿，快照与版本历史都保留，改完重新定稿即可。
+        </div>
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="dim">只读回看（不重写）：</span>
+          <el-select
+            v-model="viewVer"
+            placeholder="选择要回看的版本"
+            clearable
+            style="width: 260px"
+          >
+            <el-option
+              v-for="v in versions"
+              :key="v.version"
+              :value="v.version"
+              :label="`v${v.version} ${v.label} ${v.created_at.slice(0, 16)}`"
+            />
+          </el-select>
+          <el-button :loading="snapshotLoading" @click="viewSnapshot(viewVer)"
+            >查看该版本正文</el-button
+          >
         </div>
         <div class="dim mt-2">
           {{ versions.length ? `快照 ${versions.length} 个（定稿历史全保留）` : '（暂无快照）' }}
@@ -644,6 +919,44 @@ async function rewrite(): Promise<void> {
     <template #footer>
       <el-button @click="rawDialog = false">取消</el-button>
       <el-button type="primary" @click="saveRaw">保存细纲</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 快照回看（只读，规格04 §2「版本列表可回看任意快照」）-->
+  <el-dialog v-model="snapshotDialog" width="860px" top="4vh" destroy-on-close>
+    <template #header>
+      <span class="font-bold">快照回看（只读）</span>
+      <span v-if="snapshotData" class="dim ml-2">
+        v{{ snapshotData.version }} · {{ snapshotData.label }} · {{ snapshotData.created_at }}
+      </span>
+    </template>
+    <div v-if="snapshotLoading" class="dim">加载中…</div>
+    <template v-else-if="snapshotData">
+      <div class="dim mb-1">
+        {{ snapshotData.content.replace(/\s+/g, '').length }} 字 · 这是历史快照，不会改动当前正文
+      </div>
+      <pre class="stream-box">{{ snapshotData.content }}</pre>
+    </template>
+    <template #footer>
+      <el-button @click="snapshotDialog = false">关闭</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 人工手改正文（规格03 §2.5 人工关三选项之一）-->
+  <el-dialog v-model="proseDialog" width="90%" top="3vh" destroy-on-close>
+    <template #header>
+      <span class="font-bold">人工编辑正文 · 第 {{ no }} 章</span>
+      <span class="dim ml-2">
+        保存后 version 不变、status 保持 draft、word_count 由后端重算（规格03 §2.5）
+      </span>
+    </template>
+    <el-input v-model="proseEditText" type="textarea" :rows="24" class="mono" />
+    <template #footer>
+      <span class="dim mr-3">
+        当前 {{ proseEditText.replace(/\s+/g, '').length }} 字（中文字数按非空白字符计）
+      </span>
+      <el-button @click="proseDialog = false">取消</el-button>
+      <el-button type="primary" :loading="proseSaving" @click="saveProseEdit">保存正文</el-button>
     </template>
   </el-dialog>
 </template>

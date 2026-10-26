@@ -247,7 +247,7 @@ def rebuild() -> dict[str, Any]:
                        VALUES (?,?,?,?,?,?)
                        ON CONFLICT(book_id, no) DO UPDATE SET
                          title=excluded.title, current_version=excluded.current_version,
-                         updated_at=excluded.updated_at""",
+                         status=excluded.status, updated_at=excluded.updated_at""",
                     (book_id, chapter_no, title, status, version, now()),
                 )
                 report["chapters"] += 1

@@ -4,6 +4,10 @@
 - mech_check 自动 lint_fix 一轮后仍阻断 → human_review（规格03 §2.4"仍有阻断 → human_review"）
 - human_review --edit_outline--> outline_draft（规格03 §2.1"改细纲 = 回到 outline_draft"）
 - error 记录 prev_status，retry 恢复原状态
+- generating --fail--> error：正文生成中途异常（网络抖动/超时）必须可救援。
+  原实现 generating 只有 complete 一条出边，任何 LLM 异常都会把该章永久锁死在
+  generating（retry 事件非法、UI 无入口，只能删库）——规格03 §3 异常处理表要求
+  "仍败 → error 状态，UI 可一键重试"。
 """
 from __future__ import annotations
 
@@ -36,7 +40,15 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     ("human_review", "rewrite"): "generating",
     ("human_review", "approve"): "pending_finalize",
     ("pending_finalize", "finalize"): "finalized",
+    # 人工手改正文后必须重新过机械检查：否则改完就能直接定稿，
+    # 机检（M-01~M-11）等于被绕过（P1 审计：手改正文不推进状态的副作用）。
+    ("pending_finalize", "recheck"): "mech_check",
     ("finalized", "rewrite"): "generating",
+    # 救援出边（规格03 §3：仍败 → error 状态，UI 可一键重试）
+    # 正文生成中途异常必须可落 error，否则该章永久卡死在 generating。
+    ("generating", "fail"): "error",
+    ("generating", "abort"): "outline_locked",   # 放弃本次生成，退回可重新选择的干净状态
+    ("finalized", "unlock"): "pending_finalize",  # 定稿后返工：先解锁再走修复/重写
 }
 
 
@@ -97,6 +109,14 @@ def transition(book: str, no: int, event: str) -> str:
 
 
 def mark_error(book: str, no: int, message: str) -> None:
+    """记 error 并保存可恢复的落点（retry 事件据此恢复）。
+
+    特殊处理：generating 是「生成进行中」的瞬态，本身不是一个可停留的状态——
+    生成失败时若把 prev_status 记成 generating，retry 会恢复到 generating
+    这个半残态（正文可能一个字都没有），用户看不出该怎么继续。
+    因此 generating 失败时统一回落到 outline_locked（细纲已锁定、可直接重新生成），
+    符合规格03 §5「崩溃恢复」语义：重开提示"继续生成或重来"。
+    """
     from . import books
 
     ensure_chapter_row(book, no)
@@ -106,9 +126,12 @@ def mark_error(book: str, no: int, message: str) -> None:
             "SELECT status FROM chapters WHERE book_id=? AND no=?", (book_id, no)
         ).fetchone()
         if row["status"] != "error":
+            prev = row["status"]
+            if prev == "generating":
+                prev = "outline_locked"  # 不落在瞬态状态
             conn.execute(
                 "UPDATE chapters SET status='error', prev_status=?, updated_at=? WHERE book_id=? AND no=?",
-                (row["status"], db.now(), book_id, no),
+                (prev, db.now(), book_id, no),
             )
 
 

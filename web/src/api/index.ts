@@ -2,8 +2,11 @@
 import { http } from './client'
 import type {
   AppSettings,
+  AuditReport,
   AuditResult,
   BookCard,
+  BookConfig,
+  BookMeta,
   CharacterData,
   Conflict,
   FinalizeResult,
@@ -12,7 +15,9 @@ import type {
   Overview,
   PolishResult,
   PreviewResult,
+  ProseEditResult,
   ReviewResult,
+  SnapshotDetail,
   VersionInfo,
   WorkbenchData,
 } from './types'
@@ -42,7 +47,22 @@ export const deleteBook = (name: string): Promise<unknown> =>
 export const getOverview = (book: string): Promise<Overview> =>
   unwrap(http.get(`/api/books/${enc(book)}/overview`))
 
-// —— 档案：Bible / 角色 / 大纲 / 台账 / 文风 ——
+// —— 档案：meta / 书级 config ——
+// meta.md（规格01 §2.1）：title/author/genre/tags/target_words/chapter_word_range/
+// platform/benchmark_book/compliance_note/status 十个字段，UI 侧做成结构化表单。
+export const getMeta = (book: string): Promise<BookMeta> =>
+  unwrap(http.get(`/api/books/${enc(book)}/meta`))
+export const putMeta = (book: string, meta: BookMeta): Promise<BookMeta> =>
+  unwrap(http.put(`/api/books/${enc(book)}/meta`, meta))
+
+// 书级配置（规格01 §1 config.json）：model_stages 五档位 / chapter_word_range /
+// review_fix_max_rounds / scene_mode / lint_whitelist。
+export const getBookConfig = (book: string): Promise<BookConfig> =>
+  unwrap(http.get(`/api/books/${enc(book)}/config`))
+export const putBookConfig = (book: string, cfg: BookConfig): Promise<BookConfig> =>
+  unwrap(http.put(`/api/books/${enc(book)}/config`, cfg))
+
+// —— 档案：Bible / 角色 / 大纲 / 台账 / 地点 / 文风 ——
 export const getBible = (book: string): Promise<Record<string, string>> =>
   unwrap(http.get(`/api/books/${enc(book)}/bible`))
 export const putBible = (book: string, sections: Record<string, string>): Promise<unknown> =>
@@ -69,6 +89,12 @@ export const getPlotPoints = (book: string): Promise<Record<string, string>[]> =
   unwrap(http.get(`/api/books/${enc(book)}/plot_points`))
 export const putPlotPoints = (book: string, rows: Record<string, string>[]): Promise<unknown> =>
   unwrap(http.put(`/api/books/${enc(book)}/plot_points`, { rows }))
+
+// 地点档案（规格01 §2.6，5 列）：原先只有 GET、前端零入口，规格04 §1 要求可编辑。
+export const getLocations = (book: string): Promise<Record<string, string>[]> =>
+  unwrap(http.get(`/api/books/${enc(book)}/locations`))
+export const putLocations = (book: string, rows: Record<string, string>[]): Promise<unknown> =>
+  unwrap(http.put(`/api/books/${enc(book)}/locations`, { rows }))
 
 export interface StyleData {
   corpus: string
@@ -149,8 +175,16 @@ export const runExempt = (book: string, no: number, reason: string): Promise<unk
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/exempt`, { reason }))
 export const backToOutline = (book: string, no: number): Promise<unknown> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/edit-outline`))
+// error ──retry──▶ prev_status（规格01 §4：异常落 error 后由用户一键恢复，
+// 否则该章永久卡死在 error，点「刷新」状态也不会变）。
+export const retryChapter = (book: string, no: number): Promise<{ ok: boolean; status: string }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/retry`))
 export const finalizeChapter = (book: string, no: number): Promise<FinalizeResult> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/finalize`))
+// 定稿返工：finalized → pending_finalize。定稿后正文受快照保护，
+// 要手改/修复/重写得先解锁（否则后端一律 400「已定稿，请先解锁」）。
+export const unlockChapter = (book: string, no: number): Promise<{ ok: boolean; status: string }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/unlock`))
 export const listVersions = (book: string, no: number): Promise<VersionInfo[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/versions`))
 export const rewriteFrom = (
@@ -159,8 +193,20 @@ export const rewriteFrom = (
   base_version: number | null,
 ): Promise<{ ok: boolean; new_version: number }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/rewrite`, { base_version }))
+
+// 人工手改正文（规格03 §2.5 人工关三选项之一；finalized 状态后端返回 400）。
+// version 不变、status 保持 draft、word_count 由后端重算。
+export const putProse = (book: string, no: number, content: string): Promise<ProseEditResult> =>
+  unwrap(http.put(`/api/books/${enc(book)}/chapters/${no}/prose`, { content }))
+
+// 快照正文回看（规格04 §2「版本列表可回看任意快照」——只读，不触发重写）。
+export const getSnapshot = (book: string, no: number, version: number): Promise<SnapshotDetail> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/snapshots/${version}`))
 export const runAudit = (book: string, lastChapter: number): Promise<AuditResult> =>
   unwrap(http.post(`/api/books/${enc(book)}/audit/${lastChapter}`, null, { timeout: 0 }))
+// 卷末审计报告回看：审计结论写进 review_records，报告正文落在 books/<书名>/audits/*.md
+export const listAudits = (book: string): Promise<AuditReport[]> =>
+  unwrap(http.get(`/api/books/${enc(book)}/audits`))
 
 // —— 裁决队列 ——
 export const listConflicts = (): Promise<Conflict[]> => unwrap(http.get('/api/conflicts'))
@@ -205,5 +251,7 @@ async function downloadBlob(url: string): Promise<void> {
 
 export const exportTxt = (book: string): Promise<void> =>
   downloadBlob(`/api/books/${enc(book)}/export/txt`)
+export const exportMd = (book: string): Promise<void> =>
+  downloadBlob(`/api/books/${enc(book)}/export/md`)
 export const exportZip = (book: string): Promise<void> =>
   downloadBlob(`/api/books/${enc(book)}/export/zip`)

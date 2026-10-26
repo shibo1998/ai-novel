@@ -1,0 +1,213 @@
+"""P1 稳定性回归测试（2026-10-26 第二批修复）。
+
+覆盖五项「防护悄悄失效」或「技术债」类问题：
+1. Bible 固定表格节的表头校验（列名漂移 → 境界倒退检测静默失效）
+2. G6 细纲 plant 操作的 FO 编号格式校验
+3. W2/W4/W5 场景专项也必须有字数区间约束
+4. db.rebuild() 原地重建要按文件刷新 status（文件是真相源）
+5. FastAPI lifespan 取代已弃用的 on_event
+
+与 test_p0_regressions.py / test_p1_pipeline.py / test_p1_archive_api.py 分开：
+那三个守「用户可感知的行为」，本文件守「不报错的失效」。
+"""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from ainovel import api, bible, books, chapters, db, outline, pipeline, prompts, statemachine
+from ainovel.api import app
+from ainovel.mockllm import MockLLM
+
+client = TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# 1. Bible 表头校验（规格01 §2.2）
+# ---------------------------------------------------------------------------
+
+class TestBibleHeaderValidation:
+    """原实现 POWER_COLS/HIDDEN_COLS/TERM_COLS 三个常量定义后零引用，
+    力量体系列名写错 → power_rows() 返回 [] → 境界倒退检测静默失效。"""
+
+    GOOD_POWER = ("| 大境界 | 子境界 | 突破条件 | 能力边界(不能做什么) | 战力对标 | 寿元 | 代价与风险 | 突破异象 |\n"
+                  "|---|---|---|---|---|---|---|---|\n"
+                  "| 炼气 | 三层 | 聚气 | 不能御物 | 凡人 | 百岁 | 气海刺痛 | 无 |\n")
+
+    def test_good_headers_pass(self):
+        assert bible.validate_sections({"力量体系": self.GOOD_POWER}) == []
+
+    def test_wrong_column_names_rejected(self):
+        bad = ("| 境界 | 层次 | 条件 | 边界 | 战力 | 寿元 | 代价 | 异象 |\n"
+               "|---|---|---|---|---|---|---|---|\n"
+               "| 炼气 | 三层 | x | y | z | w | v | u |\n")
+        problems = bible.validate_sections({"力量体系": bad})
+        assert problems, "列名全错必须报错"
+        assert "力量体系" in problems[0] and "大境界" in problems[0]
+
+    def test_partial_column_mismatch_rejected(self):
+        """只错一两列也要报——这类最隐蔽，下游照样静默失效。"""
+        bad = ("| 大境界 | 子境界 | 突破条件 | 战力对标 | 寿元 | 代价与风险 | 突破异象 |\n"
+               "|---|---|---|---|---|---|---|\n"
+               "| 炼气 | 三层 | x | y | z | w | v |\n")
+        problems = bible.validate_sections({"力量体系": bad})
+        assert problems and "缺列" in problems[0] and "能力边界" in problems[0]
+
+    def test_write_rejects_bad_headers(self, home):
+        books.create_book("圣经书", genre_template="urban")
+        with pytest.raises(bible.BibleError):
+            bible.write("圣经书", {"力量体系": "| 错列 |\n|---|\n| x |\n"})
+        # 磁盘未被破坏
+        assert "炼气" not in bible.read("圣经书").get("力量体系", "")
+
+    def test_empty_section_not_validated(self, home):
+        """建书时的「（待生成）」空节不该被校验拦下。"""
+        books.create_book("空节书", genre_template="urban")
+        bible.write("空节书", {"力量体系": "（待生成）"})
+
+    def test_non_table_section_not_validated(self, home):
+        """非表格形态的节（如纯文字说明）不强行校验。"""
+        books.create_book("文字书", genre_template="urban")
+        assert bible.validate_sections({"力量体系": "炼气期分九层，每层需聚气三周。"}) == []
+
+    def test_hidden_and_term_columns_validated(self):
+        assert bible.validate_sections({"隐藏规则": "| 规则 | 等级 |\n|---|---|\n| x | y |"})
+        assert bible.validate_sections({"术语表": "| 词 | 义 |\n|---|---|\n| x | y |"})
+
+
+# ---------------------------------------------------------------------------
+# 2. G6 plant FO 编号校验（规格02 P-G6 程序校验）
+# ---------------------------------------------------------------------------
+
+class TestPlantForeshadowValidation:
+    """原实现 plant 直接 continue，任意字符串都能入台账。"""
+
+    def _contract(self, fo_id: str, op: str = "plant") -> dict:
+        return {
+            "chapter_no": 1, "volume": 1, "stage": "引入", "emotion_task": "压",
+            "core_event": "事件", "scenes": [], "emotion_arc": {},
+            "hook": {"content": "钩子", "type": "悬念"},
+            "foreshadow_ops": [{"op": op, "fo_id": fo_id, "note": ""}],
+            "word_range": [2200, 2800], "pov": "林寒",
+        }
+
+    def test_plant_rejects_malformed_id(self, book_env):
+        book, _ = book_env
+        with pytest.raises(pipeline.PipelineError) as ei:
+            pipeline._validate_contract_ops(self._contract("随便写的编号"), book, "")
+        assert "FO-xxx" in str(ei.value)
+
+    def test_plant_accepts_wellformed_id(self, book_env):
+        book, _ = book_env
+        pipeline._validate_contract_ops(self._contract("FO-004"), book, "")
+
+    def test_plant_rejects_duplicate_id(self, book_env):
+        book, _ = book_env
+        outline.write_plot_points(book, [
+            {"编号": "FO-004", "内容": "已有", "埋设章": "1", "推进章": "",
+             "预计回收章": "", "状态": "planted", "备注": ""}])
+        with pytest.raises(pipeline.PipelineError) as ei:
+            pipeline._validate_contract_ops(self._contract("FO-004"), book, "")
+        assert "重复埋设" in str(ei.value)
+
+    def test_advance_still_requires_existing_id(self, book_env):
+        book, _ = book_env
+        with pytest.raises(pipeline.PipelineError):
+            pipeline._validate_contract_ops(self._contract("FO-999", "advance"), book, "")
+
+
+# ---------------------------------------------------------------------------
+# 3. W2/W4/W5 场景专项的字数区间约束（规格03 §2.3）
+# ---------------------------------------------------------------------------
+
+class TestSceneSpecialWordRange:
+    """原实现只给 W1/W3 传 〖字数区间〗，三个场景专项被当作整章调用时
+    没有任何字数约束，只能靠 M-01 事后兜底。"""
+
+    PROSE_IDS = ("W1", "W2", "W3", "W4", "W5")
+
+    def test_all_prose_prompts_declare_word_range(self):
+        for pid in self.PROSE_IDS:
+            p = prompts.get(pid)
+            assert "字数区间" in p.fm.get("inputs", []), f"{pid} 的 inputs 缺 字数区间"
+            assert "〖字数区间〗" in p.full_text(), f"{pid} 正文缺 〖字数区间〗 占位"
+
+    def test_all_prose_prompts_render_with_word_range(self, home):
+        """模拟 pipeline 传参，确认五个提示词都能渲染且无残留占位。"""
+        base = {"系统段": "S", "章合同": "C", "装配上下文": "X", "字数区间": "2200-2800"}
+        extra = {
+            "W2": {"本场景人物状态": "a", "本场景潜台词要求": "b"},
+            "W4": {"力量体系相关行": "a", "突破代价设定": "b"},
+            "W5": {"对抗双方状态与底牌": "a", "已埋伏笔清单": "b"},
+            "W1": {"范文样本": "a", "黄金三章附加要求": ""},
+            "W3": {"章号": "1"},
+        }
+        for pid in self.PROSE_IDS:
+            _, text = prompts.render(pid, {**base, **extra[pid]})
+            assert "〖" not in text, f"{pid} 渲染后残留占位"
+            assert "2200-2800" in text, f"{pid} 渲染结果里没有字数区间"
+
+    def test_pipeline_passes_word_range_to_scene_specials(self, book_env):
+        """端到端：用 W2 生成也不得因缺字数区间而崩在渲染层。"""
+        book, _ = book_env
+        mock = MockLLM()
+        pipeline.generate_outline(book, 1, client=mock)
+        pipeline.confirm_outline(book, 1)
+        r = pipeline.generate_prose(book, 1, client=mock, prompt_id="W2")
+        assert r["word_count"] > 0
+
+
+# ---------------------------------------------------------------------------
+# 4. rebuild 按文件刷新 status（规格01 §1：文件是真相源）
+# ---------------------------------------------------------------------------
+
+class TestRebuildRefreshesStatus:
+    """原实现 ON CONFLICT 不更新 status，UI 那个「从文件重建索引」按钮
+    重建后已污染的状态不会被修（真删 .db 后重建反而是对的）。"""
+
+    def test_rebuild_overwrites_stale_status(self, home):
+        books.create_book("重建书", genre_template="urban")
+        outline.write_outline(
+            "重建书",
+            {"logline": "L", "ending_direction": "", "volumes": []},
+            rows=[{"章": "1", "卷": "1", "本章目标": "t", "冲突来源": "c",
+                   "爽点/揭露": "s", "钩子类型": "悬念", "重要度★": "★3"}],
+            rhythm="r",
+        )
+        mock = MockLLM()
+        pipeline.generate_outline("重建书", 1, client=mock)
+        pipeline.confirm_outline("重建书", 1)
+        assert statemachine.current_status("重建书", 1) == "outline_locked"
+
+        # 人为把 DB 状态改坏（模拟"已污染"）
+        with db.tx() as conn:
+            conn.execute(
+                "UPDATE chapters SET status='finalized' WHERE book_id=? AND no=1",
+                (books.book_id("重建书"),))
+        assert statemachine.current_status("重建书", 1) == "finalized"
+
+        # rebuild 后应按文件真相恢复（细纲已锁定、无正文 → outline_locked）
+        db.rebuild()
+        assert statemachine.current_status("重建书", 1) == "outline_locked"
+
+
+# ---------------------------------------------------------------------------
+# 5. FastAPI lifespan（技术债：on_event 已弃用）
+# ---------------------------------------------------------------------------
+
+class TestLifespanInsteadOfOnEvent:
+    def test_no_deprecated_on_event(self):
+        src = (api.__file__ or "").replace(".pyc", ".py")
+        with open(src, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        # 查真实的装饰器用法（行首），docstring 里的说明性文字不算
+        offenders = [ln for ln in lines if ln.strip().startswith("@app.on_event")]
+        assert not offenders, f"应使用 lifespan，on_event 已被 FastAPI 弃用: {offenders}"
+
+    def test_lifespan_creates_settings_file(self, home):
+        """启动钩子仍要保证 data/settings.json 存在（原行为不能丢）。"""
+        from ainovel import settings
+        from ainovel.paths import data_dir
+
+        settings.load()
+        assert (data_dir() / "settings.json").exists()

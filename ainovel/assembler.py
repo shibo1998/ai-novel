@@ -28,8 +28,12 @@ from typing import Any
 from . import bible, books, chapters, characters, fts, outline, prompts, settings, summaries
 
 NEVER_TRUNCATE = {"system", "system_rules", "genre", "power_rows", "char_cards",
-                  "outline_contract", "output_rules", "volume_rhythm"}
-CUT_ORDER = ["fts_recall", "recaps", "bible_core", "active_foreshadows", "prev_ending"]
+                  "outline_contract"}
+# 规格03 §2.2 原文（从先砍到后砍）：前文检索片段 → 最近章摘要 → Bible 条目。
+# 力量体系行、出场角色卡、细纲合同永不截断（已在 NEVER_TRUNCATE）。
+# 原实现多砍了 active_foreshadows / prev_ending（规格未授权），
+# 也多护了 volume_rhythm / output_rules —— 这两处已按规格原文校正。
+CUT_ORDER = ["fts_recall", "recaps", "bible_core"]
 
 SLOT_TITLES = {
     "system": "系统角色", "system_rules": "全局硬规则", "genre": "题材适配",
@@ -273,6 +277,8 @@ def assemble(book: str, chapter_no: int) -> Assembly:
         if total_est() > budget:
             a.slots[name] = ""
     a.total_est_tokens = total_est()
+    # 逐槽 token 估算（规格03 §2.2：估算=中文字符数×0.75，记入 preview 供 UI 展示与排查）
+    a.est_tokens = {k: est_tokens(v) for k, v in a.slots.items()}
     return a
 
 

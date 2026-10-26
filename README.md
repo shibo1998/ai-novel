@@ -34,11 +34,16 @@ python run.py            # 打开 http://127.0.0.1:8765
 ## 测试
 
 ```bash
-python -m pytest tests/          # 104 项全绿（管线全链路用 MockLLM，不耗 token）
+python -m pytest tests/          # 170 项全绿（管线全链路用 MockLLM，不耗 token）
 python scripts/smoke.py          # 端到端冒烟（跑在临时目录，不污染仓库）
 cd web && npm run typecheck      # 前端严格类型检查（vue-tsc）
 cd web && npm run lint:check     # 前端 ESLint 检查
 ```
+
+> ⚠️ **`scripts/e2e_test.py` 与 `scripts/e2e_stage2.py` 不是测试，别随手跑**：
+> 它们打真实 LLM（消耗 token）、写真实的 `books/流程测试书` 与 `data/`，
+> 且 `e2e_test.py` 开头会 **DELETE 已存在的同名书**。它们是留档的历史全链路验证脚本，
+> 只在明确知道后果时手动执行。日常验证请用上面的 pytest + smoke。
 
 ## 单章闭环（规格03 §1）
 
@@ -76,14 +81,14 @@ lint/               禁词/敏感词/对话后缀禁式（每行一个，# 注�
 web/                前端 UI（Vue3 + Vite 源码；构建产物 web/dist/ 由 FastAPI 静态挂载）
 books/<书名>/       数据：档案 + 章节 + config.json（单一真相源）
 data/               SQLite、设置、裁决队列、装配预览（可随时重建）
-tests/              pytest（74 项）
+tests/              pytest（135 项）
 ```
 
 ## 与规格的对应与偏差（重要）
 
 **已按规格实现**：规格01 全部文件格式/表结构/状态机/防损规则；规格02 提示词组织/版本/digest/温度总表/词库同源；规格03 管线各环节/机械检查/异常处理/成本/断点恢复/rubric锚点；规格04 页面清单（书架/书总览/档案编辑/章节工作台/裁决/设置/导出）。
 
-**偏差与修正（详见交付报告）**：
+**偏差与修正（详见 `.audit/README.md` 审计报告）**：
 
 1. ~~【豆包】【全集】原文档不在仓库~~ **已修正（2026-10-25）**：两份原文档一直在 `docs/` 根目录（初版实现时误判缺失，因只检查了 `docs/specs/`）。**23 条提示词已全部按原文替换/融合**：S0/S1/S2=豆包系统层原文；G1=T2、G2=T3、G3=T4、G4=【全集】提示词5、G5=T5、G6=T6+T6-B、T1=T1+T1-B；W1=T7、W2=T7-B、W3=T7-C、W4=T7-D、W5=【全集】提示词9；V1=T9-B七项+提示词10+rubric；V2=T8-A七步+T8-B对照表；V3=T8-C清单；V4=T9-C；V5=新写（依据§7.4，规格02 明示为唯一新写）；V6=T9-D；F1=T10-A、F2=T10-B；lint 禁词表=S1 词表+T8-B 左列
 2. ~~上游《开发计划.md》缺失~~ **已修正（2026-10-25）**：文档在 `docs/开发计划.md`。13 槽位已按其 §2.3 原文表对齐（系统角色/全局硬规则/题材适配/Bible条目/力量体系行/角色状态卡/卷节奏/活跃伏笔/前情摘要/前文检索/上章末尾/细纲合同/输出要求）；角色卡按规格03 保持永不截断（开发计划的 ≤150 字×≤4 人预算被规格03 覆盖）
@@ -94,17 +99,31 @@ tests/              pytest（74 项）
 7. 前 3 章直接走 W3 黄金三章专项提示词（规格02 P-W1 改造点3 的等价实现）
 8. 卷首新建章节的 `pending_finalize` 与 `mech_check` 在 rebuild 时不可区分 → 统一停靠 mech_check
 9. **前端 UI 技术栈重做定案（2026-10-26，已实施）**：初版按规格04"免构建"意图以 vanilla JS/CSS 交付，后定案重写为 Vue3 + TypeScript + vue-router + pinia + element-plus + vite + sass + tailwindcss（补充项与共存约束见规格04 §0）。迁移原则：只换前端壳，后端 API 契约 / 页面清单 / 人工确认关不变；构建产物 `web/dist/` 由 FastAPI 静态挂载，PyInstaller 分发对象同步改为 `web/dist`。Vue3 版已上线替换 vanilla 版（`web/` 为 Vite 工程根）；导出从 GET `window.open` 改为 POST blob 下载（修正旧版 405 隐患）。
+10. **P0 缺陷修复（2026-10-26，见 `.audit/README.md` 审计报告）**：三处新增状态机出边 + 四项数据/契约加固，均为「规格要求但原实现会导致用户卡死或静默丢数据」的修正，不是行为变更：
+    - `generating --fail--> error`、`generating --abort--> outline_locked`、`finalized --unlock--> pending_finalize`。原实现 `generating` 只有 `complete` 一条出边，一次 LLM 网络抖动就让该章永久锁死（`retry` 事件非法、UI 无入口），只能删库——规格03 §3 要求"仍败 → error 状态，UI 可一键重试"。`pipeline.generate_prose` 同步加异常兜底，失败必落 `error`。
+    - `human_rewrite` 改为**先校验状态、先取正文来源，最后才落盘**；`base_version=None` 时沿用当前正文开新分支（原来写空 body 覆盖同一路径，human_review 恰好无快照，一点即清空全文）。
+    - 档案写盘统一剥离读接口专用字段（`outline.write_outline` 剥 `_body`/`_rhythm`，`characters.write` 剥 `_file`/`_body`）；`PUT /outline` 未提供 `_rhythm` 时沿用文件里已有的「爽点节奏总谱」（原来每次保存都被重置为「（待规划）」）。
+    - `settings.update` 拒绝把 UI 掩码占位串当真实 api_key 落盘（原来二次保存会永久写坏真 key，且 `has_key` 仍为 true，UI 无感）。
+    - 回归用例见 `tests/test_p0_regressions.py`（16 项）。
+11. **桌面外壳：Tauri 2 → FastAPI + 浏览器（有意决策，补登记）**：开发计划 §0 原定 Tauri 2 + Vue 3 桌面应用，实际交付为本地 FastAPI 服务（`run.py` 起 uvicorn 并自动开浏览器，127.0.0.1:8765）。依据：开发计划第 6 行「冲突时规格文档优先」，而规格04 全文无 Tauri 要求、只约定"本地单机、零云部署"；单进程 Python 后端 + 静态前端已满足该约束，且省掉 Rust 工具链与跨端打包维护成本。分发形态是 PyInstaller 单目录 + exe。
+12. **Gemini 走 OpenAI 兼容协议，不实现原生适配器（有意决策，补登记）**：开发计划 M0 原列「DeepSeek（OpenAI 兼容）+ Gemini（原生协议）两个适配器」，实际统一为 `OpenAICompatClient` 单实现（`ainovel/llm.py`）。依据：主流中转站（one-api/new-api 等）与 Gemini 官方 OpenAI 兼容端点都支持 `/v1/chat/completions`，单实现即可覆盖，减少一套流式解析与重试逻辑的维护面；代价是失去 Gemini 原生独有参数（如 safetySettings 细粒度控制），当前用不到。
+13. **P1 缺陷修复（2026-10-26）**：rubric 守门由程序强制（任一维 <70 或存在 blocking → 必 fix，模型不能把结果判得更松）；定稿后正文受快照保护（`/fix` 不再能静默改写 finalized 章节）；流式生成中途周期性落盘半成品草稿 `<no>_正文.draft.md`（崩溃可续，规格03 §5）；装配器截断顺序按规格原文校正为三项（`fts_recall → recaps → bible_core`）并补齐逐槽 token 估算；V6 审计结论写入 `review_records(kind='audit')`；未配置单价的模型首次调用记告警日志（不再静默 0 成本）。回归用例见 `tests/test_p1_pipeline.py`。
+14. **P1 API 契约与档案层修复（2026-10-26）**：G5 大纲采纳改为**合并式**（按内容匹配保留原编号与原状态，未提及的伏笔行一律保留，不再从 FO-001 重编覆盖人工台账）；G4 关系网真正写回各角色「关系网络」节（同「对象」行已存在则不覆盖人工内容）；新增 `PUT /chapters/{no}/prose`（人工手改正文，`pending_finalize` 态改完强制回退 `mech_check` 重跑机检，`finalized` 一律拒绝）、`GET /chapters/{no}/snapshots/{version}`（快照正文回看）、`PUT /locations`（地点档案可编辑）、`POST /export/md`（Markdown 合并导出）、`GET /books/{book}/audits`（卷末审计报告回看）；`adopt_outline` 不再用建书占位串覆盖用户已填的 logline/ending_direction。回归用例见 `tests/test_p1_archive_api.py`。
+15. **稳定性修复 / 技术债清理（2026-10-26）**：Bible 固定表格节写回时校验表头（力量体系 8 列、隐藏规则 3 列、术语表 2 列）——原先三个列常量定义后零引用，列名写错会让 `power_rows()`/`realm_order()` 返回空、**境界倒退检测静默失效**，属于"不报错的失效"；G6 细纲 `plant` 操作补 FO 编号格式校验（原先任意字符串可入台账）；W2/W4/W5 场景专项补齐 `〖字数区间〗` 硬约束（原先只给 W1/W3 传，三个专项被当整章调用却无任何字数约束）；`db.rebuild()` 的 UPSERT 补 `status` 更新（原地重建现在能按文件真相修好已污染状态）；`@app.on_event` 迁移到 `lifespan`（原 API 已被 FastAPI 弃用）；`settings.DEFAULTS.prices` 补中转站常见模型别名。回归用例见 `tests/test_p2_stability.py`。
+16. **定稿返工链路补齐（2026-10-26，文档撰写时发现）**：`statemachine` 早有 `finalized --unlock--> pending_finalize` 边、`/fix` 与 `/prose` 的拒绝文案也让用户"先解锁"，但**既没有 unlock 路由也没有 UI 按钮**——用户被指向一个不存在的地方，定稿返工实际是死路。现补 `POST /chapters/{no}/unlock`（状态回退 + 同步把正文文件 `status` 从 `final` 改回 `draft`，否则文件自带的 final 标记仍会让下游认定它已定稿）+ 工作台「解锁返工」按钮；同时 meta 表单的「单章字数区间」保存时同步写入 `config.json`（管线只读 config，原先在 meta 改这一项完全不生效）。回归用例见 `tests/test_p1_archive_api.py::TestProseEdit`。
 
 ## M0 检查单（规格04 §4）状态
 
 | 项 | 状态 |
 |----|------|
 | DeepSeek 连通 | ✅ 代码就绪（OpenAI 兼容流式），设置页填 key 后"测试连接"验证 |
-| Gemini 连通 | ✅ 代码就绪（原生 SSE 流式，base URL 可改走代理） |
+| Gemini 连通 | ✅ 代码就绪（统一走 OpenAI 兼容协议，见偏差 11；base URL 可改走代理/中转） |
 | FTS5 trigram 中文检索 | ✅ 已实测（SQLite 3.49.1 trigram 可用；bigram 降级路径也有实现与提示） |
-| Windows 打包 exe | ⚠️ 提供 `ainovel.spec` + 打包说明；PyInstaller 构建未在本机实测（见下） |
+| Windows 打包 exe | ⚠️ `ainovel.spec` 可用，但仓库里现有的 `dist/ai-novel/` 是 **10-25 的过期产物**（内含旧 vanilla UI、`web/dist` 缺失，exe 打不开界面）。分发给别人前必须重新构建：见下 |
+| 单章成本可见 | ✅ 已接通（单价表含 deepseek/gemini 常见档位；中转站自定义模型名需在设置页「单价」补一行，否则该模型成本按 0 计并在服务端日志记告警） |
 
 打包：`pip install pyinstaller && pyinstaller ainovel.spec`，然后把 `prompts/ lint/ web/dist` 拷到 `dist/ai-novel/` 下（数据目录 books/data 自动在 exe 旁创建）。
+**注意 `dist/` 与 `build/` 都在 `.gitignore` 里**，重新构建后它们不会进版本控制；`web/dist` 由 `npm run build` 生成，同样被忽略。
 
 ## lint 词库说明
 

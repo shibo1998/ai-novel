@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import zipfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -21,13 +22,18 @@ from .paths import book_dir, project_root
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI 网文工作台")
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """启动即生成 data/settings.json（否则用户找不到可手改的配置文件）。
 
-@app.on_event("startup")
-def _ensure_defaults() -> None:
-    """启动即生成 data/settings.json（否则用户找不到可手改的配置文件）。"""
+    用 lifespan 取代已弃用的 @app.on_event（FastAPI 后续版本会移除 on_event）。
+    """
     settings.load()
+    yield
+
+
+app = FastAPI(title="AI 网文工作台", lifespan=_lifespan)
 
 
 @app.exception_handler(Exception)
@@ -221,6 +227,11 @@ def put_meta(book: str, payload: dict):
 # 档案：Bible / 角色 / 大纲 / 台账 / 地点
 # ---------------------------------------------------------------------------
 
+class LocationPayload(BaseModel):
+    """地点档案整表（规格01 §2.6：5 列）。"""
+    rows: list[dict[str, str]] = []
+
+
 @app.get("/api/books/{book}/bible")
 def get_bible(book: str):
     return bible.read(book)
@@ -275,9 +286,19 @@ def get_outline(book: str):
 
 @app.put("/api/books/{book}/outline")
 def put_outline(book: str, payload: dict):
+    """保存大纲（规格01 §2.4）。
+
+    前端会把 GET 回来的整个对象原样回传，其中含读接口专用的 `_body`。
+    必须剥离，否则会被当成 frontmatter 键写进 OUTLINE.md（污染 YAML）。
+    `_rhythm` 前端不提供时沿用文件里已有的「爽点节奏总谱」，避免每次保存
+    都把该节重置为「（待规划）」（P0 回归）。
+    """
+    payload.pop("_body", None)
     rows = payload.pop("chapter_rows", [])
-    rhythm = payload.pop("_rhythm", "")
+    rhythm = payload.pop("_rhythm", None)
     try:
+        if rhythm is None:
+            rhythm = outline.read_rhythm(book)
         outline.write_outline(book, payload, rows, rhythm)
     except Exception as e:
         raise _err(e)
@@ -303,6 +324,21 @@ def put_pp(book: str, payload: dict):
 @app.get("/api/books/{book}/locations")
 def get_locations(book: str):
     return outline.read_locations(book)
+
+
+@app.put("/api/books/{book}/locations")
+def put_locations(book: str, payload: LocationPayload):
+    """整表保存地点档案（规格01 §2.6 / 规格04 §1"地点档案可导航可编辑"）。
+
+    前端传 5 列表格行；多余键忽略、缺列补空串（由 outline.write_locations 归一化）。
+    行内空白「名称」直接丢弃——空名行在档案里没有意义，且会破坏 FTS 关键词抽取。
+    """
+    rows = [r for r in payload.rows if str(r.get("名称", "")).strip()]
+    try:
+        outline.write_locations(book, rows)
+    except Exception as e:
+        raise _err(e)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -375,12 +411,18 @@ def adopt_outline(book: str, payload: AdoptPayload):
     """解析 G5 输出 → OUTLINE.md + PLOT_POINTS.md（伏笔编号自动转 FO-xxx）。
 
     真实模型的章号/卷号常写成"第1章/第一卷"——采纳时统一归一化为纯数字。
+
+    合并语义（规格02 §4 末句"AI 生成的档案永远不直接静默覆盖人工内容"）：
+    - 章节总表/卷规划：G5 是全书大纲的完整产出，按本次输出整体替换（本就是全书级重规划）
+    - 伏笔台账：**合并**。已有内容相同的行保留原编号与原状态/埋设章/推进章，只补空字段；
+      新内容才分配新编号（`max(现有FO数字)+1` 递增）；G5 未提及的旧行一律保留。
+    - logline：OUTLINE.md 已有非空 logline 时保留，只有为空才用 meta 正文兜底。
     """
     from .mdtable import parse_table
 
     text = payload.content
     # 章节总表（先解析，卷兜底要用行号范围）
-    ccols, crows = parse_table(text, "本章目标")
+    _ccols, crows = parse_table(text, "本章目标")
     norm_rows = []
     for r in crows:
         m = re.search(r"\d+", str(r.get("章", "")))
@@ -398,7 +440,7 @@ def adopt_outline(book: str, payload: AdoptPayload):
 
     # 卷规划（归一化：卷号抽数字；起止章抽两个数字，缺失则用总表范围）
     volumes = []
-    vcols, vrows = parse_table(text, "卷号")
+    _vcols, vrows = parse_table(text, "卷号")
     for i, r in enumerate(vrows, 1):
         nums = [int(x) for x in re.findall(r"\d+", str(r.get("起止章", "")))]
         m = re.search(r"\d+", str(r.get("卷号", "")))
@@ -411,33 +453,101 @@ def adopt_outline(book: str, payload: AdoptPayload):
         volumes = [{"no": "1", "name": "", "chapters": [lo, hi], "core_conflict": "",
                     "goal": "", "climax": "", "hook_out": ""}]
 
-    # 伏笔总表 → FO 编号
-    fcols, frows = parse_table(text, "编号")
-    fo_rows = []
-    id_map: dict[str, str] = {}
-    for i, r in enumerate(frows, 1):
-        old_id = r.get("编号", "")
-        new_id = f"FO-{i:03d}"
-        id_map[old_id] = new_id
-        fo_rows.append({"编号": new_id, "内容": r.get("内容", ""), "埋设章": r.get("埋设章", ""),
-                        "推进章": r.get("推进章", ""), "预计回收章": r.get("预计回收章", ""),
-                        "状态": "planted", "备注": r.get("备注", "")})
+    # 伏笔总表 → 合并式落盘（FO 编号只增不重编）
+    _fcols, frows = parse_table(text, "编号")
+    fo_rows, id_map, added, kept = _merge_foreshadows(book, frows)
+
     m = re.search(r"(?ms)^##\s*爽点节奏总谱\s*\n(.*?)(?=^##|\Z)", text)
     rhythm = m.group(1).strip() if m else ""
-    logline = books.read_meta(book).get("_body", "（待填）").strip()
-    outline.write_outline(book, {"logline": logline, "ending_direction": "", "volumes": volumes},
-                          rows=norm_rows, rhythm=rhythm)
+    try:
+        old = outline.read_outline(book)
+    except Exception:
+        # OUTLINE.md 不存在/frontmatter 损坏时按"没有旧值"处理：
+        # 采纳的首要任务是能写进一份合法大纲，不能因旧文件坏了就整条链断掉。
+        old = {}
+    logline = str(old.get("logline") or "").strip()
+    if not logline:
+        # OUTLINE.md 没有 logline 时才用 meta 正文兜底（避免覆盖用户已填的内容）
+        logline = str(books.read_meta(book).get("_body", "")).strip() or "（待填）"
+    writing = {"logline": logline,
+               "ending_direction": old.get("ending_direction", ""),
+               "volumes": volumes}
+    outline.write_outline(book, writing, rows=norm_rows, rhythm=rhythm)
     if fo_rows:
         outline.write_plot_points(book, fo_rows)
     return {"ok": True, "volumes": len(volumes), "chapter_rows": len(norm_rows),
-            "foreshadows": len(fo_rows), "id_map": id_map}
+            "foreshadows": len(frows), "id_map": id_map,
+            "foreshadows_added": added, "foreshadows_kept": kept}
+
+
+def _merge_foreshadows(
+    book: str, frows: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], dict[str, str], int, int]:
+    """把 G5 伏笔行合并进现有台账（规格02 §4 编号自动分配 + 永不静默覆盖）。
+
+    匹配键 = 「内容」文本（去空白）。命中 → 沿用原编号与已有状态/埋设章/推进章/预计回收章，
+    只补空字段；未命中 → 分配 `max(现有FO数字)+1` 递增的新编号。
+
+    返回 (合并后台账行, {G5编号: FO编号}, 新增数, 命中保留数)。
+    """
+    try:
+        existing = outline.read_plot_points(book)
+    except FileNotFoundError:
+        # 台账文件缺失（手工删过/老目录升级）：按空台账处理，G5 至少能建起一份
+        existing = []
+    merged = [dict(r) for r in existing]
+    # 内容 → 合并副本（首条优先；空内容不参与匹配，避免互相误吞）
+    by_content: dict[str, dict[str, str]] = {}
+    next_no = 1
+    for row in merged:
+        fid = str(row.get("编号", ""))
+        m = re.search(r"(\d+)", fid)
+        if m:
+            next_no = max(next_no, int(m.group(1)) + 1)
+        content = str(row.get("内容", "")).strip()
+        if content and content not in by_content:
+            by_content[content] = row
+
+    id_map: dict[str, str] = {}
+    added = kept = 0
+    for r in frows:
+        g5_id = str(r.get("编号", "")).strip()
+        content = str(r.get("内容", "")).strip()
+        hit = by_content.get(content) if content else None
+        if hit is not None:
+            # 已有：保留原编号/状态/章次，只补空字段
+            for col in ("埋设章", "推进章", "预计回收章", "备注"):
+                if not str(hit.get(col, "")).strip() and str(r.get(col, "")).strip():
+                    hit[col] = r.get(col, "")
+            id_map[g5_id] = str(hit.get("编号", ""))
+            kept += 1
+            continue
+        new_id = f"FO-{next_no:03d}"
+        next_no += 1
+        row = {"编号": new_id, "内容": content, "埋设章": r.get("埋设章", ""),
+               "推进章": r.get("推进章", ""), "预计回收章": r.get("预计回收章", ""),
+               "状态": "planted", "备注": r.get("备注", "")}
+        merged.append(row)
+        if content:
+            by_content[content] = row
+        id_map[g5_id] = new_id
+        added += 1
+    return merged, id_map, added, kept
 
 
 @app.post("/api/books/{book}/adopt/characters")
 def adopt_characters(book: str, payload: AdoptPayload):
-    """解析 G3/G4 输出（===角色:<名>=== 分卡）→ 建角色档案。"""
+    """解析 G3/G4 输出（===角色:<名>=== 分卡）→ 建角色档案 + 关系网合并写回。
+
+    规格02 §4：G4「结果合并写回各角色的『关系网络』节」。原实现对已存在角色直接
+    `continue`，关系表整段丢弃（注释与代码不符）；新角色则把卡整体当正文写，
+    没有 `## 关系网络` 节标题，`characters.relationships()` 读不到。
+    现在：已存在角色 → 只把关系行合并进其关系网络节；新角色 → 建卡 + 写节。
+    """
     cards = re.split(r"(?m)^===\s*角色[:：]\s*(.+?)\s*===\s*$", payload.content)
     created: list[str] = []
+    updated: list[str] = []
+    rel_added: dict[str, int] = {}
     # cards: [前置, 名1, 卡1, 名2, 卡2, ...]
     it = iter(cards[1:])
     for name, card in zip(it, it):
@@ -446,16 +556,85 @@ def adopt_characters(book: str, payload: AdoptPayload):
         m = re.search(r"主角|女主|反派|重要配角", card[:60])
         if m:
             role = m.group(0)
-        if name in characters.list_characters(book):
+        rel_rows = _parse_relationship_rows(card, name)
+        if name not in characters.list_characters(book):
+            characters.create(book, name, role=role)
+            d = characters.read(book, name)
+            fm = {k: v for k, v in d.items() if not k.startswith("_")}
+            characters.write(book, fm, card.strip() + "\n")
+            created.append(name)
+        n = characters.merge_relationships(book, name, rel_rows)
+        if n:
+            rel_added[name] = n
+            if name not in created:
+                updated.append(name)
+    return {"ok": True, "created": created, "updated": updated,
+            "relationship_rows_added": rel_added}
+
+
+def _parse_relationship_rows(card: str, self_name: str) -> list[dict[str, str]]:
+    """从 G4 分卡正文解析关系行，返回可写进「关系网络」节的 {对象,关系,不稳定因素} 行。
+
+    兼容三种形态（G4 提示词自己会产出前两种）：
+    1. 逐角色节的三列表：`| 对象 | 关系 | 不稳定因素 |`
+    2. 关系矩阵总览六列表：`| 对象A | 对象B | 关系 | 渊源… | 张力点 | 真实态度 |`
+       → 取涉及本角色的行，对方作「对象」、张力点作「不稳定因素」
+    3. 列表式：`- 甲 → 乙：关系`
+    解析不到返回空列表。
+    """
+    from .mdtable import parse_table
+
+    rows: list[dict[str, str]] = []
+    # 1) 三列关系表：按精确表头找，避免误吞下面的六列矩阵（其表头也含"对象"）
+    _, rel_rows = parse_table(_find_rel_table(card), "对象")
+    for r in rel_rows:
+        obj = str(r.get("对象", "")).strip()
+        if obj and obj != self_name:
+            rows.append({c: str(r.get(c, "")) for c in characters.REL_COLS})
+    # 2) 六列关系矩阵总览
+    _, matrix = parse_table(card, "对象A")
+    for r in matrix:
+        a = str(r.get("对象A", "")).strip()
+        b = str(r.get("对象B", "")).strip()
+        if self_name not in (a, b):
             continue
-        body = card.strip()
-        # 关系网络矩阵（G4）合并到各角色"关系网络"节
-        characters.create(book, name, role=role)
-        d = characters.read(book, name)
-        fm = {k: v for k, v in d.items() if not k.startswith("_")}
-        characters.write(book, fm, body + "\n")
-        created.append(name)
-    return {"ok": True, "created": created}
+        other = b if a == self_name else a
+        tension = str(r.get("张力点（稳定/暗流/将转变）", "") or r.get("张力点", "")).strip()
+        rows.append({"对象": other, "关系": str(r.get("关系", "")).strip(),
+                     "不稳定因素": tension})
+    # 3) 列表式：- 甲 → 乙：关系
+    for m in re.finditer(r"(?m)^\s*[-*]\s*(\S+?)\s*(?:→|->|—>)\s*(\S+?)\s*[：:]\s*(.+?)\s*$", card):
+        a, b, rel = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+        if self_name not in (a, b):
+            continue
+        rows.append({"对象": b if a == self_name else a, "关系": rel, "不稳定因素": ""})
+    # 去重（同对象保留首次出现）
+    seen: set[str] = set()
+    uniq: list[dict[str, str]] = []
+    for r in rows:
+        obj = r["对象"]
+        if not obj or obj in seen:
+            continue
+        seen.add(obj)
+        uniq.append(r)
+    return uniq
+
+
+def _find_rel_table(card: str) -> str:
+    """从分卡里切出「对象|关系|不稳定因素」那张表（找不到返回空串）。
+
+    六列矩阵表头 `对象A | 对象B | …` 也含"对象"，直接拿 "对象" 当 marker 会先命中它，
+    导致真正的三列表被漏掉——这里按表头单元格精确匹配。
+    """
+    lines = card.splitlines()
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cols = [c.strip() for c in s.strip("|").split("|")]
+        if cols[:2] == ["对象", "关系"]:
+            return "\n".join(lines[i:])
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +844,94 @@ def finalize(book: str, no: int):
         raise _err(e)
 
 
+class ProseEditPayload(BaseModel):
+    """人工手改正文（规格03 §2.5 人工关三选项之一）。"""
+    content: str
+
+
+# 允许手改正文的状态：正文已生成且仍是 draft。finalized 必须拒绝（规格03 §2.5）。
+PROSE_EDITABLE_STATES = ("mech_check", "llm_review", "human_review",
+                         "pending_finalize", "error")
+
+
+@app.put("/api/books/{book}/chapters/{no}/prose")
+def edit_prose(book: str, no: int, payload: ProseEditPayload):
+    """人工手改正文（规格03 §2.5 人工关三选项之一）。
+
+    只改正文 body：重算 word_count、status 保持 draft、version 不变（同版本内人工修订），
+    走 chapters.write_prose 原子落盘。**不自动推进状态**——改完必须由人重新跑机检/审校，
+    人工关不许自动化。已定稿章一律拒绝（否则正文/快照/导出三方不一致，AGENTS.md 红线 3）：
+    既看状态机（finalized），也看正文文件自身 status:final——记忆卡回写失败时
+    定稿章会被 mark_error 置成 error 态，只查状态机会漏掉这种已定稿正文。
+    """
+    st = statemachine.current_status(book, no)
+    try:
+        prose = chapters.read_prose(book, no)
+    except Exception as e:
+        raise _err(e, 404)
+    if st == "finalized" or prose.get("status") == "final":
+        raise _err(statemachine.StateError(f"第{no}章已定稿，请先解锁"))
+    if st not in PROSE_EDITABLE_STATES:
+        raise _err(statemachine.StateError(
+            f"第{no}章状态 {st}：正文尚不存在或不支持手改（需已生成正文且未定稿）"))
+    fm = {k: v for k, v in prose.items() if not k.startswith("_")}
+    body = payload.content
+    fm["word_count"] = mechcheck.count_words(body)
+    fm["status"] = "draft"
+    try:
+        chapters.write_prose(book, no, fm, body)
+    except Exception as e:
+        raise _err(e)
+    # 手改正文后必须重新过机械检查（P1 审计：原实现不推进状态，
+    # 于是改完就能直接定稿，M-01~M-11 被绕过）。仅 pending_finalize 需要回退——
+    # 其余可手改状态本来就要重新跑机检，不额外搬动状态机。
+    if st == "pending_finalize":
+        statemachine.transition(book, no, "recheck")  # pending_finalize → mech_check
+    return {"ok": True, "word_count": fm["word_count"], "status": statemachine.current_status(book, no)}
+
+
+@app.post("/api/books/{book}/chapters/{no}/unlock")
+def unlock_chapter(book: str, no: int):
+    """定稿返工：finalized → pending_finalize（规格01 §4）。
+
+    定稿正文受快照保护，`/fix`、`/prose` 一律拒绝改写 finalized 章节。
+    要返工必须先显式解锁，回到 pending_finalize 再走手改/修复/重写。
+    没有这个入口，用户会被"请先解锁"的提示指向一个不存在的地方。
+
+    同步把正文文件里的 status 从 final 改回 draft——否则文件自带的 final
+    标记仍会让下游（/prose、导出 finalized_only）认定它已定稿。
+    """
+    try:
+        st = statemachine.transition(book, no, "unlock")
+    except Exception as e:
+        raise _err(e)
+    try:
+        prose = chapters.read_prose(book, no)
+        if prose.get("status") == "final":
+            fm = {k: v for k, v in prose.items() if not k.startswith("_")}
+            fm["status"] = "draft"
+            chapters.write_prose(book, no, fm, prose["_body"])
+    except Exception as e:  # 文件侧同步失败不阻断状态机，但要留痕
+        logger.warning("第%s章解锁后同步正文 status 失败: %s", no, e)
+    return {"ok": True, "status": statemachine.current_status(book, no)}
+
+
+@app.get("/api/books/{book}/chapters/{no}/snapshots/{version}")
+def get_snapshot(book: str, no: int, version: int):
+    """快照正文回看（规格04 §2「版本列表可回看任意快照」）。
+
+    /versions 只给元信息，正文快照存在 snapshots 表里；label/created_at 从
+    pipeline.list_versions() 取同版本元信息，缺失时给空串（不回退猜测）。
+    """
+    content = pipeline.get_snapshot(book, no, version)
+    if content is None:
+        raise _err(FileNotFoundError(f"第{no}章 v{version} 快照不存在"), 404)
+    meta = next((v for v in pipeline.list_versions(book, no)
+                 if int(v.get("version") or 0) == version), {})
+    return {"version": version, "label": meta.get("label", ""),
+            "created_at": meta.get("created_at", ""), "content": content}
+
+
 @app.get("/api/books/{book}/chapters/{no}/versions")
 def versions(book: str, no: int):
     return pipeline.list_versions(book, no)
@@ -708,6 +975,29 @@ def manual_audit(book: str, last_chapter: int):
         return pipeline.audit_volume(book, last_chapter)
     except Exception as e:
         raise _err(e)
+
+
+@app.get("/api/books/{book}/audits")
+def list_audits(book: str):
+    """列出本书的卷末审计报告文件（books/<书名>/audits/*.md）。
+
+    审计结论同时写进 review_records(kind='audit')，但报告正文是 Markdown 文件，
+    这里按文件列出供 UI 展示与回看（规格03 §2.8）。
+    """
+    d = book_dir(book) / "audits"
+    if not d.exists():
+        return []
+    out = []
+    for p in sorted(d.glob("*.md")):
+        try:
+            content = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        m = re.search(r"伏笔回收率（程序计算）：(\S+)", content)
+        out.append({"file": p.name, "path": str(p),
+                    "foreshadow_pay_rate": m.group(1) if m else "",
+                    "content": content})
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -816,6 +1106,30 @@ def export_txt(book: str, finalized_only: bool = True):
     return StreamingResponse(iter([content]), media_type="text/plain",
                              headers={"Content-Disposition":
                                       f"attachment; filename*=UTF-8''{quote(book)}.txt"})
+
+
+@app.post("/api/books/{book}/export/md")
+def export_md(book: str, finalized_only: bool = True):
+    """导出 Markdown 合并版（规格04 §1「章节合并导出 txt/md」）。
+
+    与 export_txt 同结构；章节标题用二级标题 `## 第N章`，正文原样（不转义、不改缩进）。
+    """
+    from urllib.parse import quote
+
+    title = books.read_meta(book).get("title", book)
+    parts = [f"# {title}\n"]
+    for no in chapters.list_chapters(book):
+        try:
+            prose = chapters.read_prose(book, no)
+        except Exception:
+            continue
+        if finalized_only and prose.get("status") != "final":
+            continue
+        parts.append(f"\n## 第{no}章\n\n{prose['_body'].strip()}\n")
+    content = "\n".join(parts)
+    return StreamingResponse(iter([content]), media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition":
+                                      f"attachment; filename*=UTF-8''{quote(book)}.md"})
 
 
 @app.post("/api/books/{book}/export/zip")

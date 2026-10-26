@@ -22,10 +22,32 @@ CHAPTER_COLS = ["章", "卷", "本章目标", "冲突来源", "爽点/揭露", "
 def read_outline(book: str) -> dict[str, Any]:
     fm, body = FM.validate_file(books.book_dir(book) / "OUTLINE.md", OUTLINE_SCHEMA)
     _, rows = parse_table(body, "本章目标")
-    return fm | {"_body": body, "chapter_rows": rows}
+    return fm | {"_body": body, "chapter_rows": rows, "_rhythm": _parse_rhythm(body)}
+
+
+def _parse_rhythm(body: str) -> str:
+    """从 OUTLINE.md 正文抽出「## 爽点节奏总谱」一节（规格01 §2.4）。"""
+    m = re.search(r"(?ms)^##\s*爽点节奏总谱\s*\n(.*?)(?=^##\s|\Z)", body)
+    if not m:
+        return ""
+    text = m.group(1).strip()
+    # 卷规划行是 write_outline 追加的，不属于节奏总谱正文
+    lines = [ln for ln in text.splitlines() if not ln.strip().startswith("- 卷")]
+    return "\n".join(lines).strip()
+
+
+def read_rhythm(book: str) -> str:
+    """只读节奏总谱（保存大纲时用于保留原有内容）。"""
+    try:
+        return _parse_rhythm(FM.validate_file(books.book_dir(book) / "OUTLINE.md",
+                                              OUTLINE_SCHEMA)[1])
+    except Exception:
+        return ""
 
 
 def write_outline(book: str, fm: dict[str, Any], rows: list[dict[str, str]], rhythm: str = "") -> None:
+    # 剥离读接口专用的下划线字段（_body/_rhythm 等），绝不让它们进 frontmatter
+    fm = {k: v for k, v in fm.items() if not k.startswith("_")}
     FM.validate(fm, OUTLINE_SCHEMA)
     vols = fm.get("volumes") or []
     vol_lines = []
@@ -185,6 +207,16 @@ def read_locations(book: str) -> list[dict[str, str]]:
     return rows
 
 
+def write_locations(book: str, rows: list[dict[str, str]]) -> None:
+    """整表写回地点档案（规格01 §2.6：名称/特征/方位·距离/首现章/关联剧情 5 列）。
+
+    与 write_plot_points 同风格：全量序列化固定列 → atomic.write_text 原子落盘。
+    行内多余键忽略、缺列补空串（dump_table 按 LOC_COLS 取值）。
+    """
+    table = dump_table(LOC_COLS, [[r.get(c, "") for c in LOC_COLS] for r in rows])
+    atomic.write_text(books.book_dir(book) / "LOCATIONS.md", "# 地点档案\n\n" + table + "\n")
+
+
 def upsert_location(book: str, name: str, feature: str = "", chapter_no: int = 0, plot: str = "") -> None:
     rows = read_locations(book)
     for r in rows:
@@ -192,5 +224,4 @@ def upsert_location(book: str, name: str, feature: str = "", chapter_no: int = 0
             return
     rows.append({"名称": name, "特征": feature, "方位/距离": "",
                  "首现章": str(chapter_no) if chapter_no else "", "关联剧情": plot})
-    table = dump_table(LOC_COLS, [[r.get(c, "") for c in LOC_COLS] for r in rows])
-    atomic.write_text(books.book_dir(book) / "LOCATIONS.md", "# 地点档案\n\n" + table + "\n")
+    write_locations(book, rows)

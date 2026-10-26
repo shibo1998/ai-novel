@@ -1,9 +1,9 @@
 <script setup lang="ts">
-// 导出页（规格04 §1）：章节合并导出 txt / 全书打包 zip（后端 POST，blob 下载）。
+// 导出页（规格04 §1）：章节合并导出 txt / md / 全书打包 zip（后端 POST，blob 下载）。
 import { ElMessage } from 'element-plus'
 import { onMounted, ref } from 'vue'
 
-import { exportTxt, exportZip, listBooks } from '@/api'
+import { exportMd, exportTxt, exportZip, listBooks } from '@/api'
 import type { BookCard } from '@/api/types'
 
 const books = ref<BookCard[]>([])
@@ -18,13 +18,16 @@ onMounted(() => {
     .catch(() => {})
 })
 
-async function download(kind: 'txt' | 'zip'): Promise<void> {
+type ExportKind = 'txt' | 'md' | 'zip'
+
+async function download(kind: ExportKind): Promise<void> {
   if (!selected.value) {
     ElMessage.warning('先选书')
     return
   }
   try {
     if (kind === 'txt') await exportTxt(selected.value)
+    else if (kind === 'md') await exportMd(selected.value)
     else await exportZip(selected.value)
     ElMessage.success('已开始下载')
   } catch {
@@ -44,9 +47,13 @@ async function download(kind: 'txt' | 'zip'): Promise<void> {
       </el-form-item>
       <el-form-item>
         <el-button @click="download('txt')">导出定稿合并 txt</el-button>
+        <el-button @click="download('md')">导出定稿合并 md</el-button>
         <el-button @click="download('zip')">全书打包 zip</el-button>
       </el-form-item>
     </el-form>
-    <div class="dim">txt 只含 status=final 的定稿章节；zip 打包 books/书名/ 整个目录。</div>
+    <div class="dim">
+      txt/md 只含 status=final 的定稿章节（md 用 <span class="mono">## 第N章</span> 二级标题）；zip
+      打包 books/书名/ 整个目录。
+    </div>
   </div>
 </template>

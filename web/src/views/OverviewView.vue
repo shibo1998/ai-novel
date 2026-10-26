@@ -24,8 +24,9 @@ import {
   putStyleCorpus,
   putStyleEnabled,
   runAudit,
+  listAudits,
 } from '@/api'
-import type { Overview } from '@/api/types'
+import type { AuditReport, CharacterData, Overview } from '@/api/types'
 import { useBookStore } from '@/stores/book'
 import { parseMdTable, toMdTable } from '@/utils/mdtable'
 import { tagType } from '@/utils/status'
@@ -80,7 +81,7 @@ const auditNo = ref<number | undefined>(undefined)
 
 async function load(): Promise<void> {
   store.setCurrentBook(name.value)
-  // 四个读请求并行（老版串行串成 4×RTT）
+  // 读请求并行（老版串行串成 4×RTT）
   const [o, b, pp, st] = await Promise.all([
     getOverview(name.value),
     getBible(name.value),
@@ -94,6 +95,7 @@ async function load(): Promise<void> {
   styleCorpus.value = st.corpus
   styleCard.value = st.card
   styleEnabled.value = st.enabled
+  await loadAudits()
 }
 watch(name, () => void load().catch(() => {}), { immediate: true })
 
@@ -111,9 +113,57 @@ async function ask(label: string, value = ''): Promise<string> {
   }
 }
 
+/** 世界观摘要：圣经各节压成"【节名】内容"单行段，供 G3/G4/G5 当上下文（跳过空节与自检节）。 */
+function bibleSummary(b: Record<string, string>): string {
+  const lines = Object.entries(b)
+    .filter(([title, content]) => content.trim() && !title.includes('自检'))
+    .map(([title, content]) => `【${title}】${content.trim().replace(/\s+/g, ' ').slice(0, 600)}`)
+  return lines.length ? lines.join('\n') : '（世界观圣经暂为空：请按题材常识构建）'
+}
+
+/** 角色卡摘要：每角色一行「名字（role）：境界/位置/情绪/存亡」关键动态状态。 */
+function charSummary(cs: CharacterData[]): string {
+  const lines = cs.map((c) => {
+    const st = (c.status ?? {}) as Record<string, unknown>
+    const brief = [
+      st.realm ? `境界 ${String(st.realm)}` : '',
+      st.location ? `位置 ${String(st.location)}` : '',
+      st.emotion ? `情绪 ${String(st.emotion)}` : '',
+      st.alive === false ? '已死亡' : '',
+    ].filter(Boolean)
+    return `- ${String(c.name ?? '')}（${String(c.role ?? '')}）${brief.length ? '：' + brief.join(' / ') : ''}`
+  })
+  return lines.length ? lines.join('\n') : '（暂无角色卡）'
+}
+
+/** 读圣经摘要：读失败也返回占位串，保证提示词变量齐全（缺失会被后端严格渲染拒绝）。 */
+async function bibleDigest(): Promise<string> {
+  try {
+    return bibleSummary(await getBible(name.value))
+  } catch {
+    return '（世界观圣经读取失败）'
+  }
+}
+
+/** 读角色卡摘要：同上，失败不阻断 G5。 */
+async function charDigest(): Promise<string> {
+  try {
+    return charSummary(await listCharactersFull(name.value))
+  } catch {
+    return '（角色卡读取失败）'
+  }
+}
+
 async function aiArchive(pid: string): Promise<void> {
   const vars: Record<string, string> = {}
+  // G3/G4/G5 的提示词都要真实世界观摘要。G3/G4 早前硬编码 "见圣经"——模型收到的
+  // 就是这三个字，等于没给世界观；G5 则因漏传该变量被后端严格渲染直接拒绝（404）。
+  if (pid === 'G3' || pid === 'G4' || pid === 'G5') {
+    vars['世界观摘要'] = await bibleDigest()
+  }
   if (pid === 'G5') {
+    // G5 必需 5 个变量：世界观摘要 / 角色卡摘要 / logline / 目标总章数 / 单章字数区间
+    vars['角色卡摘要'] = await charDigest()
     vars['目标总章数'] = (await ask('目标总章数', '120')) || '120'
     vars['单章字数区间'] = '2200-2800'
     vars['logline'] = await ask('一句话故事（主角为了X必须做Y但障碍是Z）')
@@ -135,7 +185,6 @@ async function aiArchive(pid: string): Promise<void> {
     try {
       const cs = await listCharactersFull(name.value)
       vars['角色卡合集'] = cs.map((c) => c._body ?? '').join('\n\n')
-      vars['世界观摘要'] = '见圣经'
     } catch {
       // 无角色时留空
     }
@@ -293,6 +342,23 @@ async function toggleStyle(on: boolean | string | number | undefined): Promise<v
 }
 
 // —— 卷末审计（V6） ——
+const audits = ref<AuditReport[]>([])
+const auditView = ref<AuditReport | undefined>(undefined)
+const auditDialogOpen = ref(false)
+
+function openAudit(a: AuditReport): void {
+  auditView.value = a
+  auditDialogOpen.value = true
+}
+
+async function loadAudits(): Promise<void> {
+  try {
+    audits.value = await listAudits(name.value)
+  } catch {
+    audits.value = []
+  }
+}
+
 async function audit(): Promise<void> {
   const n = auditNo.value
   if (!n) {
@@ -305,6 +371,7 @@ async function audit(): Promise<void> {
       message: `审计完成：伏笔回收率 ${r.foreshadow_pay_rate}，报告已存 ${r.report_path}`,
       duration: 10000,
     })
+    await loadAudits() // 审计完立刻能看到新报告
   } catch {
     // 拦截器已提示
   }
@@ -315,15 +382,19 @@ async function audit(): Promise<void> {
   <div class="panel">
     <div class="flex flex-wrap items-center gap-2">
       <span class="text-[15px] font-bold">{{ ov?.meta.title || name }}</span>
-      <span class="flex-1"></span>
-      <span class="dim">
-        全书成本 {{ ((ov?.cost_total.cost_cents ?? 0) / 100).toFixed(2) }} 元 /
-        {{ ov?.cost_total.calls ?? 0 }} 次调用
-      </span>
       <el-tag v-if="(ov?.open_conflicts ?? 0) > 0" type="danger" size="small">
         待裁决 {{ ov?.open_conflicts }} 条
       </el-tag>
       <el-tag v-else type="success" size="small">裁决队列空</el-tag>
+      <span class="flex-1"></span>
+      <!-- 档案编辑（规格04 §1 独立页面）：左树右编辑器 + 结构化表单 + AI diff 预览 -->
+      <el-button type="primary" @click="router.push(`/book/${encodeURIComponent(name)}/archive`)">
+        档案编辑
+      </el-button>
+      <span class="dim">
+        全书成本 {{ ((ov?.cost_total.cost_cents ?? 0) / 100).toFixed(2) }} 元 /
+        {{ ov?.cost_total.calls ?? 0 }} 次调用
+      </span>
     </div>
     <div class="dim mt-1">
       {{ ov?.meta.genre }} · 目标{{ ((ov?.meta.target_words ?? 0) / 10000).toFixed(0) }}万字 ·
@@ -425,6 +496,22 @@ async function audit(): Promise<void> {
           />
           <el-button @click="audit">卷末审计（V6）</el-button>
         </div>
+
+        <!-- 卷末审计报告回看（审计结论已入 review_records，正文在 books/<书名>/audits/） -->
+        <div v-if="audits.length" class="mt-2">
+          <div class="dim mb-1">已生成的审计报告（{{ audits.length }} 份）</div>
+          <div class="flex flex-wrap gap-2">
+            <el-button v-for="a in audits" :key="a.file" size="small" @click="openAudit(a)">
+              {{ a.file }}
+              <span v-if="a.foreshadow_pay_rate" class="dim ml-1">
+                回收率 {{ a.foreshadow_pay_rate }}
+              </span>
+            </el-button>
+          </div>
+        </div>
+        <div v-else class="dim mt-2">
+          （还没有审计报告：填章号点「卷末审计」生成，或某卷最后一章定稿后自动触发）
+        </div>
         <el-table :data="ov?.chapters ?? []" size="small" max-height="520">
           <el-table-column prop="no" label="章" width="60" />
           <el-table-column label="状态" width="140">
@@ -499,6 +586,21 @@ async function audit(): Promise<void> {
     <template #footer>
       <el-button @click="charDialog = false">取消</el-button>
       <el-button type="primary" @click="saveChar">保存角色卡</el-button>
+    </template>
+  </el-dialog>
+
+  <!-- 卷末审计报告回看（只读） -->
+  <el-dialog v-model="auditDialogOpen" width="860px" top="4vh" destroy-on-close>
+    <template #header>
+      <span class="font-bold">卷末审计报告 · {{ auditView?.file }}</span>
+      <span v-if="auditView?.foreshadow_pay_rate" class="dim ml-2">
+        伏笔回收率 {{ auditView.foreshadow_pay_rate }}
+      </span>
+    </template>
+    <pre class="stream-box" style="max-height: 60vh">{{ auditView?.content }}</pre>
+    <div class="dim mt-1">文件：{{ auditView?.path }}</div>
+    <template #footer>
+      <el-button @click="auditDialogOpen = false">关闭</el-button>
     </template>
   </el-dialog>
 </template>

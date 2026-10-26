@@ -32,6 +32,10 @@ DEFAULTS: dict[str, Any] = {
         "deepseek-reasoner": {"input_per_mtok_cents": 55, "output_per_mtok_cents": 219},
         "gemini-2.5-pro": {"input_per_mtok_cents": 125, "output_per_mtok_cents": 1000},
         "gemini-2.5-flash": {"input_per_mtok_cents": 3, "output_per_mtok_cents": 15},
+        # 中转站常见的模型别名（官方名 + 常见变体）。用不到的可在设置页删掉，
+        # 自定义模型名请自行补一行——否则该模型成本按 0 计并记告警日志。
+        "gemini-3.8-flash-high": {"input_per_mtok_cents": 3, "output_per_mtok_cents": 15},
+        "gemini-2.5-flash-high": {"input_per_mtok_cents": 3, "output_per_mtok_cents": 15},
     },
     # 机械检查阈值（M0 设置页可调）
     "mechcheck": {
@@ -103,6 +107,28 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[k] = v
 
 
+MASK_PLACEHOLDER = "已配置（留空保持不变…）"
+
+
+def _guard_masked_keys(partial: dict[str, Any], current: dict[str, Any]) -> None:
+    """拒绝把掩码占位串当成真 key 落盘（P0 回归：UI 二次保存会写坏真实 key）。
+
+    背景：masked() 把 api_key 换成占位串给 UI；若前端把该串原样 PUT 回来，
+    深合并会用它覆盖真实 key，导致 key 永久丢失且 has_key 仍为 true（UI 无感）。
+    这里在落盘前兜底：来值等于占位串 → 删除该字段，保持原 key 不变。
+    """
+    provs = partial.get("providers")
+    if not isinstance(provs, dict):
+        return
+    for name, incoming in provs.items():
+        if not isinstance(incoming, dict):
+            continue
+        key = incoming.get("api_key")
+        if isinstance(key, str) and (key == MASK_PLACEHOLDER or ("…" in key and "已配置" in key)):
+            logger.warning("providers.%s.api_key 收到掩码占位串，已忽略以保留原 key", name)
+            incoming.pop("api_key", None)
+
+
 def save(settings: dict[str, Any]) -> None:
     with _LOCK:
         data_dir().mkdir(parents=True, exist_ok=True)
@@ -112,6 +138,7 @@ def save(settings: dict[str, Any]) -> None:
 def update(partial: dict[str, Any]) -> dict[str, Any]:
     """部分更新（PUT 语义：给什么覆盖什么），校验后落盘并返回完整设置。"""
     current = load()
+    _guard_masked_keys(partial, current)  # 掩码占位串不得覆盖真 key
     _deep_merge(current, partial)
     _validate_structure(current)  # 非法结构直接拒绝，绝不落盘
     save(current)
@@ -125,15 +152,30 @@ def masked() -> dict[str, Any]:
         if not isinstance(prov, dict):
             continue
         key = prov.get("api_key", "")
-        prov["api_key"] = "已配置（留空保持不变…）" if key else ""
+        prov["api_key"] = MASK_PLACEHOLDER if key else ""
         prov["has_key"] = bool(key)
     return s
 
 
+_WARNED_MODELS: set[str] = set()
+
+
 def cost_cents(model: str, input_tokens: int, output_tokens: int) -> int:
+    """按单价折算成本（规格03 §4）。
+
+    未配置单价的模型不再静默返回 0 —— 那会让「单章 >1 元标黄」验收线永远不触发，
+    成本汇总也永远是 0（审计发现的真实问题：中转站自定义模型名不在默认单价表里）。
+    现在：首次遇到未知模型记一条告警日志，便于用户在设置页补单价；返回值仍是 0，
+    但调用方与日志能区分「真的 0 成本」和「不知道怎么算」。
+    """
     prices = load().get("prices", {})
     p = prices.get(model)
     if not p:
+        if model not in _WARNED_MODELS:
+            _WARNED_MODELS.add(model)
+            logger.warning(
+                "模型 %r 未配置单价，本次成本按 0 计（请在设置页「单价」补上，否则"
+                "成本汇总与 >1 元标黄验收线不生效）", model)
         return 0
     return round(
         input_tokens / 1_000_000 * p.get("input_per_mtok_cents", 0)

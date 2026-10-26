@@ -1,6 +1,6 @@
 # AGENTS.md — AI 编码助手项目约束
 
-本地单机 AI 网文创作工作台：文件档案 + SQLite 索引/状态机 + 23 条提示词体系 + 单章生成闭环管线 + Web UI（前端 Vue3 + TypeScript + element-plus + Vite，见规格04 §0）。Windows 主环境，Python ≥3.11，Python 依赖仅 requirements.txt 里 5 个包（不要引入新 Python 依赖，除非规格明确要求且无标准库替代）；前端依赖独立在 `web/package.json`，不受该条约束。
+本地单机 AI 网文创作工作台：文件档案 + SQLite 索引/状态机 + 23 条提示词体系 + 单章生成闭环管线 + Web UI（前端 Vue3 + TypeScript + element-plus + Vite，见规格04 §0）。Windows 主环境，Python ≥3.11，Python 直接依赖仅 requirements.txt 里 5 个包（pydantic 由 fastapi 传递引入，无需单独声明）；不要引入新的 Python 依赖，除非规格明确要求且无标准库替代。前端依赖独立在 `web/package.json`，不受该条约束。
 
 ## 规格是唯一真相源
 
@@ -11,7 +11,7 @@
 ## 命令
 
 ```bash
-python -m pytest tests/        # 全绿为验收线（当前基线 104 项，只增不减）
+python -m pytest tests/        # 全绿为验收线（当前基线 170 项，只增不减）
 python scripts/smoke.py        # 端到端冒烟，跑在临时目录，不污染仓库
 python run.py                  # 启动 Web UI（http://127.0.0.1:8765）
 cd web && npm install          # 首次或依赖变更后

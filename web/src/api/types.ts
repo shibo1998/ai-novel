@@ -150,6 +150,14 @@ export interface AuditResult {
   [k: string]: unknown
 }
 
+// 卷末审计报告（books/<书名>/audits/*.md，GET /api/books/{book}/audits）
+export interface AuditReport {
+  file: string
+  path: string
+  foreshadow_pay_rate: string
+  content: string
+}
+
 export interface Conflict {
   id: number
   kind: string
@@ -163,11 +171,87 @@ export interface Conflict {
   [k: string]: unknown
 }
 
+// 机械检查阈值（规格03 §2.4 M-05~M-11；data/settings.json 的 mechcheck 对象，9 项）
+export interface MechThresholds {
+  sentence_comma_max: number
+  exclaim_per_1k_max: number
+  ellipsis_per_1k_max: number
+  flat_sentence_window: number
+  flat_sentence_ratio: number
+  paragraph_max_chars: number
+  repeat_para_prefix_n: number
+  ending_window_chars: number
+  first_person_ratio_max: number
+}
+
 export interface AppSettings {
-  providers?: { openai?: { api_key?: string; base_url?: string } }
+  providers?: { openai?: { api_key?: string; base_url?: string; has_key?: boolean } }
   default_model?: string
   prices?: Record<string, unknown>
+  mechcheck?: MechThresholds
+  assembly_budget_tokens?: number
   [k: string]: unknown
 }
 
 export type CharacterData = Record<string, unknown> & { _body?: string }
+
+// —— 档案编辑页（规格04 §1）新增类型 ——
+
+/** meta.md frontmatter（规格01 §2.1） */
+export interface BookMeta {
+  title?: string
+  author?: string
+  genre?: string
+  tags?: string[]
+  target_words?: number
+  chapter_word_range?: number[]
+  platform?: string
+  benchmark_book?: string
+  compliance_note?: string
+  status?: string
+  _body?: string
+  [k: string]: unknown
+}
+
+/** books/<书名>/config.json（规格01 §1） */
+export interface BookConfig {
+  genre_template?: string
+  model_stages?: Record<string, string>
+  chapter_word_range?: number[]
+  review_fix_max_rounds?: number
+  scene_mode?: boolean
+  lint_whitelist?: string[]
+  assembly_budget_overrides?: Record<string, unknown>
+  [k: string]: unknown
+}
+
+/** 角色动态状态段（规格01 §2.3，每章由记忆卡回写） */
+export interface CharacterStatus {
+  realm?: string
+  location?: string
+  injuries?: string[]
+  inventory?: string[]
+  emotion?: string
+  alive?: boolean
+  known_info?: string[]
+  updated_chapter?: number
+  [k: string]: unknown
+}
+
+/** 快照正文回看（GET .../snapshots/{version}） */
+export interface SnapshotDetail {
+  version: number
+  label: string
+  created_at: string
+  content: string
+}
+
+/** 人工手改正文结果（PUT .../prose） */
+export interface ProseEditResult {
+  ok: boolean
+  word_count: number
+}
+
+/** 书级 model_stages 五档位（规格01 §1 config.json） */
+export const MODEL_STAGES = ['plan', 'prose', 'polish', 'review', 'longctx'] as const
+export type ModelStage = (typeof MODEL_STAGES)[number]

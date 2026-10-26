@@ -114,6 +114,33 @@ def write_prose(book: str, no: int, fm: dict[str, Any], body: str) -> None:
     atomic.write_text(prose_path(book, no), FM.dump(fm, body))
 
 
+# ---------------------------------------------------------------------------
+# 半成品草稿（规格03 §5：generating 中断 → 保留半成品草稿为 draft.vN）
+# ---------------------------------------------------------------------------
+
+def draft_path(book: str, no: int):
+    """半成品草稿路径：与正文同目录，不参与章节扫描（文件名不以数字+下划线开头）。"""
+    return chapters_dir(book) / f"{no:03d}_正文.draft.md"
+
+
+def write_draft(book: str, no: int, text: str) -> None:
+    """流式生成途中周期性落盘半成品，崩溃后可供"继续/重来"判断，不覆盖正式正文。"""
+    d = chapters_dir(book)
+    d.mkdir(parents=True, exist_ok=True)
+    atomic.write_text(draft_path(book, no), text)
+
+
+def read_draft(book: str, no: int) -> str:
+    p = draft_path(book, no)
+    return p.read_text(encoding="utf-8") if p.exists() else ""
+
+
+def clear_draft(book: str, no: int) -> None:
+    p = draft_path(book, no)
+    if p.exists():
+        p.unlink()
+
+
 def count_words(body: str) -> int:
     """中文字数惯例：非空白字符数。"""
     return len(re.sub(r"\s+", "", body))

@@ -73,6 +73,112 @@ body {
   border-left-color: var(--el-color-danger);
 }
 
+// 机检/审校问题可点击跳转正文（规格04 §2「点击跳转正文位置」）
+.issue.clickable {
+  cursor: pointer;
+}
+.issue.clickable:hover {
+  background: var(--el-fill-color-light);
+}
+
+// —— diff 预览（规格02 §4：AI 生成 → diff 预览 → 人工改定 → 采纳）——
+.diff-box {
+  background: var(--el-bg-color-page);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  padding: 6px 8px;
+  max-height: 62vh;
+  overflow: auto;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.diff-line {
+  display: flex;
+  gap: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.diff-line.add {
+  background: rgba(103, 194, 58, 0.16);
+}
+.diff-line.del {
+  background: rgba(245, 108, 108, 0.16);
+}
+.diff-line.del .diff-text {
+  text-decoration: line-through;
+  opacity: 0.85;
+}
+.diff-no {
+  flex: 0 0 44px;
+  text-align: right;
+  opacity: 0.4;
+  user-select: none;
+  font-size: 11.5px;
+}
+.diff-sign {
+  flex: 0 0 10px;
+  user-select: none;
+  font-weight: 700;
+}
+.diff-text {
+  flex: 1;
+}
+
+// —— 正文按行渲染 + 机检/审校命中跳转高亮（规格04 §2）——
+.prose-scroll {
+  background: var(--el-bg-color-page);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  padding: 8px 10px;
+  min-height: 160px;
+  max-height: 520px;
+  overflow: auto;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.prose-line {
+  display: flex;
+  gap: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-left: 3px solid transparent;
+  padding-left: 4px;
+}
+.prose-line:hover {
+  background: var(--el-fill-color-lighter);
+}
+.prose-line.hit-active {
+  background: rgba(230, 162, 60, 0.28);
+  border-left-color: var(--el-color-warning);
+}
+.prose-line .line-no {
+  flex: 0 0 34px;
+  text-align: right;
+  opacity: 0.35;
+  user-select: none;
+  font-size: 11.5px;
+}
+.prose-line .line-text {
+  flex: 1;
+}
+
+// 档案编辑页：左树右编辑器布局
+.archive-tree {
+  height: calc(100vh - 190px);
+  min-height: 420px;
+  overflow: auto;
+  border-right: 1px solid var(--el-border-color-lighter);
+  padding-right: 6px;
+}
+.archive-editor {
+  max-height: calc(100vh - 190px);
+  min-height: 420px;
+  overflow: auto;
+  padding-left: 8px;
+}
+
 // 顶栏菜单融入 header 背景
 header .el-menu {
   border-bottom: none;

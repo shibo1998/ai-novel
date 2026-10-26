@@ -51,6 +51,10 @@ def read_all(book: str) -> dict[str, dict[str, Any]]:
 
 
 def write(book: str, fm: dict[str, Any], body: str) -> None:
+    # 剥离读接口专用的下划线字段（_body/_file 等），绝不写进角色卡 frontmatter。
+    # 前端编辑弹窗会把 GET 回来的对象整包回传，_file 是本机绝对路径，
+    # 写进档案既污染 schema 又会在换机器后失真（P0 回归）。
+    fm = {k: v for k, v in fm.items() if not k.startswith("_")}
     FM.validate(fm, CHAR_SCHEMA)
     atomic.write_text(file_for(book, fm["name"]), FM.dump(fm, body))
 
@@ -178,3 +182,75 @@ def relationships(book: str, name: str) -> list[dict[str, str]]:
         return []
     _, rows = parse_table(m.group(1), "对象")
     return rows
+
+
+# ---------------------------------------------------------------------------
+# G4 关系网合并写回「关系网络」节（规格02 §4："结果合并写回各角色的关系网络节"）
+# ---------------------------------------------------------------------------
+
+REL_SECTION = "关系网络"
+REL_COLS = ["对象", "关系", "不稳定因素"]
+_REL_HEADER = "| " + " | ".join(REL_COLS) + " |"
+_REL_SEP = "| " + " | ".join("-" * 4 for _ in REL_COLS) + " |"
+
+
+def merge_relationships(book: str, name: str, rows: list[dict[str, str]]) -> int:
+    """把关系行合并追加到角色卡「## 关系网络」节表格末尾（已有内容保留，去重后追加）。
+
+    规格02 §4 要求 G4「结果合并写回各角色的关系网络节」，且 AI 永不静默覆盖人工内容：
+    - 同「对象」的行已存在 → 保留人工内容，不覆盖（计入 kept，不新增）
+    - 「对象」不存在 → 追加一行
+    - 缺失 `## 关系网络` 节 → 在正文末尾补出完整节（原缺陷：关系表被写进顶层无节标题，
+      relationships() 的正则匹配不到，等于白写）
+    - 节内无表格 → 在节末尾补表头后再追加；节内只有「（待填）」占位 → 用表格替换它
+
+    返回实际新增的行数；无新增则不写盘。
+    """
+    rows = [r for r in rows if str(r.get("对象", "")).strip()]
+    if not rows:
+        return 0
+    data = read(book, name)
+    body = data["_body"]
+    existing = {r.get("对象", "").strip() for r in relationships(book, name)}
+
+    new_lines: list[str] = []
+    for r in rows:
+        target = str(r.get("对象", "")).strip()
+        if target in existing:
+            continue
+        existing.add(target)
+        new_lines.append("| " + " | ".join(str(r.get(c, "")) for c in REL_COLS) + " |")
+    if not new_lines:
+        return 0
+
+    m = _REL_SECTION_RE.search(body)
+    if not m:
+        # 无该节 → 末尾补建完整节（含表头）
+        block = (f"## {REL_SECTION}\n\n{_REL_HEADER}\n{_REL_SEP}\n"
+                 + "\n".join(new_lines) + "\n")
+        new_body = body.rstrip("\n") + "\n\n" + block
+    else:
+        new_body = body[: m.start(1)] + _merge_into_section(
+            m.group(1), new_lines) + body[m.end(1):]
+
+    fm = {k: v for k, v in data.items() if not k.startswith("_")}
+    write(book, fm, new_body)
+    return len(new_lines)
+
+
+def _merge_into_section(section: str, new_lines: list[str]) -> str:
+    """把新关系行并入「关系网络」节正文，返回补好的节内容（含结尾换行）。"""
+    lines = section.splitlines()
+    # 节内最后一条表格行之后追加（表头/分隔行在上，数据行接续往下）
+    last_table = max((i for i, ln in enumerate(lines) if ln.strip().startswith("|")),
+                     default=-1)
+    if last_table >= 0:
+        lines[last_table + 1:last_table + 1] = new_lines
+    else:
+        # 节内没有表格：去掉纯占位行，补表头 + 数据行
+        kept = [ln for ln in lines if ln.strip() not in ("", "（待填）")]
+        lines = kept + ["", _REL_HEADER, _REL_SEP, *new_lines]
+    return "\n".join(lines) + "\n"
+
+
+_REL_SECTION_RE = re.compile(r"(?ms)^##\s*关系网络\s*\n(.*?)(?=^##\s|\Z)")

@@ -256,6 +256,11 @@ def _coerce_contract(fm2: dict[str, Any]) -> None:
 
 
 def _validate_contract_ops(fm2: dict[str, Any], book: str, prev_hook_type: str) -> None:
+    """校验章合同的伏笔操作与钩子类型（规格02 P-G6 程序校验）。
+
+    plant 也必须校验编号格式：原来 plant 直接 continue，导致任意字符串
+    （如"随便写的编号"）都能入台账，后续 apply_foreshadow_ops 的编号匹配全乱。
+    """
     hook_type = (fm2.get("hook") or {}).get("type", "")
     if prev_hook_type and hook_type == prev_hook_type:
         raise PipelineError(f"hook.type={hook_type} 与上一章相同，必须更换")
@@ -264,6 +269,11 @@ def _validate_contract_ops(fm2: dict[str, Any], book: str, prev_hook_type: str) 
         fo_id = op.get("fo_id", "")
         kind = op.get("op", "")
         if kind == "plant":
+            if not re.fullmatch(r"FO-\d{3}", str(fo_id)):
+                raise PipelineError(
+                    f"plant 的 fo_id 必须为 FO-xxx 三位编号格式，实际 {fo_id!r}")
+            if fo_id in rows:
+                raise PipelineError(f"{fo_id} 台账已存在，不能重复埋设")
             continue
         row = rows.get(fo_id)
         if row is None:
@@ -347,17 +357,69 @@ def generate_prose(book: str, no: int, client=None,
                    prompt_id: str | None = None) -> dict[str, Any]:
     """prompt_id 可强制指定场景专项（W2 对话/W4 突破/W5 高潮）；默认自动：
     卷首三章 W3 黄金三章专项，其余 W1 常规。
-    书 config scene_mode=true 时逐场景生成再缝合（每场景独立注意力+字数配额）。"""
+    书 config scene_mode=true 时逐场景生成再缝合（每场景独立注意力+字数配额）。
+
+    异常处理（规格03 §3）：任何 LLM/装配异常都必须把状态落 error 后原样抛出，
+    否则该章会永久卡死在 generating（generating 无 retry 出边，UI 无救援入口）。
+    """
     st = statemachine.current_status(book, no)
     if st == "outline_locked":
         statemachine.transition(book, no, "start_generate")
-    elif st != "generating":
+    elif st not in ("generating", "error"):
         raise statemachine.StateError(f"第{no}章状态 {st} 不能生成正文")
+    elif st == "error":
+        statemachine.transition(book, no, "retry")  # error --retry--> 原状态（→generating）
 
+    try:
+        return _generate_prose_inner(book, no, client=client, stream_cb=stream_cb,
+                                     prompt_id=prompt_id)
+    except statemachine.StateError:
+        raise  # 状态机自身的错误不再改写状态（避免掩盖真实原因）
+    except Exception as e:
+        logger.warning("第%s章正文生成失败，状态落 error 以便重试: %s", no, e)
+        statemachine.mark_error(book, no, f"正文生成失败: {e}")
+        raise
+
+
+DRAFT_FLUSH_CHARS = 400  # 半成品落盘节流：每累积约这么多字写一次盘
+
+
+def _draft_cb(book: str, no: int,
+              outer: Callable[[str], None] | None) -> Callable[[str], None]:
+    """包一层 stream_cb：转发给调用方的同时，周期性把半成品写盘（规格03 §5）。
+
+    生成中途崩溃/断网时，已生成的部分可从 `<no>_正文.draft.md` 取回，
+    重开可提示"继续生成或重来"；正式正文文件全程不被污染。
+    """
+    state = {"buf": [], "flushed": 0}
+
+    def cb(piece: str) -> None:
+        state["buf"].append(piece)
+        if outer:
+            outer(piece)
+        total = sum(len(p) for p in state["buf"])
+        if total - state["flushed"] >= DRAFT_FLUSH_CHARS:
+            state["flushed"] = total
+            try:
+                chapters.write_draft(book, no, "".join(state["buf"]))
+            except Exception:  # 落盘失败不能影响生成主流程
+                logger.debug("第%s章半成品草稿落盘失败（忽略）", no)
+
+    cb.state = state  # type: ignore[attr-defined]
+    return cb
+
+
+def _generate_prose_inner(book: str, no: int, client=None,
+                          stream_cb: Callable[[str], None] | None = None,
+                          prompt_id: str | None = None) -> dict[str, Any]:
     cfg = books.load_config(book)
     wr = cfg["chapter_word_range"]
     a = assembler.assemble(book, no)
     _save_preview(book, no, a.preview())
+
+    # 半成品草稿：流式途中周期性落盘，崩溃可续（规格03 §5）
+    draft_cb = _draft_cb(book, no, stream_cb)
+    chapters.clear_draft(book, no)  # 新一轮生成从干净状态开始
 
     contract = chapters.read_outline_contract(book, no)
     contract_text = assembler._render_contract(contract)
@@ -372,8 +434,10 @@ def generate_prose(book: str, no: int, client=None,
         variables["装配上下文"] = a.context_text()
     variables["章合同"] = contract_text
     variables.update(_scene_special_vars(book, no, contract, prompt_id))
-    if prompt_id in ("W1", "W3"):
-        variables["字数区间"] = f"{wr[0]}-{wr[1]}"
+    # 字数区间对所有正文类提示词都是硬约束（W1/W2/W3/W4/W5）：
+    # 原实现只给 W1/W3 传，导致场景专项被当作整章调用时没有任何字数约束，
+    # 只能靠 M-01 事后兜底，用户看不出为什么生成完就变红。
+    variables["字数区间"] = f"{wr[0]}-{wr[1]}"
     if prompt_id == "W1":
         variables["黄金三章附加要求"] = "（本章为黄金三章，严格执行专项标准）" if no <= 3 else ""
     elif prompt_id == "W3":
@@ -383,9 +447,9 @@ def generate_prose(book: str, no: int, client=None,
     scenes = contract.get("scenes") or []
     if cfg.get("scene_mode") and prompt_id == "W1" and len(scenes) >= 2:
         body, fr = _generate_by_scenes(book, no, variables, wr, scenes,
-                                       client=client, stream_cb=stream_cb)
+                                       client=client, stream_cb=draft_cb)
     else:
-        res, _p, _t = _call(book, no, "prose", prompt_id, variables, client=client, stream_cb=stream_cb)
+        res, _p, _t = _call(book, no, "prose", prompt_id, variables, client=client, stream_cb=draft_cb)
         body, fr = res.text.strip(), res.finish_reason
         # 截断/字数越界 → 自动重跑一次并在指令中强调（规格02 P-W1 失败处理）
         if fr == "length" or not _in_range(body, wr):
@@ -393,7 +457,7 @@ def generate_prose(book: str, no: int, client=None,
                         f"（要求 {wr[0]}-{wr[1]}）或被截断（finish_reason={fr}）。"
                         f"本次必须输出完整正文且字数落在区间内。")
             res2, _p2, _t2 = _call(book, no, "prose", prompt_id, variables, client=client,
-                                   stream_cb=stream_cb, extra_instruction=emphasis)
+                                   stream_cb=draft_cb, extra_instruction=emphasis)
             if _better(res2.text, body, wr) or fr == "length":
                 body, fr = res2.text.strip(), res2.finish_reason
 
@@ -405,6 +469,7 @@ def generate_prose(book: str, no: int, client=None,
         "word_count": mechcheck.count_words(body), "finalized_at": None,
     }
     chapters.write_prose(book, no, fm, body + "\n")
+    chapters.clear_draft(book, no)  # 成功落正式正文后清掉半成品
     statemachine.transition(book, no, "complete")  # → mech_check
     return {"word_count": fm["word_count"], "version": version, "finish_reason": fr,
             "mode": "scene" if cfg.get("scene_mode") else "whole"}
@@ -572,7 +637,22 @@ def format_issues(issues: list[Any]) -> str:
     return "\n".join(lines)
 
 
+def _assert_not_finalized(book: str, no: int, action: str) -> None:
+    """定稿守卫：已定稿章节不得被静默改写（规格01 §4、规格03 §2.6、AGENTS.md 红线）。
+
+    定稿即写快照，快照是重写/回滚的唯一依据。若定稿后正文还能被 /fix、/polish、
+    /prose 改写，就会出现「正文已变、status 仍 final、快照未变」的三方不一致，
+    导出的正文与快照对不上。要返工必须先显式解锁（finalized --unlock--> pending_finalize）。
+    """
+    st = statemachine.current_status(book, no)
+    if st == "finalized":
+        raise statemachine.StateError(
+            f"第{no}章已定稿，不能{action}；如需返工请先解锁（定稿后正文受快照保护）"
+        )
+
+
 def run_targeted_fix(book: str, no: int, issues: list[Any], client=None) -> str:
+    _assert_not_finalized(book, no, "定向修复")
     prose = chapters.read_prose(book, no)
     old_body = prose["_body"]
     cfg = books.load_config(book)
@@ -676,6 +756,47 @@ def build_suspect_list(book: str, no: int) -> str:
     return "\n".join(lines) or "（程序预检未发现疑似冲突）"
 
 
+RUBRIC_DIMS = ("ai_flavor", "plot", "pacing", "prose", "hook")
+RUBRIC_FIX_THRESHOLD = 70  # 规格03 §6：任一维 <70 触发 fix
+
+
+def _enforce_rubric(result: dict[str, Any]) -> str:
+    """程序强制 rubric 守门（规格02 P-V1 改造点5、规格03 §6）。
+
+    规格要求「存在 blocking 或任一维 <70 → fix」，但原实现只信模型自己给的
+    verdict：模型若判 pass 却给出低分（放水/自相矛盾），程序直接放行到定稿。
+    这里按分数与 blocking 问题重算 verdict，模型只能把结果判得更严、不能更松。
+    """
+    declared = str(result.get("verdict") or "").strip().lower()
+    scores = result.get("scores") or {}
+    low = [f"{k}={scores.get(k)}" for k in RUBRIC_DIMS
+           if isinstance(scores.get(k), (int, float)) and scores[k] < RUBRIC_FIX_THRESHOLD]
+    has_blocking = any(
+        str(it.get("severity", "")).lower() == "blocking"
+        for it in (result.get("issues") or []) if isinstance(it, dict)
+    )
+
+    if not low and not has_blocking:
+        return declared or "pass"
+
+    # 有硬伤：declared 若已是 fail 就保持，否则至少降到 fix
+    if declared == "fail":
+        return "fail"
+    if declared == "pass":
+        reason = []
+        if low:
+            reason.append(f"低分维度 {', '.join(low)}（阈值 {RUBRIC_FIX_THRESHOLD}）")
+        if has_blocking:
+            reason.append("存在 blocking 问题")
+        logger.warning("rubric 守门：模型自称 pass，程序强制改判 fix（%s）", "；".join(reason))
+        result["rubric_override"] = {
+            "declared": declared, "forced": "fix",
+            "low_dims": low, "has_blocking": has_blocking,
+        }
+        return "fix"
+    return declared
+
+
 def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
     st = statemachine.current_status(book, no)
     if st != "llm_review":
@@ -743,7 +864,8 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
                   kind="llm", scores=result.get("scores"), issues=result.get("issues"),
                   verdict=result.get("verdict"))
 
-    verdict = result.get("verdict")
+    verdict = _enforce_rubric(result)
+    result["verdict"] = verdict
     if verdict == "pass":
         statemachine.transition(book, no, "pass")  # → pending_finalize
         return result
@@ -766,9 +888,11 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
             return run_llm_review(book, no, client=client)  # 重跑 2.5
         return result
 
-    # fail 或轮次耗尽
+    # fail 或轮次耗尽（含 rubric 守门多次改判 fix 后耗尽的情况）
     event = "fail" if verdict == "fail" else "rounds_exhausted"
     statemachine.transition(book, no, event)  # → human_review
+    result["stopped_reason"] = ("轮次耗尽仍未达标" if event == "rounds_exhausted"
+                                else "模型判定 fail")
     return result
 
 
@@ -855,14 +979,38 @@ def edit_outline(book: str, no: int) -> None:
 
 
 def human_rewrite(book: str, no: int, base_version: int | None = None) -> int:
-    """human_review/finalized → generating，开新 version 分支（不覆盖旧 draft）。"""
-    new_version = _next_version(book, no)
-    body = ""
+    """human_review/finalized → generating，开新 version 分支（不覆盖旧 draft）。
+
+    修复三处数据丢失隐患：
+    1. 先校验状态再落盘——原实现是先写正文后迁状态，在非法状态下调用会
+       「先毁数据再抛 StateError」，正文已被空 body 覆盖。
+    2. base_version=None 时不再写空正文——原实现 body="" 直接覆盖同一路径
+       （正文是单文件，路径不含 version），human_review 恰好无快照，一点即清空。
+       现在回落到「沿用当前正文」作为新分支的起点。
+    3. 快照不存在时在落盘前就抛错，不留下被清空的半成品。
+    """
+    st = statemachine.current_status(book, no)
+    allowed = ("human_review", "finalized")
+    if st not in allowed:
+        raise statemachine.StateError(
+            f"第{no}章状态 {st} 不能开新版本重写（需 {'/'.join(allowed)}）"
+        )
+
+    # 1) 先确定新版本的正文来源（任何取数失败都在落盘前抛出）
     if base_version is not None:
         snap = get_snapshot(book, no, base_version)
         if snap is None:
-            raise PipelineError(f"快照 v{base_version} 不存在")
+            raise PipelineError(f"快照 v{base_version} 不存在，未做任何改动")
         body = snap
+    else:
+        # 无指定快照：沿用当前正文开新分支（绝不写空正文）
+        try:
+            body = chapters.read_prose(book, no)["_body"]
+        except Exception:
+            body = ""
+
+    # 2) 落盘新版本
+    new_version = _next_version(book, no)
     fm = {"chapter_no": no, "version": new_version, "status": "draft",
           "word_count": mechcheck.count_words(body), "finalized_at": None}
     chapters.write_prose(book, no, fm, body)
@@ -1066,4 +1214,14 @@ def audit_volume(book: str, last_chapter: int, client=None) -> dict[str, Any]:
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"卷{vol_no}_审计.md"
     atomic.write_text(path, report)
+
+    # 审计结果入库（规格01 §3 review_records 的 kind 含 'audit'；
+    # 原实现只写文件不入库，UI 无法按章/版本检索审计结论）
+    db.add_review(book_id=books.book_id(book), chapter_no=last_chapter,
+                  version=_version(book, last_chapter), kind="audit",
+                  scores={"foreshadow_paid": paid, "foreshadow_total": total},
+                  issues=[{"category": "audit_report", "severity": "info",
+                           "location": str(path), "quote": "",
+                           "description": f"卷{vol_no} 审计报告", "suggestion": ""}],
+                  verdict="pass")
     return {"report_path": str(path), "foreshadow_pay_rate": rate}

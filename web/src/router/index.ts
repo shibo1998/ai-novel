@@ -7,6 +7,8 @@ const router = createRouter({
     { path: '/', redirect: '/shelf' },
     { path: '/shelf', component: () => import('@/views/ShelfView.vue') },
     { path: '/book/:name', component: () => import('@/views/OverviewView.vue') },
+    // 档案编辑（规格04 §1 独立页面）：左树右编辑器 + 结构化表单 + AI diff 预览。
+    { path: '/book/:name/archive', component: () => import('@/views/ArchiveView.vue') },
     { path: '/book/:name/chapter/:no', component: () => import('@/views/WorkbenchView.vue') },
     { path: '/conflicts', component: () => import('@/views/ConflictsView.vue') },
     { path: '/settings', component: () => import('@/views/SettingsView.vue') },
