@@ -509,7 +509,12 @@ def _death_known_before(ctx: dict[str, Any], name: str, row: dict[str, Any]) -> 
     return died_at < cur
 
 
-def _realm_index(value: str, order: list[str]) -> int | None:
+def realm_index(value: str, order: list[str]) -> int | None:
+    """把「感气境初入」「**凝煞境**」映射到境界阶梯的下标；认不出返回 None。
+
+    公开版本：写回侧也要用它判断「V4 自创的境界名」——认不出就意味着
+    M-13 会静默跳过这个人（查不了 = 看起来没问题），必须在写回时就拦下来。
+    """
     v = value.replace("**", "").replace("*", "").strip()
     if not v:
         return None
@@ -519,6 +524,9 @@ def _realm_index(value: str, order: list[str]) -> int | None:
         if item and (item in v or v in item):
             return i
     return None
+
+
+_realm_index = realm_index
 
 
 def _run_checks(body: str, *, word_range: list[int] | None, th: dict[str, Any],

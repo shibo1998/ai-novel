@@ -992,3 +992,136 @@ class TestDraftRecovery:
         assert r.status_code == 422
         r2 = client.post(f"/api/books/{book}/chapters/1/draft/adopt", json={"force": True})
         assert r2.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# T-46 ~ T-49  实测打出来的四处「假成功 / 假警报」守卫
+# ---------------------------------------------------------------------------
+
+class _TextLLM:
+    """V5 桩：返回给定文本（用于「真改了」的正向用例）。"""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def chat(self, **_kw):
+        from ainovel import llm
+
+        return llm.LLMResult(text=self.text, input_tokens=1, output_tokens=1, model="stub")
+
+
+class _TextLLM:
+    """V5 桩：返回给定文本（用于「真改了」的正向用例）。"""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def chat(self, **_kw):
+        from ainovel import llm
+
+        return llm.LLMResult(text=self.text, input_tokens=1, output_tokens=1, model="stub")
+
+
+class TestFlowGuards:
+    """这四条都不是设计出来的，是第 3/4/6 章真跑一遍暴露出来的。
+
+    共同点：它们**不改坏就发现不了**——修复说"成功"其实没改、台账说"没执行"
+    其实执行了、境界名查不到就静默跳过。所以每条都要有反向用例。
+    """
+
+    def test_t46_v5_noop_is_not_success(self, home, book_env):
+        """V5 原样返回（一字未改）不得被当成修复成功。"""
+        book, _ = book_env
+        mock = _ready_chapter(book)
+        body = chapters.read_prose(book, 1)["_body"]
+        sentence = body.split("。")[0].strip()[:12]
+        assert len(sentence) >= 8
+        issues = [{"category": "prose", "severity": "blocking", "location": "首句",
+                   "quote": sentence + "。", "description": "模板句",
+                   "suggestion": "换成具体动作"}]
+
+        with pytest.raises(pipeline.FixIneffective):
+            pipeline.run_targeted_fix(book, 1, issues, client=mock)
+        # MockLLM 的 V5 就是原样返回，正文必须一个字都没动
+        assert chapters.read_prose(book, 1)["_body"] == body
+
+    def test_t47_partial_fix_still_accepted(self, home, book_env):
+        """只改了点名那一句 → 接受输出；多句引用的 quote 不参与「未改」判定。"""
+        book, _ = book_env
+        mock = _ready_chapter(book)
+        body = chapters.read_prose(book, 1)["_body"]
+        # MockLLM 的正文是同一句反复堆出来的，所以替换要**全局**：
+        # 只换第一处、别处还在，保真校验会（正确地）判定「没改」。
+        sentence = body.split("。")[0].strip()[:12]
+        issues = [
+            {"category": "prose", "severity": "warning", "quote": sentence + "。",
+             "description": "模板句", "suggestion": "改"},
+            # 多句引用无法用字符串判定改没改，不参与「未改」计数
+            {"category": "prose", "severity": "warning",
+             "quote": "第一句。第二句要多一点长度才能算。第三句。",
+             "description": "多句", "suggestion": "改"},
+        ]
+        assert len(pipeline._single_sentence_quotes(issues)) == 1
+
+        fixed = body.replace(sentence, "铁皮棚顶被雨砸出的白烟散了。")
+        assert fixed != body
+        pipeline.run_targeted_fix(book, 1, issues, client=_TextLLM(fixed))
+        assert "铁皮棚顶被雨砸出的白烟散了" in chapters.read_prose(book, 1)["_body"]
+
+    def test_t48_plant_idempotent_keeps_content(self, home, book_env):
+        """同章重放 plant：不报错，但**绝不改写**已有伏笔的内容。"""
+        from ainovel import outline
+
+        book, _ = book_env
+        outline.write_plot_points(book, [{
+            "编号": "FO-001", "内容": "玄铁令的来历", "埋设章": "1",
+            "推进章": "", "预计回收章": "9", "状态": "planted", "备注": "",
+        }])
+        errs, _warns = outline.apply_foreshadow_ops(
+            book, 1, [{"op": "plant", "fo_id": "FO-001", "note": "完全无关的另一件事"}])
+        assert errs == []
+        row = next(r for r in outline.read_plot_points(book) if r["编号"] == "FO-001")
+        assert row["内容"] == "玄铁令的来历"
+        assert len(outline.read_plot_points(book)) == 1  # 没有多出一行
+
+    def test_t49_unknown_realm_goes_to_conflict_queue(self, home, book_env):
+        """V4 自创的境界名必须进裁决队列，否则 M-13 静默跳过这个人。"""
+        from ainovel import bible, conflicts, mechcheck
+
+        book, _ = book_env
+        mem = _memory_with_state(1)
+        mem["state_delta"][0]["power_level"] = "练气八层"
+        _finalize_chapter(book, 1, mem)
+
+        ladder = bible.realm_order(book)
+        assert mechcheck.realm_index("练气八层", ladder) is None
+        items = [c for c in conflicts.list_open(book) if c["kind"] == "realm_name"]
+        assert items, "自创境界名没有进裁决队列"
+        assert "练气八层" in items[0]["detail"]
+
+    def test_t50_drift_not_reported_when_ledger_already_reflects(self, home, book_env):
+        """台账已体现的推进不算漂移——只看记忆卡会把「卡漏记」报成「没执行」。"""
+        from ainovel import outline
+
+        book, _ = book_env
+        pipeline.generate_outline(book, 1, client=MockLLM())
+        contract = chapters.read_outline_contract(book, 1)
+        fm = {k: v for k, v in contract.items() if k != "_body"}
+        fm["foreshadow_ops"] = [{"op": "advance", "fo_id": "FO-001", "note": "令牌发烫"}]
+        chapters.write_outline_contract(book, 1, fm, contract["_body"])
+
+        # 记忆卡里没记这次推进（第 6 章 FO-007 就是这样）
+        mem = _memory_with_state(1)
+        mem["foreshadow_ops"] = []
+        chapters.write_memory(book, 1, mem, "记忆卡正文。\n")
+
+        row = {"编号": "FO-001", "内容": "玄铁令", "埋设章": "1",
+               "推进章": "1", "预计回收章": "", "状态": "building", "备注": ""}
+        outline.write_plot_points(book, [row])
+        assert pipeline.foreshadow_drift(book, 1) == []
+
+        row["推进章"] = ""
+        row["状态"] = "planted"
+        outline.write_plot_points(book, [row])
+        drift = pipeline.foreshadow_drift(book, 1)
+        assert drift and "FO-001" in drift[0]

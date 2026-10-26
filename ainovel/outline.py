@@ -1,11 +1,14 @@
 """OUTLINE.md / PLOT_POINTS.md / LOCATIONS.md（规格01 §2.4-§2.6）。"""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from . import atomic, books, frontmatter as FM
 from .mdtable import dump_table, parse_table
+
+logger = logging.getLogger(__name__)
 
 OUTLINE_SCHEMA: FM.Schema = {
     "required": ["logline"],
@@ -204,12 +207,13 @@ def apply_foreshadow_ops(
         if kind == "plant":
             if fo_id in by_id:
                 existing = by_id[fo_id]
-                # 幂等：同一章重放 plant 不报错也不新建行（记忆卡补做会重跑同一张卡）
+                # 幂等：同一章重放 plant 不报错、不新建行（记忆卡补做会重跑同一张卡）。
+                # 但**绝不回写「内容」**：台账是权威，V4 只是提议。实测第 3 章重跑时，
+                # V4 把「苏婉给出透骨丹」误当 plant FO-003，而 FO-003 是「监察令」，
+                # 若在这里覆盖内容，台账就把一条伏笔的定义悄悄换掉了——编号没变、
+                # 下游引用全在，但意思已经错位，比直接报错危险得多。
                 if str(existing.get("埋设章", "")).strip() == str(chapter_no):
-                    if op.get("note"):
-                        existing["内容"] = op["note"]
-                    if op.get("expected_pay"):
-                        existing["预计回收章"] = str(op["expected_pay"])
+                    logger.debug("%s: 第%s章已埋设过，跳过（内容保持不变）", fo_id, chapter_no)
                     continue
                 errors.append(f"{fo_id}: 台账已存在，不能重复埋设")
                 continue

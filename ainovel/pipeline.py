@@ -32,6 +32,18 @@ class FixOverreach(PipelineError):
     """V5 越权重写：未涉及问题句段的改动率 >10% → 丢弃输出，版本+1 走完整重生成。"""
 
 
+class FixIneffective(FixOverreach):
+    """V5 修完「点名要改的那句」一个字没动（程序保真校验兜底）。
+
+    与 FixOverreach 同一处置（输出不可用 → 转人工），所以直接继承：
+    既有救援分支不用改就能正确接住。但日志与措辞必须区分——把它当成
+    「越权」会掩盖真正的原因（模型偷懒不改），下次还会照样发生。
+
+    实测来源：第 4 章 V5 跑完，审校点名的 4 条（含禁用词「骤然」）全部原样
+    留在正文里，而 pipeline 一路当成「修复成功」继续往下走，白烧了一轮审校。
+    """
+
+
 # ---------------------------------------------------------------------------
 # LLM 调用统一入口：渲染 + 计费 + 落 generation_log
 # ---------------------------------------------------------------------------
@@ -866,6 +878,17 @@ def run_targeted_fix(book: str, no: int, issues: list[Any], client=None) -> str:
     }
     res, _p, _t = _call(book, no, "fix", "V5", variables, client=client)
     new_body = res.text.strip() + "\n"
+    missed = _fix_missed(new_body, issues)
+    text_total = len(_single_sentence_quotes(issues))
+    if missed and text_total and len(missed) >= text_total:
+        logger.warning("第%s章 V5 未改到任何点名句段（%d/%d 原样保留），输出已丢弃：%s",
+                       no, len(missed), text_total,
+                       "｜".join(m[:18] for m in missed[:3]))
+        raise FixIneffective(
+            f"V5 点名要改的 {text_total} 处句段一处未动，本次输出已丢弃")
+    if missed:
+        logger.warning("第%s章 V5 有 %d/%d 处点名句段未改（已接受其余修复）：%s",
+                       no, len(missed), text_total, "｜".join(m[:18] for m in missed[:3]))
     if _overreach(old_body, new_body, issues):
         logger.warning("第%s章 V5 越权护栏触发：未涉及句段改动率 >10%%，输出已丢弃", no)
         raise FixOverreach("未涉及问题句段的改动率 >10%，本次输出已丢弃")
@@ -888,6 +911,54 @@ def _split_quote(q: str) -> list[str]:
         if len(frag) >= 4:
             out.append(frag[:12])
     return out
+
+
+_TEXT_ISSUE_CATEGORIES = frozenset(
+    {"ai_flavor", "prose", "style", "wording", "sentence", "word", "dialogue"}
+)
+
+
+def _single_sentence_quotes(issues: list[Any]) -> list[str]:
+    """取出「单句」类的文字问题原句（判「改没改」只用这一种）。
+
+    只取单句，是因为多句引用的 quote 无法用字符串比对判断是否改到位：
+    审校常把 2-3 句一起引用，修复只要改其中 1 句就算完成，其余原样保留是
+    **正确**的，硬判「没改」必然误报。单句引用没有这个歧义：它原样还在，
+    就是没改。
+
+    机检条目（dict 带 rule / Hit 带 word）不走这里——它们的处置由
+    重跑机检后的命中数决定，比字符串比对可靠。
+    """
+    out: list[str] = []
+    for it in issues or []:
+        if not isinstance(it, dict) or it.get("rule"):
+            continue
+        if str(it.get("category") or "").lower() not in _TEXT_ISSUE_CATEGORIES:
+            continue
+        quote = str(it.get("quote") or "").strip()
+        if len(quote) < 8:
+            continue
+        # 先按句号/感叹号/分号切，**不做长度过滤**再数句数：短句（"第一句"）被过滤掉
+        # 会让三句引用退化成一个「句子」，反而被当成单句参与判定（实测踩过）。
+        parts = [s for s in re.split(r"[。！？!?…；;]+", quote) if s.strip()]
+        if len(parts) != 1 or len(parts[0].strip()) < 8:
+            continue
+        out.append(quote)
+    return out
+
+
+def _fix_missed(new: str, issues: list[Any]) -> list[str]:
+    """修复后仍原样保留的单句问题——识别「V5 说改好了、其实没改」。
+
+    只比句子主体前 10 字：结尾标点（。→；、！→。）常被顺手改掉，
+    连标点一起比会把「改了标点没改内容」当成已修复。
+    """
+    missed: list[str] = []
+    for quote in _single_sentence_quotes(issues):
+        body = next((s.strip() for s in re.split(r"[。！？!?…；;]+", quote) if s.strip()), "")
+        if body and body[:10] in new:
+            missed.append(quote)
+    return missed
 
 
 def _overreach(old: str, new: str, issues: list[Any]) -> bool:
@@ -1499,13 +1570,47 @@ def list_versions(book: str, no: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+_NON_REALM_LABELS = frozenset(
+    {"凡人", "普通人", "常人", "无", "未知", "不明", "-", "—", "？", "?"}
+)
+
+
+def _ledger_reflects(book: str, no: int, fo_id: str, op: str) -> bool:
+    """台账里是否已经体现了「第 no 章执行了 op」。
+
+    漂移判定必须看**台账**而不是只看记忆卡：第 6 章实测——细纲声明 advance
+    FO-007，记忆卡漏记，但台账的 `推进章` 早就有 6（前一版记忆卡推进的）。
+    这时再报「漏执行」就是假警报；假警报多了，人就不看了。
+    """
+    try:
+        from . import outline
+
+        row = next((r for r in outline.read_plot_points(book)
+                    if str(r.get("编号") or "") == fo_id), None)
+    except Exception:
+        return False
+    if row is None:
+        return False
+    if op == "plant":
+        return str(row.get("埋设章") or "").strip() == str(no)
+    if op == "advance":
+        parts = [p.strip() for p in str(row.get("推进章") or "").split(",") if p.strip()]
+        return str(no) in parts
+    if op == "pay":
+        return str(row.get("状态") or "") == "paid" and f"第{no}章" in str(row.get("备注") or "")
+    return False
+
+
 def foreshadow_drift(book: str, no: int) -> list[str]:
-    """细纲声明的伏笔操作 vs 记忆卡（V4 从正文抽取）实际执行的操作。
+    """细纲声明的伏笔操作 vs 实际执行（记忆卡 + 台账）。
 
     第 11 章实测：细纲写 pay FO-001，但正文没真正回收，V4 抽出来是 advance，
     台账停在 building。设计上「以记忆卡为准」是对的——正文写了什么才算数。
     问题在于两边不一致时没有任何提示，于是第 12 章又安排了一次回收，
     读者会看到同一个伏笔被回收两遍。这里把差异摆到定稿返回里。
+
+    判定口径：记忆卡记了 **或** 台账已经体现，都算「执行过」。只看记忆卡
+    会漏掉「卡漏记但台账已推进」的情况（第 6 章 FO-007 就是这样），变成假警报。
     """
     try:
         contract = chapters.read_outline_contract(book, no)
@@ -1524,6 +1629,8 @@ def foreshadow_drift(book: str, no: int) -> list[str]:
     out: list[str] = []
     for fo_id, op in declared:
         if not fo_id or (fo_id, op) in actual:
+            continue
+        if _ledger_reflects(book, no, fo_id, op):
             continue
         got = sorted({o for f, o in actual if f == fo_id})
         out.append(
@@ -1739,6 +1846,27 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
                     for u in unknown if u
                 ])
             fp = mechcheck.fingerprint(prose["_body"])
+            # 战力名称必须在圣经力量体系里：V4 会自创境界名（实测出现过 练气期 / 通脉境 /
+            # 筑基初期，而正典是 感气境·初入/明目/洗髓）。一旦落库，M-13 的 realm_order
+            # 查不到就静默跳过——「查不了」被当成「没问题」，正是最难发现的那类失效。
+            # 这里不拒绝落库（事实优先，卡已经写了），但必须进裁决队列等人工归一。
+            from . import bible
+
+            ladder = bible.realm_order(book)
+            bad_realm = [e for e in clean
+                         if (e.get("power_level") or "").strip()
+                         and str(e["power_level"]).strip() not in _NON_REALM_LABELS
+                         and mechcheck.realm_index(str(e["power_level"]), ladder) is None]
+            if ladder and bad_realm:
+                conflicts.enqueue([
+                    characters.Conflict(
+                        "realm_name", book, no,
+                        f"{e.get('character')} 的战力「{e['power_level']}」不在圣经体系内"
+                        f"（正典：{'/'.join(ladder[:6])}…），M-13 无法比较",
+                        None, None)
+                    for e in bad_realm
+                ])
+                logger.warning("第%s章 有 %d 个战力名称不在力量体系内，已入裁决队列", no, len(bad_realm))
             state_mod.upsert_entries(book, no, clean, fingerprint=fp)
             state_mod.rebuild_state_md(book, upto_chapter=no)
         except Exception as e:  # 快照失败不能吞掉事实：记警告，章节仍可定稿
