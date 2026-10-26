@@ -444,6 +444,95 @@ def generate_prose(book: str, no: int, client=None,
 
 
 DRAFT_FLUSH_CHARS = 400  # 半成品落盘节流：每累积约这么多字写一次盘
+DRAFT_MIN_ADOPT_CHARS = 500  # 低于此值大概率只是开头，采纳要显式 force
+
+
+def draft_info(book: str, no: int) -> dict[str, Any]:
+    """草稿状态（规格05 F-09）。不存在时返回 exists=False，不是 404——前端好处理。"""
+    path = chapters.draft_path(book, no)
+    if not path.exists():
+        return {"exists": False, "chars": None, "generated_at": None,
+                "preview": None, "stale": None}
+    text = chapters.read_draft(book, no)
+    stale = False
+    try:
+        prose_path = chapters.prose_path(book, no)
+        if prose_path.exists():
+            stale = path.stat().st_mtime < prose_path.stat().st_mtime
+    except OSError:
+        stale = False
+    return {
+        "exists": True,
+        "chars": mechcheck.count_words(text),
+        "generated_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+        "preview": text.strip()[:200],
+        "stale": stale,
+    }
+
+
+def _clean_draft_text(text: str) -> str:
+    """去掉草稿可能残留的 frontmatter 与首尾空行。"""
+    t = text.replace("\r\n", "\n").strip()
+    if t.startswith("---"):
+        m = re.match(r"^---\s*\n.*?\n---\s*\n?", t, re.DOTALL)
+        if m:
+            t = t[m.end():]
+    return t.strip()
+
+
+def adopt_draft(book: str, no: int, force: bool = False) -> dict[str, Any]:
+    """把半成品草稿采纳为正式正文，然后**照常过机检**。
+
+    草稿是半成品，更可能字数不足或残缺——正因如此不能跳过 M-01。
+    """
+    st = statemachine.current_status(book, no)
+    if st == "generating":
+        # 用户主动中断后再采纳：先把状态落到 error，才有 adopt_draft 出边
+        statemachine.transition(book, no, "fail")
+        st = "error"
+    if st != "error":
+        raise statemachine.StateError(
+            f"第{no}章状态 {st} 不能采纳草稿（需 error/generating，先中断或等失败）")
+
+    path = chapters.draft_path(book, no)
+    if not path.exists():
+        raise FileNotFoundError(f"第{no}章没有草稿")
+    info = draft_info(book, no)
+    if info["stale"] and not force:
+        raise PipelineError("草稿比正文旧（正文后来改过），采纳会覆盖新内容；确认要覆盖请带 force")
+    body = _clean_draft_text(chapters.read_draft(book, no))
+    chars = mechcheck.count_words(body)
+    if chars == 0:
+        raise PipelineError("草稿为空，无法采纳")
+    if chars < DRAFT_MIN_ADOPT_CHARS and not force:
+        raise PipelineError(
+            f"草稿只有 {chars} 字（<{DRAFT_MIN_ADOPT_CHARS}），大概率只是开头；"
+            "确认要采纳请带 force")
+
+    try:
+        prose = chapters.read_prose(book, no)
+        fm = {k: v for k, v in prose.items() if not k.startswith("_")}
+    except Exception:
+        row = statemachine.get_row(book, no)
+        fm = {"chapter_no": no, "version": (row or {}).get("current_version", 1),
+              "status": "draft", "word_count": 0, "finalized_at": None}
+    fm.update(status="draft", word_count=chars,
+              draft_adopted_at=datetime.now().isoformat(timespec="seconds"))
+    chapters.write_prose(book, no, fm, body + "\n")
+    chapters.clear_draft(book, no)
+    db.log_generation(book_id=books.book_id(book), chapter_no=no,
+                      stage="draft_adopt", status="ok", error=f"采纳草稿 {chars} 字")
+    statemachine.transition(book, no, "adopt_draft")  # → mech_check
+    return {"ok": True, "chars": chars,
+            "status": statemachine.current_status(book, no)}
+
+
+def discard_draft(book: str, no: int) -> dict[str, Any]:
+    chapters.clear_draft(book, no)
+    return {"ok": True, "status": statemachine.current_status(book, no)}
+
+
+DRAFT_MIN_ADOPT_CHARS = 500  # 低于此值大概率只是开头，采纳要显式 force
 
 
 def _draft_cb(book: str, no: int,
@@ -693,7 +782,23 @@ def _lint_whitelist(book: str) -> list[str]:
 
 def _check(book: str, no: int, wr: list[int] | None) -> mechcheck.CheckResult:
     prose = chapters.read_prose(book, no)
-    return mechcheck.check_full(prose["_body"], word_range=wr, whitelist=_lint_whitelist(book))
+    ctx = None
+    try:
+        from . import state as state_mod
+
+        ctx = state_mod.mech_context(book, no)
+        ctx["timeline_hits"] = timeline_validate(book, prose["_body"])
+    except Exception as e:  # 上下文取不到 → 让 M-13~M-17 如实报"未查"，不当成通过
+        logger.warning("第%s章状态/时间线上下文读取失败: %s", no, e)
+        ctx = None
+    return mechcheck.check_full(prose["_body"], word_range=wr,
+                                whitelist=_lint_whitelist(book), context=ctx)
+
+
+def timeline_validate(book: str, body: str = "") -> list[dict[str, Any]]:
+    from . import timeline
+
+    return timeline.validate(book, body)
 
 
 def _version(book: str, no: int) -> int:
@@ -1464,6 +1569,113 @@ def finalize(book: str, no: int, client=None) -> dict[str, Any]:
 # 7. 记忆卡回写（规格03 §2.7）
 # ---------------------------------------------------------------------------
 
+def memory_card_pending(book: str) -> list[dict[str, Any]]:
+    """列出需要补做记忆卡的章（规格05 F-04）。
+
+    三种待办，`reason` 如实区分——"导入待补"与"回写失败"是两回事，
+    混在一起会让人以为系统坏了：
+    - `missing`：定稿了但卡不存在（回写失败 / 导入的历史章）
+    - `fingerprint_mismatch`：卡存在，但记的是旧版正文（正文改过）
+    - `legacy_no_state`：卡是老格式（无 state_delta），长期记忆不完整
+    """
+    out: list[dict[str, Any]] = []
+    for no in chapters.list_chapters(book):
+        try:
+            st = statemachine.current_status(book, no)
+        except Exception:
+            continue
+        if st != "finalized":
+            continue
+        path = chapters.memory_path(book, no)
+        if not path.exists():
+            out.append({"no": no, "title": _chapter_title(book, no),
+                        "reason": "missing", "has_card": False})
+            continue
+        try:
+            prose = chapters.read_prose(book, no)
+            cur_fp = mechcheck.fingerprint(prose["_body"])
+            card_fp = chapters.memory_fingerprint(book, no)
+            legacy = chapters.read_memory(book, no).get("legacy", False)
+        except Exception:
+            out.append({"no": no, "title": _chapter_title(book, no),
+                        "reason": "unreadable", "has_card": True})
+            continue
+        if card_fp and card_fp != cur_fp:
+            out.append({"no": no, "title": _chapter_title(book, no),
+                        "reason": "fingerprint_mismatch", "has_card": True})
+        elif legacy:
+            out.append({"no": no, "title": _chapter_title(book, no),
+                        "reason": "legacy_no_state", "has_card": True})
+    return out
+
+
+def _chapter_title(book: str, no: int) -> str:
+    row = statemachine.get_row(book, no)
+    return (row or {}).get("title", "") or f"第{no}章"
+
+
+def rebuild_memory_card(book: str, no: int, client=None) -> dict[str, Any]:
+    """单章补做记忆卡（幂等）。
+
+    顺序很关键：先撤销本章已经产生的派生事实，再重跑 V4，否则伏笔会被推第二次
+    （advance/pay 是单向机）。角色状态是覆盖写、天然幂等，不需要回滚。
+    """
+    st = statemachine.current_status(book, no)
+    if st != "finalized":
+        raise statemachine.StateError(
+            f"第{no}章状态 {st} 不能补做记忆卡（需 finalized）")
+
+    from . import state as state_mod
+
+    rollback = {"state_rows": 0, "foreshadow": {}, "card_deleted": False}
+    ops_from_card: list[dict[str, Any]] = []
+    if chapters.memory_path(book, no).exists():
+        try:
+            ops_from_card = list(chapters.read_memory(book, no).get("foreshadow_ops") or [])
+        except Exception:
+            ops_from_card = []
+    try:
+        existing = state_mod.chapter_rows(book, no)
+        state_mod.clear_chapter(book, no)
+        rollback["state_rows"] = len(existing)
+    except Exception as e:
+        logger.warning("第%s章旧状态快照清理失败: %s", no, e)
+    try:
+        rollback["foreshadow"] = outline.rollback_foreshadow_ops(book, no, ops_from_card)
+    except Exception as e:
+        logger.warning("第%s章伏笔回滚失败: %s", no, e)
+    if chapters.memory_path(book, no).exists():
+        chapters.clear_memory(book, no)
+        rollback["card_deleted"] = True
+
+    wb = writeback_memory(book, no, client=client)
+    db.log_generation(book_id=books.book_id(book), chapter_no=no,
+                      stage="memory_rebuild", status="ok")
+    return {"ok": True, "chapter_no": no, "rollback": rollback,
+            "applied": {
+                "char_updates": wb.get("applied_chars", []),
+                "foreshadow_warnings": wb.get("warnings", []),
+                "state_entries": len(state_mod.chapter_rows(book, no)),
+                "event_summary": wb.get("event_summary", ""),
+            }}
+
+
+def rebuild_memory_batch(book: str, chapter_nos: list[int] | None = None,
+                         client=None) -> dict[str, Any]:
+    """批量补做：逐章串行，单章失败不阻断后续，最后汇总。"""
+    targets = chapter_nos or [it["no"] for it in memory_card_pending(book)]
+    done: list[int] = []
+    failed: list[dict[str, Any]] = []
+    for no in targets:
+        try:
+            rebuild_memory_card(book, no, client=client)
+            done.append(no)
+        except Exception as e:
+            logger.warning("第%s章补做记忆卡失败: %s", no, e)
+            failed.append({"no": no, "error": str(e)})
+    return {"queued": len(targets), "done": done, "failed": failed}
+
+
 def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
     prose = chapters.read_prose(book, no)
     variables = {
@@ -1476,25 +1688,74 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
     }
     result: dict[str, Any] | None = None
     feedback = ""
+    legacy = False
     for _attempt in range(3):
         res, _p, _t = _call(book, no, "memory", "V4", variables, client=client,
                             extra_instruction=feedback)
         try:
             result = llm.extract_json(res.text)
             result["chapter_no"] = no
-            FM.validate(result, chapters.MEMORY_SCHEMA)
+            legacy = chapters.validate_memory(result)
             break
         except (llm.LLMError, FM.FrontmatterError) as e:
             feedback = _feedback_instruction(str(e))
+            # 只有"缺 state_delta"这一种情况可以降级：结构与类型都对，只是没新字段。
+            # 其它错误继续回喂重试（不拿残缺卡污染长期记忆）。
+            if isinstance(e, FM.FrontmatterError) and "state_delta" in str(e):
+                result["chapter_no"] = no
+                legacy = True
+                logger.warning("第%s章 V4 未产出 state_delta，降级为 legacy 记忆卡", no)
+                break
     if result is None:
         raise PipelineError("V4 记忆卡 JSON 3 次解析失败")
 
     body = f"{result.get('event_summary','')}（第{no}章记忆卡）\n"
+    result["source_fingerprint"] = mechcheck.fingerprint(prose["_body"])
     chapters.write_memory(book, no, result, body)
 
     applied, conflict_list = characters.apply_status_updates(book, no, result.get("char_updates", []))
     if conflict_list:
         conflicts.enqueue(conflict_list)
+
+    # F-05：状态快照落库 + 派生 STATE.md（无 state_delta 的 legacy 卡不清空历史行）
+    state_entries = result.get("state_delta") or []
+    if state_entries:
+        try:
+            from . import state as state_mod
+
+            known = set(characters.list_characters(book))
+            clean = [e for e in state_entries
+                     if isinstance(e, dict) and (e.get("character") or e.get("name")) in known]
+            unknown = [e.get("character") or e.get("name") for e in state_entries
+                       if isinstance(e, dict) and (e.get("character") or e.get("name")) not in known]
+            if unknown:
+                conflicts.enqueue([
+                    characters.Conflict("missing_char", book, no,
+                                        f"state_delta 引用了不存在于 characters/ 的角色: {u}", None, None)
+                    for u in unknown if u
+                ])
+            fp = mechcheck.fingerprint(prose["_body"])
+            state_mod.upsert_entries(book, no, clean, fingerprint=fp)
+            state_mod.rebuild_state_md(book, upto_chapter=no)
+        except Exception as e:  # 快照失败不能吞掉事实：记警告，章节仍可定稿
+            logger.warning("第%s章状态快照落库失败: %s", no, e)
+    else:
+        try:
+            from . import state as state_mod
+
+            state_mod.rebuild_state_md(book, upto_chapter=no)
+        except Exception as e:
+            logger.warning("第%s章 STATE.md 重建失败: %s", no, e)
+
+    # F-06：时间线候选只进裁决队列，**绝不自动落盘**（骨架真相必须人工确认）
+    t_candidates = result.get("timeline_candidates") or []
+    if t_candidates:
+        try:
+            from . import timeline
+
+            conflicts.enqueue(timeline.candidates(book, t_candidates, no))
+        except Exception as e:
+            logger.warning("第%s章时间线候选入队失败: %s", no, e)
 
     fo_errors, fo_warns = outline.apply_foreshadow_ops(book, no, result.get("foreshadow_ops", []))
     if fo_errors:

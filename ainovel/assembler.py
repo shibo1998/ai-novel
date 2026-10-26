@@ -128,10 +128,22 @@ def _keywords(book: str, contract: dict[str, Any], char_names: list[str]) -> lis
     return out[:12]
 
 
-def _char_card_text(data: dict[str, Any]) -> str:
-    status = data.get("status", {})
-    st = "、".join(f"{k}={status.get(k, '')}" for k in
-                   ("realm", "location", "emotion", "alive") if status.get(k) != "")
+def _char_card_text(data: dict[str, Any], state_row: dict[str, Any] | None = None) -> str:
+    """角色卡槽：结构化状态优先（来自 chapter_state），无快照时回退 frontmatter。
+
+    注意：**不用状态行替掉角色卡正文**。状态是"现在在哪、伤成什么样"，
+    卡正文是"这人是谁、怎么说话"——写作两者都需要，砍掉后者是质量事故。
+    """
+    if state_row:
+        parts = [f"{k}={state_row.get(k)}" for k in
+                 ("location", "physical", "mental", "power_level", "arc_stage")
+                 if state_row.get(k)]
+        st = "、".join(parts) or "（本章无状态变化）"
+        st += "　【结构化快照】"
+    else:
+        status = data.get("status", {})
+        st = "、".join(f"{k}={status.get(k, '')}" for k in
+                       ("realm", "location", "emotion", "alive") if status.get(k) != "")
     return f"### {data['name']}（{data.get('role','')}）\n当前状态：{st}\n{data.get('_body','').strip()}"
 
 
@@ -158,7 +170,7 @@ def assemble(book: str, chapter_no: int) -> Assembly:
     except prompts.PromptError:
         slots["genre"] = ""
 
-    # 槽 4：Bible 相关条目
+    # 槽 4：Bible 相关条目（尾部追加本章知情禁区，规格05 §7.5）
     try:
         b = bible.read(book)
         slots["bible_core"] = "\n\n".join(
@@ -166,6 +178,15 @@ def assemble(book: str, chapter_no: int) -> Assembly:
         )
     except Exception:
         slots["bible_core"] = "（世界观圣经未建）"
+    try:
+        from . import timeline as timeline_mod
+
+        constraints = timeline_mod.constraints_for_chapter(book, chapter_no)
+        if constraints and not constraints.startswith("（"):
+            slots["bible_core"] = (slots["bible_core"] +
+                                   f"\n\n【时间线约束】\n{constraints}").strip()
+    except Exception:
+        pass
 
     # 槽 5：力量体系对应行
     try:
@@ -178,12 +199,20 @@ def assemble(book: str, chapter_no: int) -> Assembly:
         slots["power_rows"] = "（力量体系未建）"
 
     # 槽 6：出场角色状态卡（含当前状态，永不截断·规格03）
+    # F-05：状态部分优先用 chapter_state 的结构化快照（准、短），卡正文照旧保留
+    state_rows: dict[str, dict[str, Any]] = {}
+    try:
+        from . import state as state_mod
+
+        state_rows = state_mod.latest_map(book, chapter_no - 1)
+    except Exception:
+        state_rows = {}
     cards = []
     for name, data in chars_data.items():
         if data is None:
             cards.append(f"### {name}\n（档案缺失——按细纲场景中的 state 字段执行，禁止扩写设定）")
         else:
-            cards.append(_char_card_text(data))
+            cards.append(_char_card_text(data, state_rows.get(name)))
     slots["char_cards"] = "\n\n".join(cards) or "（无出场角色）"
 
     # 槽 7：卷节奏位置 + 本章情绪任务
@@ -214,9 +243,17 @@ def assemble(book: str, chapter_no: int) -> Assembly:
         for r in act
     ) or "（无活跃伏笔）"
 
-    # 槽 9：前情摘要（全局摘要 + 最近 2 章）
+    # 槽 9：前情摘要（结构化近三章速记优先 + 全局摘要兜底）
     s = summaries.load(book)
     parts = []
+    try:
+        from . import state as state_mod
+
+        recent_state = state_mod.recaps_text(book, chapter_no)
+    except Exception:
+        recent_state = ""
+    if recent_state:
+        parts.append(f"【结构化近三章速记】\n{recent_state}")
     if s.get("cumulative"):
         parts.append(f"【全书累计】{s['cumulative']}")
     recent = "\n".join(f"第{r['no']}章：{r['summary']}" for r in s.get("recent", []))

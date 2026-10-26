@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 from typing import Any
 
 from . import atomic, db, frontmatter as FM
@@ -102,19 +103,42 @@ def create_book(
 
 
 def list_books() -> list[dict[str, Any]]:
-    books = []
-    if not books_dir().exists():
-        return []
-    for bdir in sorted(books_dir().glob("*")):
-        if bdir.is_dir() and (bdir / "meta.md").exists():
-            books.append(read_meta(bdir.name) | {"name": bdir.name})
-    return books
+    from .paths import attached_books
+
+    paths: dict[str, Any] = {}
+    if books_dir().exists():
+        for bdir in sorted(books_dir().glob("*")):
+            if bdir.is_dir() and (bdir / "meta.md").exists():
+                paths[bdir.name] = bdir
+    external = attached_books()
+    for name, raw in external.items():
+        p = Path(raw)
+        if p.is_dir():
+            paths.setdefault(name, p)
+
+    out: list[dict[str, Any]] = []
+    for name in sorted(paths):
+        try:
+            item = read_meta(name) | {"name": name}
+        except Exception as e:  # 外挂书可能没有 meta.md 或格式不同：如实报告，不整架打不开
+            item = {"name": name, "title": name, "genre": "", "target_words": 0,
+                    "status": "unknown", "_error": str(e)}
+        item["external"] = name in external
+        out.append(item)
+    return out
 
 
 def delete_book(name: str) -> None:
-    """删除 = 删整个 books/<书名>/ 目录（API 层负责二次确认）。"""
-    from . import fts
+    """删除 = 删整个 books/<书名>/ 目录（API 层负责二次确认）。
 
+    外挂书**不允许**走这里：它的目录在书架之外，可能是用户多年的稿子，
+    误删不可逆。要移除请用 detach（只摘记录不删文件）。
+    """
+    from . import fts
+    from .paths import attached_books
+
+    if name in attached_books():
+        raise ValueError(f"{name} 是外挂书，不能删除文件；请用『摘除』（只从书架移除）")
     bdir = book_dir(name)
     if not bdir.exists():
         raise FileNotFoundError(name)

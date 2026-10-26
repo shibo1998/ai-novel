@@ -441,3 +441,10 @@ def _derive_status(bdir: Path, chapter_no: int) -> str:
         return "finalized" if fm.get("status") == "final" else "mech_check"
     except Exception:
         return "human_review"
+
+
+def set_imported(*, book_id: int, chapter_no: int) -> None:
+    """标记该章由 txt 导入（无细纲、可能无记忆卡，UI 需区分"导入待补"）。"""
+    with tx() as conn:
+        conn.execute("UPDATE chapters SET imported=1, updated_at=? WHERE book_id=? AND no=?",
+                     (now(), book_id, chapter_no))

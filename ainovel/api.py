@@ -164,6 +164,39 @@ def create_book(payload: BookCreate):
         raise _err(e)
 
 
+class AttachPayload(BaseModel):
+    name: str
+    path: str
+    scaffold: bool = True
+
+
+class DetachPayload(BaseModel):
+    delete_files: bool = False
+
+
+@app.post("/api/books/attach")
+def attach_book(payload: AttachPayload):
+    """挂载已存在的书稿目录（原地接管，不搬不复制）。"""
+    from . import attach as attach_mod
+
+    try:
+        return attach_mod.attach(payload.name, payload.path, scaffold=payload.scaffold)
+    except attach_mod.AttachError as e:
+        raise _err(e, 400)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/books/{book}/detach")
+def detach_book(book: str, payload: DetachPayload | None = None):
+    from . import attach as attach_mod
+
+    try:
+        return attach_mod.detach(book, delete_files=bool(payload and payload.delete_files))
+    except attach_mod.AttachError as e:
+        raise _err(e, 400)
+
+
 @app.delete("/api/books/{book}")
 def delete_book(book: str):
     try:
@@ -686,7 +719,10 @@ def chapter_workbench(book: str, no: int):
             "SELECT * FROM review_records WHERE book_id=? AND chapter_no=? AND kind='llm' "
             "ORDER BY id DESC LIMIT 1", (bid, no)).fetchone()
     result["mech"] = ({"verdict": mech["verdict"],
-                       "issues": json.loads(mech["issues_json"] or "[]")} if mech else None)
+                       "issues": json.loads(mech["issues_json"] or "[]"),
+                       "fingerprint": mech["fingerprint"],
+                       "ineffective": json.loads(mech["ineffective_json"] or "[]"),
+                       "checked_at": mech["created_at"]} if mech else None)
     result["review"] = ({"verdict": rev["verdict"],
                          "scores": json.loads(rev["scores_json"] or "{}"),
                          "issues": json.loads(rev["issues_json"] or "[]")} if rev else None)
@@ -791,6 +827,40 @@ def generate_stream(book: str, no: int, payload: dict | None = None):
             yield "data: " + json.dumps({"text": payload}, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/books/{book}/chapters/{no}/draft")
+def get_draft(book: str, no: int):
+    try:
+        return pipeline.draft_info(book, no)
+    except Exception as e:
+        raise _err(e)
+
+
+class DraftAdoptPayload(BaseModel):
+    force: bool = False
+
+
+@app.post("/api/books/{book}/chapters/{no}/draft/adopt")
+def adopt_draft(book: str, no: int, payload: DraftAdoptPayload | None = None):
+    try:
+        return pipeline.adopt_draft(book, no, force=bool(payload and payload.force))
+    except FileNotFoundError as e:
+        raise _err(e, 404)
+    except statemachine.StateError as e:
+        raise _err(e, 409)
+    except pipeline.PipelineError as e:
+        raise _err(e, 422)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/books/{book}/chapters/{no}/draft/discard")
+def discard_draft(book: str, no: int):
+    try:
+        return pipeline.discard_draft(book, no)
+    except Exception as e:
+        raise _err(e)
 
 
 @app.post("/api/books/{book}/chapters/{no}/mechcheck")
@@ -911,6 +981,153 @@ def back_to_outline(book: str, no: int):
     except Exception as e:
         raise _err(e)
     return {"ok": True, "status": statemachine.current_status(book, no)}
+
+
+@app.get("/api/books/{book}/memory-card/pending")
+def memory_pending(book: str):
+    try:
+        items = pipeline.memory_card_pending(book)
+    except Exception as e:
+        raise _err(e)
+    return {"chapters": items}
+
+
+class MemoryRebuildBatch(BaseModel):
+    chapters: list[int] | None = None
+    all_missing: bool = False
+
+
+@app.post("/api/books/{book}/chapters/{no}/memory-card/rebuild")
+def memory_rebuild(book: str, no: int):
+    try:
+        return pipeline.rebuild_memory_card(book, no)
+    except statemachine.StateError as e:
+        raise _err(e, code=409)
+    except Exception as e:
+        raise _err(e, code=500)
+
+
+@app.post("/api/books/{book}/memory-card/rebuild-batch")
+def memory_rebuild_batch(book: str, payload: MemoryRebuildBatch | None = None):
+    payload = payload or MemoryRebuildBatch(all_missing=True)
+    nos = payload.chapters or None
+    if nos is None and not payload.all_missing:
+        raise _err(ValueError("需指定 chapters 或 all_missing=true"))
+    try:
+        return pipeline.rebuild_memory_batch(book, nos)
+    except Exception as e:
+        raise _err(e)
+
+
+class TimelinePayload(BaseModel):
+    truth: list[dict] | None = None
+    released: list[dict] | None = None
+
+
+@app.get("/api/books/{book}/timeline")
+def get_timeline(book: str):
+    from . import timeline
+
+    try:
+        data = timeline.read(book)
+        issues = timeline.validate(book)
+    except Exception as e:
+        raise _err(e)
+    return {"exists": data["exists"], "truth": data["truth"],
+            "released": data["released"], "issues": issues,
+            "path": str(timeline.timeline_path(book))}
+
+
+@app.put("/api/books/{book}/timeline")
+def put_timeline(book: str, payload: TimelinePayload):
+    from . import timeline
+
+    try:
+        if payload.truth is None:
+            raise ValueError("truth 不能为空（要清空请传空数组）")
+        timeline.write(book, payload.truth, payload.released)
+        issues = timeline.validate(book)
+    except Exception as e:
+        raise _err(e)
+    return {"ok": True, "issues": issues}
+
+
+@app.get("/api/books/{book}/state")
+def get_state(book: str):
+    from . import state as state_mod
+
+    try:
+        return {"content": state_mod.read_state_md(book),
+                "path": str(state_mod.state_path(book)),
+                "rows": state_mod.count_rows(book)}
+    except Exception as e:
+        raise _err(e)
+
+
+class ImportPreviewPayload(BaseModel):
+    file_path: str
+    regex: str | None = None
+
+
+class ImportCommitPayload(BaseModel):
+    file_path: str
+    regex: str | None = None
+    encoding: str | None = None
+    mode: str = "draft"
+    rebuild_memory: bool = False
+    confirm_warnings: bool = False
+
+
+class ImportUploadPayload(BaseModel):
+    filename: str
+    content_b64: str
+
+
+@app.post("/api/books/{book}/import/novel/preview")
+def import_preview(book: str, payload: ImportPreviewPayload):
+    """预演：**不写任何文件**（切章错了会毁掉整份稿）。"""
+    from . import importer
+
+    try:
+        return importer.preview(payload.file_path, payload.regex)
+    except importer.ImportError_ as e:
+        raise _err(e)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/books/{book}/import/upload")
+def import_upload(book: str, payload: ImportUploadPayload):
+    """上传原稿（base64，避免引入 multipart 依赖），落到 data/imports/ 后走同一套预演。"""
+    import base64
+
+    from . import importer
+    from .paths import data_dir
+
+    try:
+        d = data_dir() / "imports"
+        d.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^\w\u4e00-\u9fff.\-]", "_", Path(payload.filename).name) or "upload.txt"
+        target = d / f"{book}-{safe}"
+        target.write_bytes(base64.b64decode(payload.content_b64))
+        return importer.preview(target)
+    except Exception as e:
+        raise _err(e)
+
+
+@app.post("/api/books/{book}/import/novel/commit")
+def import_commit(book: str, payload: ImportCommitPayload):
+    from . import importer
+
+    try:
+        return importer.commit(book, payload.file_path, regex=payload.regex,
+                               encoding=payload.encoding, mode=payload.mode,
+                               rebuild_memory=payload.rebuild_memory,
+                               confirm_warnings=payload.confirm_warnings)
+    except importer.ImportError_ as e:
+        raise _err(e)
+    except Exception as e:
+        raise _err(e)
 
 
 @app.post("/api/books/{book}/chapters/{no}/finalize")

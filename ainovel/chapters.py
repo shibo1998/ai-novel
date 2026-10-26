@@ -31,7 +31,7 @@ PROSE_SCHEMA: FM.Schema = {
     "enums": {"status": ["draft", "final"]},
 }
 
-MEMORY_SCHEMA: FM.Schema = {
+MEMORY_SCHEMA_V1: FM.Schema = {
     "required": ["chapter_no", "char_updates", "new_chars", "new_locations",
                  "foreshadow_ops", "event_summary", "time_elapsed"],
     "types": {
@@ -39,6 +39,21 @@ MEMORY_SCHEMA: FM.Schema = {
         "new_locations": list, "foreshadow_ops": list,
         "new_settings_pending": (list, type(None)),
         "event_summary": str, "time_elapsed": str,
+    },
+}
+
+# 规格05 F-05：新增结构化增量。**必须允许老卡通过**——
+# Bible 表头校验误伤过整本书，同样的错不能在记忆卡上重犯。
+MEMORY_SCHEMA: FM.Schema = {
+    "required": ["chapter_no", "char_updates", "new_chars", "new_locations",
+                 "foreshadow_ops", "event_summary", "time_elapsed", "state_delta"],
+    "types": {
+        "chapter_no": int, "char_updates": list, "new_chars": list,
+        "new_locations": list, "foreshadow_ops": list,
+        "new_settings_pending": (list, type(None)),
+        "event_summary": str, "time_elapsed": str,
+        "state_delta": list,
+        "timeline_candidates": (list, type(None)),
     },
 }
 
@@ -169,13 +184,50 @@ def count_words(body: str) -> int:
 # 记忆卡
 # ---------------------------------------------------------------------------
 
+def memory_fingerprint(book: str, no: int) -> str | None:
+    """记忆卡记录的正文指纹（老卡没有该字段 → None，不代表不匹配）。"""
+    try:
+        fm, _ = FM.read_file(memory_path(book, no))
+    except (FileNotFoundError, FM.FrontmatterError):
+        return None
+    fp = fm.get("source_fingerprint")
+    return str(fp) if fp else None
+
+
+def clear_memory(book: str, no: int) -> None:
+    p = memory_path(book, no)
+    if p.exists():
+        p.unlink()
+
+
 def read_memory(book: str, no: int) -> dict[str, Any]:
-    fm, body = FM.validate_file(memory_path(book, no), MEMORY_SCHEMA)
-    return fm | {"_body": body}
+    """读记忆卡：先按 V2（含 state_delta）校验，失败回落 V1 并标 `legacy=True`。
+
+    老卡不报错（这是硬要求）：历史章节没有 state_delta，若直接抛错，
+    整本书的装配与补做都会卡死。`legacy=True` 让调用方知道"这卡没有结构化状态"。
+    """
+    fm, body = FM.read_file(memory_path(book, no))
+    legacy = False
+    try:
+        FM.validate(fm, MEMORY_SCHEMA)
+    except FM.FrontmatterError:
+        FM.validate(fm, MEMORY_SCHEMA_V1)
+        legacy = True
+    return fm | {"_body": body, "legacy": legacy}
+
+
+def validate_memory(fm: dict[str, Any]) -> bool:
+    """校验记忆卡字典；返回是否为 legacy（缺 state_delta）。失败抛 FrontmatterError。"""
+    try:
+        FM.validate(fm, MEMORY_SCHEMA)
+        return False
+    except FM.FrontmatterError:
+        FM.validate(fm, MEMORY_SCHEMA_V1)
+        return True
 
 
 def write_memory(book: str, no: int, fm: dict[str, Any], body: str) -> None:
     if fm.get("chapter_no") != no:
         raise FM.FrontmatterError(f"记忆卡 chapter_no={fm.get('chapter_no')} 与文件章号 {no} 不一致")
-    FM.validate(fm, MEMORY_SCHEMA)
+    validate_memory(fm)
     atomic.write_text(memory_path(book, no), FM.dump(fm, body))

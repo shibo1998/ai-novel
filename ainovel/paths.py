@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -37,6 +39,35 @@ def data_dir() -> Path:
     return project_root() / "data"
 
 
+# 外挂书登记表：书名 → 绝对路径（规格05 F-07）
+ATTACHED_REGISTRY = "attached_books.json"
+
+
+def _registry_path() -> Path:
+    return data_dir() / ATTACHED_REGISTRY
+
+
+def attached_books() -> dict[str, str]:
+    """读外挂书登记表。坏文件当空表但留日志（不能让书架整个打不开）。"""
+    p = _registry_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        logging.getLogger(__name__).warning("外挂书登记表损坏，按空表处理: %s", e)
+        return {}
+    return {str(k): str(v) for k, v in data.items() if k and v}
+
+
+def save_attached(registry: dict[str, str]) -> None:
+    p = _registry_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
 def validate_book_name(name: str) -> str:
     """书名守卫（P0 防路径穿越：book_dir 单点把关，全部 {book} 端点自动受保护）。
 
@@ -60,5 +91,12 @@ def validate_book_name(name: str) -> str:
 
 
 def book_dir(book_name: str) -> Path:
+    """书目录解析：外挂书走登记表，内置书走 books/<书名>/。
+
+    单点解析的好处：所有 {book} 端点自动支持外挂书，无需各处判断。
+    """
     validate_book_name(book_name)
+    attached = attached_books().get(book_name)
+    if attached:
+        return Path(attached)
     return books_dir() / book_name

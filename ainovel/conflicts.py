@@ -83,6 +83,15 @@ def _apply(item: dict[str, Any], value: Any) -> str:
     kind = item.get("kind")
     book = item.get("book", "")
     char = item.get("char", "")
+    if kind == "timeline_candidate":
+        # 时间线候选只有人工裁决才落盘（规格05 §7.3：LLM 自由生成会污染骨架真相）
+        from . import timeline
+
+        extra = value if isinstance(value, dict) else {}
+        row = timeline.append_truth(
+            book, item.get("detail", ""), extra.get("characters") or [],
+            int(item.get("chapter_no") or 1), bool(extra.get("reader_known")))
+        return f"已写入时间线 {row['编号']}"
     if kind == "new_setting" and not char:
         # 采纳 → 自动补录进 STORY_BIBLE 术语表（term 取"待补录设定："后的第一个冒号前段）
         detail = item.get("detail", "")

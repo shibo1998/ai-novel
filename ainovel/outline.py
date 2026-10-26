@@ -142,6 +142,59 @@ def active_foreshadows(book: str) -> list[dict[str, str]]:
     return [r for r in read_plot_points(book) if r.get("状态") in ("planted", "building")]
 
 
+def rollback_foreshadow_ops(book: str, chapter_no: int,
+                            ops: list[dict[str, Any]] | None = None) -> dict[str, int]:
+    """撤销第 N 章对台账的推进（记忆卡补做的幂等基线）。
+
+    补做必须先回滚已成事实，否则 `advance`/`pay` 会被推第二次：
+    伏笔状态是单向机（planted→building→paid），重放一次就报错或跳级。
+
+    `ops` = 该章记忆卡里记的 `foreshadow_ops`（最可靠的依据）。没有卡时按台账
+    痕迹推断：
+    - 本章 `埋设章` 且确实由本章 plant 出来的 → 删行；推断不清时只回退到 planted
+      （`埋设章==1` 这种"书开局就存在"的伏笔不能删）
+    - 本章出现在 `推进章` → 摘掉；摘完没有别的推进章则回 planted
+    - `备注` 含"第N章回收" → 去掉并回退到 building
+    """
+    rows = read_plot_points(book)
+    tag = f"第{chapter_no}章"
+    planted_by_card = {str(o.get("fo_id") or "") for o in (ops or [])
+                       if str(o.get("op") or "") == "plant"}
+    removed = reverted = advanced = reset = 0
+    kept: list[dict[str, str]] = []
+    for r in rows:
+        fid = str(r.get("编号", ""))
+        if fid in planted_by_card:
+            removed += 1
+            continue
+        if str(r.get("埋设章", "")).strip() == str(chapter_no):
+            # 无法确认是本章新埋的（没有卡或卡里没记），保守回退状态而不删行
+            if r.get("状态") != "planted" or r.get("推进章"):
+                reset += 1
+            r["状态"] = "planted"
+            r["推进章"] = ""
+        chapters_str = str(r.get("推进章", "") or "")
+        parts = [p.strip() for p in chapters_str.split(",") if p.strip()]
+        if str(chapter_no) in parts:
+            parts = [p for p in parts if p != str(chapter_no)]
+            r["推进章"] = ",".join(parts)
+            if r.get("状态") == "building" and not parts:
+                r["状态"] = "planted"
+            advanced += 1
+        note = str(r.get("备注", "") or "")
+        if f"{tag}回收" in note:
+            r["备注"] = note.replace(f" {tag}回收", "").replace(f"{tag}回收", "").strip()
+            if r.get("状态") == "paid":
+                r["状态"] = "building"
+            reverted += 1
+        kept.append(r)
+    if removed or advanced or reverted or reset:
+        write_plot_points(book, kept)
+    return {"deleted": removed, "unadvanced": advanced, "unpaid": reverted,
+            "reset": reset}
+
+
+
 def apply_foreshadow_ops(
     book: str, chapter_no: int, ops: list[dict[str, Any]],
 ) -> tuple[list[str], list[str]]:

@@ -53,10 +53,16 @@ class Hit:
 
 @dataclass
 class Ineffective:
-    """一条"这次没查成"的记录。语义 ≠ 通过，也 ≠ 阻断。"""
+    """一条"这次没查成"的记录。语义 ≠ 通过，也 ≠ 阻断。
+
+    `blocking` 决定它是否"禁止推进"：词表缺失（P-2 的 block 级）为 True；
+    "状态快照还没生成"这类当前阶段本就拿不到的数据为 False —— 仍然要显示，
+    但不能每次都报成红色阻断，否则用户会习惯性忽略红条。
+    """
     rule: str
     reason: str
     detail: str
+    blocking: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -288,10 +294,12 @@ def check(body: str, *, word_range: list[int] | None = None,
 
 def check_full(body: str, *, word_range: list[int] | None = None,
                thresholds: dict[str, Any] | None = None,
-               whitelist: list[str] | None = None) -> CheckResult:
+               whitelist: list[str] | None = None,
+               context: dict[str, Any] | None = None) -> CheckResult:
     """一次带生效状态的检查结论（规格05 §2.3）。
 
     与 check() 的区别只在返回值：它必须能回答"哪条规则这次没查成"。
+    `context` = 状态快照上下文（M-13/M-14/M-15 用）；不传则如实报"这几条没查"。
     """
     th = dict(settings.load().get("mechcheck", {}))
     if thresholds:
@@ -370,7 +378,33 @@ def check_full(body: str, *, word_range: list[int] | None = None,
     except Exception as e:  # 规则崩溃不能让整章机检失败，但必须可见
         ineffective.append(Ineffective("M-12", REASON_CRASH, f"检测器异常: {e}"))
 
-    blocked_ineffective = [i for i in ineffective if _is_block_level(i)]
+    # M-13 ~ M-15 状态一致性（需要有状态快照；没有就如实说没查）
+    if context is None:
+        ineffective.append(Ineffective("M-13..M-15", REASON_UNPARSED,
+                                       "未提供状态快照上下文，状态类检查未执行"))
+        ineffective.append(Ineffective("M-16..M-17", REASON_UNPARSED,
+                                       "未提供时间线上下文，时间线检查未执行"))
+    else:
+        if not context.get("has_state"):
+            ineffective.append(Ineffective(
+                "M-13..M-15", REASON_UNPARSED,
+                "本章无 state_delta 快照（V4 未产出或为老记忆卡），状态类检查未执行"))
+        else:
+            hits.extend(_state_hits(body or "", context))
+
+        timeline_hits = context.get("timeline_hits")
+        if timeline_hits is None:
+            ineffective.append(Ineffective("M-16..M-17", REASON_UNPARSED,
+                                           "时间线校验结果缺失，时间线检查未执行"))
+        else:
+            for d in timeline_hits:
+                hits.append(Hit(d.get("rule", "M-16"), d.get("level", "block"),
+                                int(d.get("line") or 0), str(d.get("word") or ""),
+                                str(d.get("message") or "")))
+
+    for item in ineffective:
+        item.blocking = _is_block_level(item)
+    blocked_ineffective = [i for i in ineffective if i.blocking]
     if blocked_ineffective:
         verdict = "not_effective"
     elif has_block(hits):
@@ -392,6 +426,64 @@ def _is_block_level(item: Ineffective) -> bool:
     if item.reason == REASON_SUSPICIOUSLY_SMALL:
         return False
     return item.rule in BLOCK_LEVEL_RULES
+
+
+# ---------------------------------------------------------------------------
+# M-13 ~ M-15 状态一致性（依赖 chapter_state 快照）
+# ---------------------------------------------------------------------------
+
+_MOVE_WORDS = re.compile(r"走|赶|飞|船|车|奔|渡|翻山|穿行|上路|启程|离城|进城|回城|"
+                         r"个月|月后|数日|次日|翌日|三天|半月|一炷香|时辰")
+
+
+def _state_hits(body: str, ctx: dict[str, Any]) -> list[Hit]:
+    hits: list[Hit] = []
+    order = ctx.get("realm_order") or []
+    rows = ctx.get("rows") or []
+    prev_map = ctx.get("prev") or {}
+    char_status = ctx.get("char_status") or {}
+    has_move = bool(_MOVE_WORDS.search(body or ""))
+
+    for row in rows:
+        name = row.get("character") or ""
+        if not name:
+            continue
+        # M-13 战力倒退
+        prev = prev_map.get(name) or {}
+        cur_pw = (row.get("power_level") or "").strip()
+        prev_pw = (prev.get("power_level") or "").strip()
+        if cur_pw and prev_pw and order:
+            ci, pi = _realm_index(cur_pw, order), _realm_index(prev_pw, order)
+            if ci is not None and pi is not None and ci < pi:
+                hits.append(Hit("M-13", "block", 0, f"{name}:{prev_pw}→{cur_pw}",
+                                f"{name} 战力倒退：第{prev.get('chapter_no')}章 {prev_pw} → "
+                                f"第{row.get('chapter_no')}章 {cur_pw}"))
+        # M-14 死者复现
+        if char_status.get(name) == "死亡":
+            acted = any((row.get(k) or "").strip() for k in
+                        ("location", "physical", "mental"))
+            if acted:
+                hits.append(Hit("M-14", "block", 0, name,
+                                f"{name} 角色卡记为死亡，本章仍有状态行动记录"))
+        # M-15 位置跳跃
+        cur_loc = (row.get("location") or "").strip()
+        prev_loc = (prev.get("location") or "").strip()
+        if cur_loc and prev_loc and cur_loc != prev_loc and not has_move:
+            hits.append(Hit("M-15", "warn", 0, f"{name}:{prev_loc}→{cur_loc}",
+                            f"{name} 位置从 {prev_loc} 变到 {cur_loc}，正文无位移描写"))
+    return hits
+
+
+def _realm_index(value: str, order: list[str]) -> int | None:
+    v = value.replace("**", "").replace("*", "").strip()
+    if not v:
+        return None
+    if v in order:
+        return order.index(v)
+    for i, item in enumerate(order):
+        if item and (item in v or v in item):
+            return i
+    return None
 
 
 def _run_checks(body: str, *, word_range: list[int] | None, th: dict[str, Any],

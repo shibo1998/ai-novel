@@ -71,6 +71,13 @@ class MockLLM:
             data = self.memory_factory(no) if self.memory_factory else {
                 "char_updates": [], "new_chars": [], "new_locations": [],
                 "foreshadow_ops": [], "new_settings_pending": [],
+                # 与真实 V4 对齐：结构化增量 + 时间线候选（不产出会导致 M-13~M-15 报"未查"）
+                "state_delta": [{
+                    "character": "林寒", "location": "青云坊", "physical": "右肩旧伤未愈",
+                    "mental": "警觉", "power_level": "炼气", "arc_stage": 0,
+                    "knowledge": ["玄铁令遇灵气会发热"], "goals": ["查清令牌来历"],
+                }],
+                "timeline_candidates": [],
                 "event_summary": "林寒在青云坊验出新令牌的异常。", "time_elapsed": "半日",
             }
             data.setdefault("chapter_no", no)

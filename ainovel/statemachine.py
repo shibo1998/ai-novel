@@ -53,6 +53,10 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     # 正文生成中途异常必须可落 error，否则该章永久卡死在 generating。
     ("generating", "fail"): "error",
     ("generating", "abort"): "outline_locked",   # 放弃本次生成，退回可重新选择的干净状态
+    # 救援出边（规格05 F-09）：断网时已经生成的两千多字躺在 draft.md 里，
+    # error 却只有 retry（整章重来）一条路——白烧一次 token。
+    # 采纳草稿直接进机检（只进更严的关卡），不放宽任何门禁。
+    ("error", "adopt_draft"): "mech_check",
     ("finalized", "unlock"): "pending_finalize",  # 定稿后返工：先解锁再走修复/重写
 }
 
@@ -172,3 +176,21 @@ def list_chapters(book: str) -> list[dict[str, Any]]:
             "FROM chapters WHERE book_id=? ORDER BY no", (book_id,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def set_status_direct(book: str, no: int, status: str, *, prev_status: str | None = None) -> None:
+    """直接落状态，**不走迁移表**（仅供导入使用）。
+
+    导入的历史章从 `awaiting_outline` 一步到 `finalized`/`pending_finalize`，
+    这是"把既有事实登记进来"，不是流水线推进，硬套 TRANSITIONS 会被合法拒绝。
+    除导入外任何地方都不该调用它——绕过状态机就等于绕过门禁。
+    """
+    if status not in STATES:
+        raise StateError(f"非法状态: {status}")
+    from . import books
+
+    book_id = books.book_id(book)
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE chapters SET status=?, prev_status=?, updated_at=? WHERE book_id=? AND no=?",
+            (status, prev_status, db.now(), book_id, no))
