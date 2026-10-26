@@ -12,6 +12,7 @@ import {
   getBible,
   getCharacter,
   getOutlineFull,
+  getOverdueForeshadows,
   getOverview,
   getPlotPoints,
   getStyle,
@@ -39,6 +40,12 @@ const name = computed(() => String(route.params.name ?? ''))
 const ov = ref<Overview | null>(null)
 const bible = ref<Record<string, string>>({})
 const ppText = ref('')
+// 伏笔超期预警（规格01：planted 超 30 章未进 building）。只读回看，不改台账。
+const overdue = ref<{ chapter: number; grace: number; overdue: string[] }>({
+  chapter: 0,
+  grace: 30,
+  overdue: [],
+})
 const outlineText = ref('')
 const styleCorpus = ref('')
 const styleCard = ref('')
@@ -82,11 +89,13 @@ const auditNo = ref<number | undefined>(undefined)
 async function load(): Promise<void> {
   store.setCurrentBook(name.value)
   // 读请求并行（老版串行串成 4×RTT）
-  const [o, b, pp, st] = await Promise.all([
+  const [o, b, pp, st, od] = await Promise.all([
     getOverview(name.value),
     getBible(name.value),
     getPlotPoints(name.value),
     getStyle(name.value),
+    // 超期预警失败不该挡住整页 → 单独兜底成空列表
+    getOverdueForeshadows(name.value).catch(() => ({ chapter: 0, grace: 30, overdue: [] })),
   ])
   ov.value = o
   bible.value = b
@@ -95,6 +104,7 @@ async function load(): Promise<void> {
   styleCorpus.value = st.corpus
   styleCard.value = st.card
   styleEnabled.value = st.enabled
+  overdue.value = od
   await loadAudits()
 }
 watch(name, () => void load().catch(() => {}), { immediate: true })
@@ -454,6 +464,18 @@ async function audit(): Promise<void> {
       <div class="panel">
         <h3 class="panel-title">伏笔台账</h3>
         <div class="dim">状态只允许 planted→building→paid 单向；paid 后不可回退</div>
+        <!-- 超期预警（规格01 PLOT_POINTS 三条校验之一）：G6 落盘那刻后端会回一行 warns，
+             但那是一次性提示，刷新即消失。这里按当前进度重算并常驻，避免"埋了忘收"。 -->
+        <el-alert
+          v-if="overdue.overdue.length"
+          class="mt-2"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`伏笔超期预警：第 ${overdue.chapter} 章进度下，${overdue.overdue.length} 条已超 ${overdue.grace} 章未推进`"
+        >
+          <div v-for="w in overdue.overdue" :key="w" class="small">{{ w }}</div>
+        </el-alert>
         <el-input v-model="ppText" type="textarea" :rows="10" class="mono mt-1" />
         <div class="mt-2 flex items-center gap-2">
           <el-button @click="savePP">保存台账</el-button>

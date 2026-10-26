@@ -1,12 +1,13 @@
 """P1 API 契约与档案层回归测试（2026-10-26 审计修复）。
 
-覆盖 6 项：
+覆盖 7 项：
 1. G5 采纳改为合并式，不覆盖伏笔台账；logline/ending_direction 不被建书占位串覆盖
 2. G4 关系网真正写回已有角色的「关系网络」H2 节
 3. PUT /chapters/{no}/prose 人工手改正文（finalized 拒绝）
 4. GET /chapters/{no}/snapshots/{version} 快照正文回看
 5. PUT /locations 地点档案可编辑（含 outline.write_locations）
 6. POST /export/md 导出 Markdown 合并版
+7. GET /plot_points/overdue 伏笔超期预警只读回看（planted 超 30 章未推进）
 
 全部走 conftest.py 的 home / book_env fixture（临时 AINOVEL_HOME）+ MockLLM，
 不读写真实 books/、data/，不联网。
@@ -596,3 +597,55 @@ def test_location_columns_match_spec():
 def test_relationships_helper_not_removed():
     """characters.relationships() 原有读取能力必须保留（G4 写回依赖它去重）。"""
     assert callable(characters.relationships)
+
+
+# ---------------------------------------------------------------------------
+# 7. GET /plot_points/overdue：伏笔超期预警只读回看
+# ---------------------------------------------------------------------------
+
+class TestOverdueForeshadows:
+    """原实现只在 G6 落盘那一刻把 warns 回给调用方，刷新即消失、用户看不到。
+    新端点按当前进度重算，口径与 outline.overdue_warnings 完全一致。"""
+
+    def test_overdue_listed_when_past_grace(self, book_env):
+        book, _ = book_env          # FO-001：第 1 章 planted、未推进
+        r = client.get(f"/api/books/{book}/plot_points/overdue", params={"chapter": 40})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["chapter"] == 40 and body["grace"] == 30
+        assert len(body["overdue"]) == 1
+        assert "FO-001" in body["overdue"][0] and "39" in body["overdue"][0]
+
+    def test_within_grace_is_silent(self, book_env):
+        """30 章以内不吵人（超过才预警，等于 30 也不算超）。"""
+        book, _ = book_env
+        assert client.get(f"/api/books/{book}/plot_points/overdue",
+                          params={"chapter": 20}).json()["overdue"] == []
+        assert client.get(f"/api/books/{book}/plot_points/overdue",
+                          params={"chapter": 31}).json()["overdue"] == []
+
+    def test_paid_or_building_never_warns(self, book_env):
+        """只盯 planted：已推进/已回收都不该被催。"""
+        book, _ = book_env
+        outline.write_plot_points(book, [
+            {"编号": "FO-001", "内容": "玄铁令发热", "埋设章": "1", "推进章": "5",
+             "预计回收章": "9", "状态": "paid", "备注": ""},
+            {"编号": "FO-002", "内容": "老周隐瞒身世", "埋设章": "1", "推进章": "6",
+             "预计回收章": "20", "状态": "building", "备注": ""},
+        ])
+        body = client.get(f"/api/books/{book}/plot_points/overdue",
+                          params={"chapter": 99}).json()
+        assert body["overdue"] == []
+
+    def test_default_chapter_uses_latest_existing_chapter(self, book_env):
+        """不传 chapter：按已有章节最大号；一章都没生成时为 0，此时不可能超期。"""
+        book, _ = book_env
+        body = client.get(f"/api/books/{book}/plot_points/overdue").json()
+        assert body["chapter"] == 0 and body["overdue"] == []
+
+    def test_is_read_only(self, book_env):
+        """只读回看：台账只能经 G6 操作变动，查询不得改状态、不得写文件。"""
+        book, _ = book_env
+        before = outline.read_plot_points(book)
+        client.get(f"/api/books/{book}/plot_points/overdue", params={"chapter": 40})
+        assert outline.read_plot_points(book) == before

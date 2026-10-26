@@ -310,6 +310,20 @@ def get_pp(book: str):
     return outline.read_plot_points(book)
 
 
+@app.get("/api/books/{book}/plot_points/overdue")
+def get_pp_overdue(book: str, chapter: int | None = None):
+    """伏笔超期预警只读回看（规格01 PLOT_POINTS 三条程序校验之一）。
+
+    `planted` 超过 30 章仍未进入 `building` → 提示作者推进或回收。原先只有 G6
+    落盘那一刻把 warns 回给调用方，用户保存完就再也看不到；这里按当前进度重算一次。
+    章号缺省取已有章节的最大号（没有章节时为 0），口径与 `outline.overdue_warnings` 完全一致。
+    只读接口：不改台账、不迁状态。
+    """
+    rows = outline.read_plot_points(book)
+    cur = chapter if chapter is not None else max(chapters.list_chapters(book) or [0])
+    return {"chapter": cur, "grace": 30, "overdue": outline.overdue_warnings(rows, cur)}
+
+
 @app.put("/api/books/{book}/plot_points")
 def put_pp(book: str, payload: dict):
     rows = payload.get("rows", [])

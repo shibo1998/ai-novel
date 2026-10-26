@@ -10,3 +10,4 @@ books/*
 !books/.gitkeep
 node_modules/
 .husky/_/
+.workbuddy/

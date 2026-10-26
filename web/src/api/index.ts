@@ -89,6 +89,17 @@ export const getPlotPoints = (book: string): Promise<Record<string, string>[]> =
   unwrap(http.get(`/api/books/${enc(book)}/plot_points`))
 export const putPlotPoints = (book: string, rows: Record<string, string>[]): Promise<unknown> =>
   unwrap(http.put(`/api/books/${enc(book)}/plot_points`, { rows }))
+// 伏笔超期预警（规格01 PLOT_POINTS 校验之一）：planted 超 30 章未进 building。
+// 后端只读重算，章号缺省按已有章节最大号；不传 chapter 即"按当前进度看"。
+export const getOverdueForeshadows = (
+  book: string,
+  chapter?: number,
+): Promise<{ chapter: number; grace: number; overdue: string[] }> =>
+  unwrap(
+    http.get(`/api/books/${enc(book)}/plot_points/overdue`, {
+      params: chapter === undefined ? {} : { chapter },
+    }),
+  )
 
 // 地点档案（规格01 §2.6，5 列）：原先只有 GET、前端零入口，规格04 §1 要求可编辑。
 export const getLocations = (book: string): Promise<Record<string, string>[]> =>
@@ -179,8 +190,11 @@ export const backToOutline = (book: string, no: number): Promise<unknown> =>
 // 否则该章永久卡死在 error，点「刷新」状态也不会变）。
 export const retryChapter = (book: string, no: number): Promise<{ ok: boolean; status: string }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/retry`))
+// 定稿含 V4 记忆卡回写 + V6 卷末审计两次 LLM 调用（末章才触发 V6），
+// 真实模型下长上下文必超 30s 默认超时 → 前端先报错、后端其实已定稿，用户重复提交得 400。
+// 与 review/fix/polish/audit 一致：这条走 timeout: 0（不设前端超时，由后端决定）。
 export const finalizeChapter = (book: string, no: number): Promise<FinalizeResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/finalize`))
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/finalize`, null, { timeout: 0 }))
 // 定稿返工：finalized → pending_finalize。定稿后正文受快照保护，
 // 要手改/修复/重写得先解锁（否则后端一律 400「已定稿，请先解锁」）。
 export const unlockChapter = (book: string, no: number): Promise<{ ok: boolean; status: string }> =>

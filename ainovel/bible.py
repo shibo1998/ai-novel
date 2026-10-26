@@ -43,6 +43,18 @@ def read(book: str) -> dict[str, str]:
     return _parse_sections(path.read_text(encoding="utf-8"))
 
 
+def _col_key(name: str) -> str:
+    """列名归一：去空白、去 markdown 强调、去尾部括号补充说明、忽略全/半角括号差异。
+
+    规格01 §2.2 只固定列名主干，作者（或旧版提示词）在表头补括号说明（如真实书里的
+    `隐藏等级(低/中/高)`、`能力边界（不能做什么）`）属于合法写法，不该被判定为"缺列"——
+    校验的目的是拦住列名漂移到别的语义（`隐藏级别`、`等级`），不是拦住同义补充。
+    """
+    s = re.sub(r"\s+", "", name.replace("**", "")).strip()
+    s = re.sub(r"[（(][^（()）]*[)）]$", "", s)
+    return s
+
+
 def validate_sections(sections: dict[str, str]) -> list[str]:
     """校验固定表格节的表头（规格01 §2.2）。
 
@@ -53,6 +65,8 @@ def validate_sections(sections: dict[str, str]) -> list[str]:
     区分两种"没有表头"：
     - 该节还没有表格（如「（待生成）」占位或纯文字说明）→ 不校验，等它成表再说；
     - 该节已有表格但列名不对 → 必须报错，这是会静默拖垮下游解析的情况。
+
+    列名比对走 `_col_key` 归一（忽略括号补充与强调符），避免把合法写法当缺列拦死。
     """
     problems: list[str] = []
     for sec, need in TABLE_COLS.items():
@@ -69,7 +83,8 @@ def validate_sections(sections: dict[str, str]) -> list[str]:
             problems.append(
                 f"「{sec}」已有表格但表头不含「{need[0]}」（应为 {'｜'.join(need)}）")
             continue
-        missing = [c for c in need if c not in cols]
+        have = {_col_key(c) for c in cols}
+        missing = [c for c in need if _col_key(c) not in have]
         if missing:
             problems.append(f"「{sec}」表头缺列：{'｜'.join(missing)}（应为 {'｜'.join(need)}）")
     return problems

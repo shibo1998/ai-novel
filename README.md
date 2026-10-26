@@ -34,7 +34,7 @@ python run.py            # 打开 http://127.0.0.1:8765
 ## 测试
 
 ```bash
-python -m pytest tests/          # 170 项全绿（管线全链路用 MockLLM，不耗 token）
+python -m pytest tests/          # 196 项全绿（管线全链路用 MockLLM，不耗 token）
 python scripts/smoke.py          # 端到端冒烟（跑在临时目录，不污染仓库）
 cd web && npm run typecheck      # 前端严格类型检查（vue-tsc）
 cd web && npm run lint:check     # 前端 ESLint 检查
@@ -81,7 +81,7 @@ lint/               禁词/敏感词/对话后缀禁式（每行一个，# 注�
 web/                前端 UI（Vue3 + Vite 源码；构建产物 web/dist/ 由 FastAPI 静态挂载）
 books/<书名>/       数据：档案 + 章节 + config.json（单一真相源）
 data/               SQLite、设置、裁决队列、装配预览（可随时重建）
-tests/              pytest（135 项）
+tests/              pytest（196 项）
 ```
 
 ## 与规格的对应与偏差（重要）
@@ -111,6 +111,7 @@ tests/              pytest（135 项）
 14. **P1 API 契约与档案层修复（2026-10-26）**：G5 大纲采纳改为**合并式**（按内容匹配保留原编号与原状态，未提及的伏笔行一律保留，不再从 FO-001 重编覆盖人工台账）；G4 关系网真正写回各角色「关系网络」节（同「对象」行已存在则不覆盖人工内容）；新增 `PUT /chapters/{no}/prose`（人工手改正文，`pending_finalize` 态改完强制回退 `mech_check` 重跑机检，`finalized` 一律拒绝）、`GET /chapters/{no}/snapshots/{version}`（快照正文回看）、`PUT /locations`（地点档案可编辑）、`POST /export/md`（Markdown 合并导出）、`GET /books/{book}/audits`（卷末审计报告回看）；`adopt_outline` 不再用建书占位串覆盖用户已填的 logline/ending_direction。回归用例见 `tests/test_p1_archive_api.py`。
 15. **稳定性修复 / 技术债清理（2026-10-26）**：Bible 固定表格节写回时校验表头（力量体系 8 列、隐藏规则 3 列、术语表 2 列）——原先三个列常量定义后零引用，列名写错会让 `power_rows()`/`realm_order()` 返回空、**境界倒退检测静默失效**，属于"不报错的失效"；G6 细纲 `plant` 操作补 FO 编号格式校验（原先任意字符串可入台账）；W2/W4/W5 场景专项补齐 `〖字数区间〗` 硬约束（原先只给 W1/W3 传，三个专项被当整章调用却无任何字数约束）；`db.rebuild()` 的 UPSERT 补 `status` 更新（原地重建现在能按文件真相修好已污染状态）；`@app.on_event` 迁移到 `lifespan`（原 API 已被 FastAPI 弃用）；`settings.DEFAULTS.prices` 补中转站常见模型别名。回归用例见 `tests/test_p2_stability.py`。
 16. **定稿返工链路补齐（2026-10-26，文档撰写时发现）**：`statemachine` 早有 `finalized --unlock--> pending_finalize` 边、`/fix` 与 `/prose` 的拒绝文案也让用户"先解锁"，但**既没有 unlock 路由也没有 UI 按钮**——用户被指向一个不存在的地方，定稿返工实际是死路。现补 `POST /chapters/{no}/unlock`（状态回退 + 同步把正文文件 `status` 从 `final` 改回 `draft`，否则文件自带的 final 标记仍会让下游认定它已定稿）+ 工作台「解锁返工」按钮；同时 meta 表单的「单章字数区间」保存时同步写入 `config.json`（管线只读 config，原先在 meta 改这一项完全不生效）。回归用例见 `tests/test_p1_archive_api.py::TestProseEdit`。
+17. **续修三处（2026-10-26 下午）**：① `finalize` 前端改传 `timeout: 0`（原先 30s 默认超时，而该接口含 V4 记忆卡回写 + 末章 V6 审计两次 LLM，真实模型必超时 → 前端假报错、后端已定稿）；② 新增只读端点 `GET /books/{book}/plot_points/overdue` + 书总览「伏笔台账」常驻预警条（`planted` 超 30 章未推进；原先只有 G6 落盘那一刻一次性回 warns，刷新即消失）；③ **Bible 表头校验改为归一化比对**——真实书 `隐藏规则` 写作 `隐藏等级(低/中/高)`，原严格全等判定会误报"缺列"，导致该书**任何一节的圣经保存都被拦死**（校验本意是拦列名漂移到别的语义，不是拦写法差异）。归一化只忽略括号补充／markdown 强调／空白与全半角括号差异，`隐藏级别` 这类真漂移仍报错。回归用例见 `tests/test_p1_archive_api.py::TestOverdueForeshadows` 与 `tests/test_p2_stability.py::TestBibleHeaderValidation`。
 
 ## M0 检查单（规格04 §4）状态
 
@@ -119,7 +120,7 @@ tests/              pytest（135 项）
 | DeepSeek 连通 | ✅ 代码就绪（OpenAI 兼容流式），设置页填 key 后"测试连接"验证 |
 | Gemini 连通 | ✅ 代码就绪（统一走 OpenAI 兼容协议，见偏差 11；base URL 可改走代理/中转） |
 | FTS5 trigram 中文检索 | ✅ 已实测（SQLite 3.49.1 trigram 可用；bigram 降级路径也有实现与提示） |
-| Windows 打包 exe | ⚠️ `ainovel.spec` 可用，但仓库里现有的 `dist/ai-novel/` 是 **10-25 的过期产物**（内含旧 vanilla UI、`web/dist` 缺失，exe 打不开界面）。分发给别人前必须重新构建：见下 |
+| Windows 打包 exe | ✅ 已重打（2026-10-26 15:16）并实测启动：`dist/ai-novel/ai-novel.exe` 内含 Vue3 `web/dist`、当前版本 prompts/lint，`GET /` 与 `/api/prompts` 均 200。注意 `dist/`、`build/` 在 `.gitignore` 里，重新构建不会进版本控制 |
 | 单章成本可见 | ✅ 已接通（单价表含 deepseek/gemini 常见档位；中转站自定义模型名需在设置页「单价」补一行，否则该模型成本按 0 计并在服务端日志记告警） |
 
 打包：`pip install pyinstaller && pyinstaller ainovel.spec`，然后把 `prompts/ lint/ web/dist` 拷到 `dist/ai-novel/` 下（数据目录 books/data 自动在 exe 旁创建）。

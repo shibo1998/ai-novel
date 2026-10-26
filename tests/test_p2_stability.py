@@ -74,6 +74,25 @@ class TestBibleHeaderValidation:
         assert bible.validate_sections({"隐藏规则": "| 规则 | 等级 |\n|---|---|\n| x | y |"})
         assert bible.validate_sections({"术语表": "| 词 | 义 |\n|---|---|\n| x | y |"})
 
+    def test_parenthetical_header_suffix_accepted(self):
+        """列名带括号补充是合法写法（真实书 `隐藏等级(低/中/高)`），不能被判成缺列。
+
+        修复前：整本 STORY_BIBLE 保存被拦死——用户改任何一节都会撞「隐藏规则表头缺列」，
+        而文件本身从来没坏过。校验目标应是"列名漂移到别的语义"，不是"写法不一致"。
+        """
+        ok = {"隐藏规则": "| 规则内容 | 隐藏等级(低/中/高) | 计划揭晓章节 |\n|---|---|---|\n| x | 高 | 80 |"}
+        assert bible.validate_sections(ok) == []
+        # 全角括号同样接受
+        ok2 = {"力量体系": "| 大境界 | 子境界 | 突破条件 | 能力边界（不能做什么） | 战力对标 | 寿元 | 代价与风险 | 突破异象 |\n"
+                          "|---|---|---|---|---|---|---|---|\n| 炼气 | 三层 | x | y | z | w | v | u |"}
+        assert bible.validate_sections(ok2) == []
+
+    def test_real_drift_still_rejected_after_normalization(self):
+        """归一化不能把真漂移一起放过：`隐藏级别` 语义已变，必须继续报错。"""
+        bad = {"隐藏规则": "| 规则内容 | 隐藏级别 | 计划揭晓章节 |\n|---|---|---|\n| x | 高 | 80 |"}
+        problems = bible.validate_sections(bad)
+        assert problems and "隐藏等级" in problems[0]
+
 
 # ---------------------------------------------------------------------------
 # 2. G6 plant FO 编号校验（规格02 P-G6 程序校验）
