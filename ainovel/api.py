@@ -788,6 +788,10 @@ def generate_stream(book: str, no: int, payload: dict | None = None):
 @app.post("/api/books/{book}/chapters/{no}/mechcheck")
 def mech_check(book: str, no: int):
     try:
+        # 人工复核后重新验：human_review 因机检阻断而落点，用户定点修复/手改正文
+        # 之后点「重跑机检」必须能回到机检，否则修干净的章也只能靠豁免放行。
+        if statemachine.current_status(book, no) == "human_review":
+            statemachine.transition(book, no, "recheck")
         hits = pipeline.run_mech_check(book, no)
     except Exception as e:
         raise _err(e)

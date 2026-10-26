@@ -50,3 +50,41 @@ def test_outline_regen_allowed(book_env):
     statemachine.ensure_chapter_row(book, 5)
     statemachine.transition(book, 5, "generate_outline")
     assert statemachine.transition(book, 5, "generate_outline") == "outline_draft"
+
+
+def test_human_review_can_recheck(book_env):
+    """人工复核后修好，必须能回到机检重新判定。
+
+    没有这条出边时：机检阻断 → human_review → 定点修复干净了也没处验证，
+    只能填理由「豁免」放行，把已经合格的章记成一条豁免记录，证据链反而被污染。
+    """
+    book, _ = book_env
+    statemachine.ensure_chapter_row(book, 6)
+    for ev in ("generate_outline", "confirm", "start_generate", "complete"):
+        statemachine.transition(book, 6, ev)
+    statemachine.transition(book, 6, "blocked")
+    statemachine.transition(book, 6, "recheck")
+    assert statemachine.transition(book, 6, "blocked_after_fix") == "human_review"
+    # 关键：human_review 能重新进机检
+    assert statemachine.transition(book, 6, "recheck") == "mech_check"
+    # 且重新进机检后仍能正常往下走
+    assert statemachine.transition(book, 6, "pass") == "llm_review"
+
+
+def test_human_review_can_recheck(book_env):
+    """人工复核后修好，必须能回到机检重新判定。
+
+    没有这条出边时：机检阻断 → human_review → 定点修复干净了也没处验证，
+    只能填理由「豁免」放行，把已经合格的章记成一条豁免记录，证据链反而被污染。
+    """
+    book, _ = book_env
+    statemachine.ensure_chapter_row(book, 6)
+    for ev in ("generate_outline", "confirm", "start_generate", "complete"):
+        statemachine.transition(book, 6, ev)
+    statemachine.transition(book, 6, "blocked")
+    statemachine.transition(book, 6, "recheck")
+    assert statemachine.transition(book, 6, "blocked_after_fix") == "human_review"
+    # 关键：human_review 能重新进机检
+    assert statemachine.transition(book, 6, "recheck") == "mech_check"
+    # 且重新进机检后仍能正常往下走
+    assert statemachine.transition(book, 6, "pass") == "llm_review"

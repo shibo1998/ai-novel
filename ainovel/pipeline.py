@@ -625,10 +625,26 @@ def _version(book: str, no: int) -> int:
 # ---------------------------------------------------------------------------
 
 def format_issues(issues: list[Any]) -> str:
+    """把问题清单渲染成 V5 能读懂的文字。
+
+    两种来源字段名不同，必须分别处理：
+    - LLM 审校（P-V1）：category/severity/location/quote/description/suggestion
+    - 机检（M-xx）：rule/level/line/word/message —— 从 review_records 读回来时
+      是这种 dict，若走下面的 else 分支，渲染出来是 `[None/None] 位置：None｜
+      原句：None｜问题：None`，模型收到的是一堆 None，于是原样返回原文。
+      表现为「定向修复返回 ok、字数一字未变」——功能静默失效且不报错。
+    """
     lines = []
     for it in issues:
         if isinstance(it, mechcheck.Hit):
             lines.append(f"- [{it.rule}/{it.level}] 第{it.line}行 ｜命中：{it.word}｜{it.message}｜修改建议：就地改写命中句段")
+        elif isinstance(it, dict) and it.get("rule"):
+            line_no = it.get("line") or 0
+            where = f"第{line_no}行" if line_no else "全章"
+            lines.append(
+                f"- [{it.get('rule')}/{it.get('level')}] {where} ｜命中：{it.get('word')}"
+                f"｜{it.get('message')}｜修改建议：就地改写命中句段，其余段落一字不动"
+            )
         else:
             lines.append(
                 f"- [{it.get('category')}/{it.get('severity')}] 位置：{it.get('location')}"
@@ -674,24 +690,69 @@ def run_targeted_fix(book: str, no: int, issues: list[Any], client=None) -> str:
     return new_body
 
 
+def _split_quote(q: str) -> list[str]:
+    """把审校的 quote 拆成可用于单行匹配的片段。
+
+    LLM 审校的 quote 常写成「句A / 句B / 句C」或「句A……句B」，整串拿去和
+    单行比对永远匹配不上，保护集就空了。拆开、各截 12 字再匹配。
+    """
+    out: list[str] = []
+    for frag in re.split(r"[／/｜|、；;\n]+|\.\.\.+|……+", q):
+        frag = frag.strip()
+        if len(frag) >= 4:
+            out.append(frag[:12])
+    return out
+
+
 def _overreach(old: str, new: str, issues: list[Any]) -> bool:
-    """未涉及问题句段的改动率 >10% → 视为越权重写（规格02 P-V5 程序校验）。"""
+    """未涉及问题句段的改动率超阈值 → 视为越权重写（规格02 P-V5 程序校验）。
+
+    两个坑（2026-10-26 实测第 12 章修复时暴露）：
+    1. 机检存进 review_records 的 dict 带的是 `line`，原实现只读 `quote`，
+       于是机检的 8 处具体行一处都没被保护，全章都算「未涉及问题句段」。
+    2. M-01（字数超限）、M-06（感叹号密度）这类问题是**全章级**的（line=0），
+       天然要求通篇调整；按 10% 硬卡必然误杀，表现为「字数超 68 字的极小问题
+       永远修不好，只能整章重写」。存在全章级问题时阈值放宽到 35%，
+       仍然挡得住真正的整章重写。
+    """
     import difflib
 
     old_lines = old.splitlines()
     new_lines = new.splitlines()
     protected: set[int] = set()
+    whole_chapter = False
+
+    def protect(idx: int) -> None:
+        for d in (-1, 0, 1):
+            i = idx + d
+            if 0 <= i < len(old_lines):
+                protected.add(i)
+
     for it in issues:
-        if isinstance(it, mechcheck.Hit) and it.line > 0:
-            for d in (-1, 0, 1):
-                protected.add(it.line - 1 + d)
+        if isinstance(it, mechcheck.Hit):
+            if it.line > 0:
+                protect(it.line - 1)
+            else:
+                whole_chapter = True
         elif isinstance(it, dict):
-            q = it.get("quote", "")
-            if q:
-                for i, ln in enumerate(old_lines):
-                    if q[:12] in ln:
-                        for d in (-1, 0, 1):
-                            protected.add(i + d)
+            line_no = it.get("line")
+            if line_no is None:
+                # LLM 审校（P-V1）不提供行号：location 是「全章多处」「章中段落」
+                # 这类自然语言，quote 还是「A / B / C」跨多段拼接的串。
+                # 程序无法可靠划定"哪些行不该动"，一律按全章级处理（阈值 35%）；
+                # 同时尽力把 quote 里能对上的片段保护起来，减少可改范围。
+                # 否则 10% 硬卡会让"删掉 11 处多余的比喻"这种正常修复永远失败。
+                whole_chapter = True
+                q = str(it.get("quote") or "")
+                for frag in _split_quote(q):
+                    for i, ln in enumerate(old_lines):
+                        if frag in ln:
+                            protect(i)
+                            break
+            elif line_no > 0:
+                protect(line_no - 1)
+            else:
+                whole_chapter = True
     # 按行粒度：未被匹配块覆盖的旧行 = 被改动的行
     sm = difflib.SequenceMatcher(a=old_lines, b=new_lines, autojunk=False)
     matched: set[int] = set()
@@ -700,7 +761,8 @@ def _overreach(old: str, new: str, issues: list[Any]) -> bool:
     changed_outside = sum(len(old_lines[i]) for i in range(len(old_lines))
                           if i not in matched and i not in protected)
     total = max(1, sum(len(l) for l in old_lines))
-    return changed_outside / total > 0.10
+    limit = 0.35 if whole_chapter else 0.10
+    return changed_outside / total > limit
 
 
 # ---------------------------------------------------------------------------

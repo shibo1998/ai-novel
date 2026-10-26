@@ -281,3 +281,89 @@ class TestG5VariableContract:
             prompts.render("G5", {"logline": "x", "目标总章数": "120"})
         msg = str(ei.value)
         assert "世界观摘要" in msg and "角色卡摘要" in msg
+
+
+# ---------------------------------------------------------------------------
+# P0-4 定向修复的「问题清单」必须能被模型读懂
+# ---------------------------------------------------------------------------
+
+class TestFixIssueFormat:
+    """机检命中存进 review_records 后是 dict（rule/level/line/word/message），
+    而 format_issues 原来只认 LLM 审校那套字段（category/quote/description）。
+    于是渲染出 10 行 `[None/None] 位置：None｜原句：None｜问题：None`，
+    V5 收到一堆 None → 原样返回原文 → 接口回 200 但正文一字未改。
+    """
+
+    MECH_ISSUES = [
+        {"rule": "M-01", "level": "block", "line": 0, "word": "3468",
+         "message": "字数 3468 不在区间 [2200, 3400]"},
+        {"rule": "M-02", "level": "block", "line": 333, "word": "云雾缭绕",
+         "message": "禁词命中: 云雾缭绕"},
+    ]
+
+    def test_mech_dict_renders_real_content(self, home):
+        text = pipeline.format_issues(self.MECH_ISSUES)
+        assert "None" not in text
+        assert "M-01" in text and "3468" in text
+        assert "云雾缭绕" in text
+        assert "第333行" in text
+
+    def test_llm_review_dict_still_renders(self, home):
+        """LLM 审校那套字段不能被这次修改弄丢。"""
+        text = pipeline.format_issues([{
+            "category": "设定矛盾", "severity": "high", "location": "第3段",
+            "quote": "他已是筑基期", "description": "与档案感气境冲突",
+            "suggestion": "改为感气境初入",
+        }])
+        assert "设定矛盾" in text and "他已是筑基期" in text and "None" not in text
+
+    def test_hit_object_still_renders(self, home):
+        from ainovel import mechcheck
+
+        hit = mechcheck.Hit(rule="M-06", level="warn", line=0,
+                            word="34个感叹号", message="每千字感叹号 9.8 个（>2）")
+        text = pipeline.format_issues([hit])
+        assert "M-06" in text and "34个感叹号" in text and "None" not in text
+
+
+# ---------------------------------------------------------------------------
+# P0-4 定向修复的「问题清单」必须能被模型读懂
+# ---------------------------------------------------------------------------
+
+class TestFixIssueFormat:
+    """机检命中存进 review_records 后是 dict（rule/level/line/word/message），
+    而 format_issues 原来只认 LLM 审校那套字段（category/quote/description）。
+    于是渲染出 10 行 `[None/None] 位置：None｜原句：None｜问题：None`，
+    V5 收到一堆 None → 原样返回原文 → 接口回 200 但正文一字未改。
+    """
+
+    MECH_ISSUES = [
+        {"rule": "M-01", "level": "block", "line": 0, "word": "3468",
+         "message": "字数 3468 不在区间 [2200, 3400]"},
+        {"rule": "M-02", "level": "block", "line": 333, "word": "云雾缭绕",
+         "message": "禁词命中: 云雾缭绕"},
+    ]
+
+    def test_mech_dict_renders_real_content(self, home):
+        text = pipeline.format_issues(self.MECH_ISSUES)
+        assert "None" not in text
+        assert "M-01" in text and "3468" in text
+        assert "云雾缭绕" in text
+        assert "第333行" in text
+
+    def test_llm_review_dict_still_renders(self, home):
+        """LLM 审校那套字段不能被这次修改弄丢。"""
+        text = pipeline.format_issues([{
+            "category": "设定矛盾", "severity": "high", "location": "第3段",
+            "quote": "他已是筑基期", "description": "与档案感气境冲突",
+            "suggestion": "改为感气境初入",
+        }])
+        assert "设定矛盾" in text and "他已是筑基期" in text and "None" not in text
+
+    def test_hit_object_still_renders(self, home):
+        from ainovel import mechcheck
+
+        hit = mechcheck.Hit(rule="M-06", level="warn", line=0,
+                            word="34个感叹号", message="每千字感叹号 9.8 个（>2）")
+        text = pipeline.format_issues([hit])
+        assert "M-06" in text and "34个感叹号" in text and "None" not in text

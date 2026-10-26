@@ -39,6 +39,11 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     ("human_review", "edit_outline"): "outline_draft",
     ("human_review", "rewrite"): "generating",
     ("human_review", "approve"): "pending_finalize",
+    # 人工复核前先修再验：human_review 是「机检仍有阻断」的落点，用户定点修复
+    # 或手改正文之后，必须能回到机检重新判定，否则只剩「改细纲重来」「整章重写」
+    # 「填理由豁免」三条路 —— 已经修干净的章被迫记一条豁免理由，证据链反而变脏。
+    # 这条出边只会让章重新过机检（更严），不会放宽任何门禁。
+    ("human_review", "recheck"): "mech_check",
     ("pending_finalize", "finalize"): "finalized",
     # 人工手改正文后必须重新过机械检查：否则改完就能直接定稿，
     # 机检（M-01~M-11）等于被绕过（P1 审计：手改正文不推进状态的副作用）。
