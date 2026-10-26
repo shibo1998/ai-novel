@@ -1,0 +1,42 @@
+# AI 味确定性检测器参数（规格05 F-02 / §3.3-§3.5）
+# 改这里不用改代码；YAML 写坏会抛 ConfigError（禁止静默用默认值兜底，P-4）
+version: 1
+
+# 每条规则可单独开关、改级别。level: blocking | advisory
+# blocking 只给结构性硬伤（否定对举/破折号/系统腔/句号断续等），语义类一律 advisory。
+rules:
+  D-01: {enabled: true, level: blocking}   # 否定对举 不是…而是
+  D-02: {enabled: true, level: advisory}   # 不但…反而
+  D-03: {enabled: true, level: blocking}   # 声音反差 声音不大却
+  D-04: {enabled: true, level: blocking, run: 3}          # 连续否定句
+  D-05: {enabled: true, level: blocking}   # 破折号
+  D-06: {enabled: true, level: blocking, tail_chars: 200} # 升华式收尾
+  D-07: {enabled: true, level: advisory}   # 总结式收尾
+  D-08: {enabled: true, level: advisory, run: 3, length_gap: 0.15}  # 三段排比
+  D-09: {enabled: true, level: advisory, density: {count: 5, per_1000: 6}}
+  D-10: {enabled: true, level: advisory, density: {count: 4, per_1500: 4}}
+  D-11: {enabled: true, level: advisory}   # 动作清单 先…然后…接着…最后
+  D-12: {enabled: true, level: advisory, density: {count: 3, per_4000: 3}}
+  D-13: {enabled: true, level: advisory, max_per_chapter: 2}  # 陈词 仿佛/似乎
+  D-14: {enabled: true, level: advisory, density: {count: 7, per_3000: 7}}
+  D-15: {enabled: true, level: advisory}   # 因果链套式
+  D-16: {enabled: true, level: blocking}   # 系统提示腔
+  D-17: {enabled: true, level: advisory, run: 6, max_len: 8}
+  D-18: {enabled: true, level: advisory, min_per_100: 1.5}  # 连接词稀薄
+  D-19: {enabled: true, level: blocking, run: 5}            # 句号断续
+  D-20: {enabled: true, level: advisory, max_chars: 120}    # 超长段
+  D-21: {enabled: true, level: advisory}   # 引号强调腔
+
+# 保护区：命中区间内的字符不检测、不计分（先算区间，再丢弃区间内命中）
+preserve:
+  - '[「『“][^」』”]*[」』”]'
+  - '"[^"\n]{1,200}"'
+  - '\d+(?:\.\d+)?\s*(?:米|里|丈|尺|年|月|日|天|人|个|次|成|层|级|阶|品|枚|柄|把)'
+  - '【[^】]{1,20}】'
+  - '《[^》]{1,40}》'
+  - '(?:像|如同|仿佛)[^。！？]{6,40}[。！？]'
+
+score:
+  weights: {L1: 12, L2: 5, L3: 2, L4: 8}
+  saturation_k: 36
+  min_body_chars: 100

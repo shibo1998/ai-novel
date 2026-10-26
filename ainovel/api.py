@@ -800,11 +800,62 @@ def mech_check(book: str, no: int):
         # 之后点「重跑机检」必须能回到机检，否则修干净的章也只能靠豁免放行。
         if statemachine.current_status(book, no) == "human_review":
             statemachine.transition(book, no, "recheck")
-        hits = pipeline.run_mech_check(book, no)
+        res = pipeline.run_mech_check(book, no)
     except Exception as e:
         raise _err(e)
-    return {"hits": [h.to_dict() for h in hits],
-            "status": statemachine.current_status(book, no)}
+    body = res.to_dict()
+    body["status"] = statemachine.current_status(book, no)
+    return body
+
+
+@app.get("/api/books/{book}/chapters/{no}/checkstatus")
+def check_status(book: str, no: int):
+    """机检结论 + 过期判定（规格05 §2.6）。"""
+    try:
+        st = db.get_check_status(book_id=books.book_id(book), chapter_no=no)
+        prose = chapters.read_prose(book, no)
+    except Exception as e:
+        raise _err(e)
+    current = mechcheck.fingerprint(prose["_body"])
+    if st is None:
+        return {"verdict": None, "checked_at": None, "checked_fingerprint": None,
+                "current_fingerprint": current, "stale": False,
+                "ineffective": [], "hits_count": {"block": 0, "warn": 0}}
+    last = st["last_mech"] or {}
+    ineffective = json.loads(last.get("ineffective_json") or "[]")
+    issues = json.loads(last.get("issues_json") or "[]")
+    checked_fp = st["checked_fingerprint"]
+    stale = bool(checked_fp) and checked_fp != current
+    verdict = "stale" if stale else st["checked_status"]
+    return {
+        "verdict": verdict,
+        "checked_status": st["checked_status"],
+        "checked_at": last.get("created_at"),
+        "checked_fingerprint": checked_fp,
+        "current_fingerprint": current,
+        "stale": stale,
+        "ineffective": ineffective,
+        "hits_count": {
+            "block": sum(1 for i in issues if i.get("level") == "block"),
+            "warn": sum(1 for i in issues if i.get("level") == "warn"),
+        },
+        "imported": bool(st.get("imported")),
+    }
+
+
+@app.get("/api/books/{book}/chapters/{no}/deslop")
+def deslop_check(book: str, no: int):
+    """单独跑 AI 味检测（只报不改，调试/手动用）。"""
+    from . import deslop
+
+    try:
+        body = chapters.read_prose(book, no)["_body"]
+        res = deslop.analyze(body)
+    except deslop.ConfigError as e:
+        raise _err(e, code=500)
+    except Exception as e:
+        raise _err(e)
+    return res.to_dict()
 
 
 @app.post("/api/books/{book}/chapters/{no}/review")

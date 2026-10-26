@@ -388,6 +388,32 @@ def _style_points(book: str) -> str:
         return "（未启用文风系统）"
 
 
+def _deslop_brief(body: str, limit: int = 8) -> str:
+    """给 V1/V2 的检测器摘要：分数 + 前 N 条命中（带行号，便于定点改）。"""
+    from . import deslop
+
+    try:
+        res = deslop.analyze(body)
+    except Exception as e:  # 参数写坏等情况：如实告知模型"这次没有客观依据"
+        return f"（检测器未执行：{e}）"
+    if res.score < 0:
+        return "（正文过短，检测器未评分）"
+    head = f"干净度 {res.score}/100（越高越干净；<60 建议润色，<45 且有结构性硬伤则阻断）"
+    if not res.hits:
+        return head + "\n（无规则命中）"
+    return head + "\n" + res.top_hits(limit)
+
+
+def _timeline_constraints(book: str, no: int) -> str:
+    """本章出场角色的知情禁区（只注入相关条目，不注入全表）。"""
+    try:
+        from . import timeline
+
+        return timeline.constraints_for_chapter(book, no)
+    except Exception:
+        return "（未建立时间线）"
+
+
 def generate_prose(book: str, no: int, client=None,
                    stream_cb: Callable[[str], None] | None = None,
                    prompt_id: str | None = None) -> dict[str, Any]:
@@ -597,28 +623,45 @@ def _better(a: str, b: str, wr: list[int]) -> bool:
 # 4. 机械检查 + 自动修复（规格03 §2.4）
 # ---------------------------------------------------------------------------
 
-def run_mech_check(book: str, no: int, client=None, auto_fix: bool = True) -> list[mechcheck.Hit]:
+def run_mech_check(book: str, no: int, client=None,
+                   auto_fix: bool = True) -> mechcheck.CheckResult:
+    """机械检查（规格05 §2.5）：返回带生效状态的结论，三态驱动流转。
+
+    关键：`not_effective`（有 block 级规则没查成，如禁词表被删）**不得**当成通过。
+    词表清空时旧实现返回空命中 → 整章直接进 llm_review，属于"假绿"。
+    """
     st = statemachine.current_status(book, no)
     if st != "mech_check":
         raise statemachine.StateError(f"第{no}章状态 {st} 不能跑机械检查")
     cfg = books.load_config(book)
     wr = cfg["chapter_word_range"]
 
-    def _record(hits: list[mechcheck.Hit]) -> None:
+    def _record(res: mechcheck.CheckResult) -> None:
         db.add_review(book_id=books.book_id(book), chapter_no=no,
                       version=_version(book, no), kind="mech",
-                      issues=[h.to_dict() for h in hits],
-                      verdict="block" if mechcheck.has_block(hits) else "pass")
+                      issues=[h.to_dict() for h in res.hits],
+                      verdict=res.verdict,
+                      fingerprint=res.fingerprint,
+                      ineffective=[i.to_dict() for i in res.ineffective])
+        db.set_check_status(book_id=books.book_id(book), chapter_no=no,
+                            fingerprint=res.fingerprint, status=res.verdict)
 
-    hits = _check(book, no, wr)
-    _record(hits)
-    if not mechcheck.has_block(hits):
+    res = _check(book, no, wr)
+    _record(res)
+    if res.verdict == "not_effective":
+        logger.warning("第%s章 机检未完整执行（%s），转人工，禁止推进到审校",
+                       no, "、".join(f"{i.rule}:{i.reason}" for i in res.ineffective))
+        statemachine.transition(book, no, "blocked_after_fix")  # → human_review
+        return res
+    if res.verdict == "pass":
         statemachine.transition(book, no, "pass")  # → llm_review
-        return hits
+        return res
+
+    hits = res.hits
     if mechcheck.has_sensitive(hits) or not auto_fix:
         logger.warning("第%s章 命中敏感词红线，阻断转人工（禁止自动改写）", no)
         statemachine.transition(book, no, "blocked_after_fix")  # → human_review（敏感词禁止自动改写）
-        return hits
+        return res
 
     logger.info("第%s章 机检阻断 %d 条，自动定向修复一轮", no, len(hits))
     statemachine.transition(book, no, "blocked")  # → lint_fix
@@ -627,15 +670,17 @@ def run_mech_check(book: str, no: int, client=None, auto_fix: bool = True) -> li
     except FixOverreach:
         statemachine.transition(book, no, "recheck")       # lint_fix → mech_check
         statemachine.transition(book, no, "blocked_after_fix")  # → human_review（越权→完整重生成由人触发）
-        return _check(book, no, wr)
+        res = _check(book, no, wr)
+        _record(res)
+        return res
     statemachine.transition(book, no, "recheck")  # → mech_check
-    hits2 = _check(book, no, wr)
-    _record(hits2)
-    if mechcheck.has_block(hits2):
-        statemachine.transition(book, no, "blocked_after_fix")  # 仍有阻断 → human_review
+    res2 = _check(book, no, wr)
+    _record(res2)
+    if res2.verdict != "pass":
+        statemachine.transition(book, no, "blocked_after_fix")  # 仍有阻断/未生效 → human_review
     else:
         statemachine.transition(book, no, "pass")  # → llm_review
-    return hits2
+    return res2
 
 
 def _lint_whitelist(book: str) -> list[str]:
@@ -646,9 +691,9 @@ def _lint_whitelist(book: str) -> list[str]:
         return []
 
 
-def _check(book: str, no: int, wr: list[int]) -> list[mechcheck.Hit]:
+def _check(book: str, no: int, wr: list[int] | None) -> mechcheck.CheckResult:
     prose = chapters.read_prose(book, no)
-    return mechcheck.check(prose["_body"], word_range=wr, whitelist=_lint_whitelist(book))
+    return mechcheck.check_full(prose["_body"], word_range=wr, whitelist=_lint_whitelist(book))
 
 
 def _version(book: str, no: int) -> int:
@@ -1033,6 +1078,8 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
         "字数区间": f"{wr[0]}-{wr[1]}",
         "程序字数": str(mechcheck.count_words(prose["_body"])),
         "文风要点": _style_points(book),
+        "检测器结果": _deslop_brief(prose["_body"]),
+        "时间线约束": _timeline_constraints(book, no),
     }
 
     result: dict[str, Any] | None = None
@@ -1130,6 +1177,7 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
         "正文": old_body,
         "禁词表": banned,
         "对话后缀禁式": "\n".join(f"- {p.pattern}" for p in mechcheck.load_dialog_patterns()) or "（无）",
+        "检测器命中": _deslop_brief(old_body),
     }
     res, _p, _t = _call(book, no, "polish", "V2", variables, client=client)
     new_body, change_list = _parse_polish(res.text)

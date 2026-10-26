@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS chapters (
     prev_status TEXT,                -- error 恢复用（规格01 §4：error──重试──▶原状态）
     fix_rounds INTEGER NOT NULL DEFAULT 0,
     current_version INTEGER NOT NULL DEFAULT 1,
+    checked_fingerprint TEXT,        -- 机检结论对应的正文指纹（规格05 P-3）
+    checked_status TEXT,             -- pass | blocked | not_effective | stale
+    imported INTEGER NOT NULL DEFAULT 0,  -- 由 txt 导入（无细纲、无记忆卡）
     updated_at TEXT NOT NULL,
     UNIQUE(book_id, no)
 );
@@ -96,8 +99,29 @@ CREATE TABLE IF NOT EXISTS review_records (
     scores_json TEXT,
     issues_json TEXT,
     verdict TEXT,
+    fingerprint TEXT,                -- 本条结论判定的是哪一版正文
+    ineffective_json TEXT,           -- 未生效规则清单（规格05 P-2）
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chapter_state (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter_no INTEGER NOT NULL,
+    character TEXT NOT NULL,
+    location TEXT,
+    physical TEXT,                   -- 伤势/疲劳/衣着
+    mental TEXT,                     -- 情绪/动机
+    power_level TEXT,                -- 战力口径，须命中 Bible 境界序列
+    arc_stage TEXT,                  -- 弧光阶段
+    knowledge_json TEXT,             -- 该角色本章结束"已知"的事实
+    goals_json TEXT,                 -- 当前目标
+    delta_json TEXT,                 -- 原始增量（回滚基线）
+    fingerprint TEXT,                -- 对应正文指纹
+    created_at TEXT NOT NULL,
+    UNIQUE(book_id, chapter_no, character)
+);
+CREATE INDEX IF NOT EXISTS idx_chapter_state_lookup
+    ON chapter_state(book_id, character, chapter_no);
 CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
@@ -115,6 +139,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
     with _LOCK:
         conn.executescript(SCHEMA)
         _ensure_column(conn, "generation_log", "cost_millicents", "INTEGER")
+        # 规格05 §11.1：老库轻量迁移（CREATE TABLE IF NOT EXISTS 不会改已有表）
+        _ensure_column(conn, "chapters", "checked_fingerprint", "TEXT")
+        _ensure_column(conn, "chapters", "checked_status", "TEXT")
+        _ensure_column(conn, "chapters", "imported", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "review_records", "fingerprint", "TEXT")
+        _ensure_column(conn, "review_records", "ineffective_json", "TEXT")
         conn.commit()
 
 
@@ -168,20 +198,73 @@ def add_review(
     scores: dict | None = None,
     issues: list | None = None,
     verdict: str | None = None,
+    fingerprint: str | None = None,
+    ineffective: list | None = None,
 ) -> int:
     import json
 
     with tx() as conn:
         cur = conn.execute(
             """INSERT INTO review_records
-               (book_id, chapter_no, version, kind, scores_json, issues_json, verdict, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               (book_id, chapter_no, version, kind, scores_json, issues_json, verdict,
+                fingerprint, ineffective_json, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (book_id, chapter_no, version, kind,
              json.dumps(scores, ensure_ascii=False) if scores is not None else None,
              json.dumps(issues, ensure_ascii=False) if issues is not None else None,
-             verdict, now()),
+             verdict, fingerprint,
+             json.dumps(ineffective, ensure_ascii=False) if ineffective is not None else None,
+             now()),
         )
         return cur.lastrowid
+
+
+def set_check_status(*, book_id: int, chapter_no: int, fingerprint: str | None,
+                     status: str) -> None:
+    """记录机检结论与其判定的正文指纹（规格05 §2.6）。"""
+    with tx() as conn:
+        conn.execute(
+            "UPDATE chapters SET checked_fingerprint=?, checked_status=?, updated_at=? "
+            "WHERE book_id=? AND no=?",
+            (fingerprint, status, now(), book_id, chapter_no))
+
+
+def mark_check_stale(*, book_id: int, chapter_no: int, current_fingerprint: str) -> bool:
+    """正文改动后调用：指纹与机检结论不一致 → 结论置 stale。
+
+    返回是否真的置为 stale（无历史结论时不标记——没查过就不存在"过期"）。
+    """
+    with tx() as conn:
+        row = conn.execute(
+            "SELECT checked_fingerprint, checked_status FROM chapters "
+            "WHERE book_id=? AND no=?", (book_id, chapter_no)).fetchone()
+        if row is None or not row["checked_fingerprint"]:
+            return False
+        if row["checked_fingerprint"] == current_fingerprint:
+            return False
+        if row["checked_status"] == "stale":
+            return True
+        conn.execute(
+            "UPDATE chapters SET checked_status='stale', updated_at=? WHERE book_id=? AND no=?",
+            (now(), book_id, chapter_no))
+        return True
+
+
+def get_check_status(*, book_id: int, chapter_no: int) -> dict | None:
+    with tx() as conn:
+        row = conn.execute(
+            "SELECT checked_fingerprint, checked_status, imported FROM chapters "
+            "WHERE book_id=? AND no=?", (book_id, chapter_no)).fetchone()
+        if row is None:
+            return None
+        last = conn.execute(
+            "SELECT verdict, issues_json, ineffective_json, fingerprint, created_at "
+            "FROM review_records WHERE book_id=? AND chapter_no=? AND kind='mech' "
+            "ORDER BY id DESC LIMIT 1", (book_id, chapter_no)).fetchone()
+    return {"checked_fingerprint": row["checked_fingerprint"],
+            "checked_status": row["checked_status"],
+            "imported": row["imported"],
+            "last_mech": dict(last) if last else None}
 
 
 def add_snapshot(*, book_id: int, chapter_no: int, version: int, label: str, content: str) -> int:

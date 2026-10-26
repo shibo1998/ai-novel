@@ -48,6 +48,8 @@ DEFAULTS: dict[str, Any] = {
         "repeat_para_prefix_n": 3,        # M-09
         "ending_window_chars": 200,       # M-10
         "first_person_ratio_max": 0.08,   # M-11
+        "ai_flavor_block": 45,            # M-12 AI 味干净度低于此值且存在结构性硬伤才 block
+        "ai_flavor_warn": 60,             # M-12 报警线（有意先放宽，跑够章节再收紧）
     },
     # 装配预算（token 估算值；估算=中文字符×0.75）
     "assembly_budget_tokens": 32000,

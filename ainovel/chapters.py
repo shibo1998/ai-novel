@@ -112,6 +112,25 @@ def write_prose(book: str, no: int, fm: dict[str, Any], body: str) -> None:
         raise FM.FrontmatterError(f"正文 chapter_no={fm.get('chapter_no')} 与文件章号 {no} 不一致")
     FM.validate(fm, PROSE_SCHEMA)
     atomic.write_text(prose_path(book, no), FM.dump(fm, body))
+    _mark_check_stale(book, no, body)
+
+
+def _mark_check_stale(book: str, no: int, body: str) -> None:
+    """正文一变，旧机检结论即过期（规格05 P-3 / §2.6）。
+
+    单点放在 write_prose 里：所有写正文的路径（生成、手改、定向修复、润色、
+    订正、采纳草稿）都必须经过这里，避免漏掉某条路径导致"正文已改、结论仍绿"。
+    指纹相同（如定稿时原样写回）不会误标 stale。
+    """
+    import logging
+
+    from . import db, mechcheck
+
+    try:
+        db.mark_check_stale(book_id=books.book_id(book), chapter_no=no,
+                            current_fingerprint=mechcheck.fingerprint(body))
+    except Exception as e:  # 标记失败不能回滚已落盘的正文，但必须留痕
+        logging.getLogger(__name__).warning("第%s章机检结论过期标记失败: %s", no, e)
 
 
 # ---------------------------------------------------------------------------
