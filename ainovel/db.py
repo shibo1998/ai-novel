@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS generation_log (
     input_tokens INTEGER,
     output_tokens INTEGER,
     cost_cents INTEGER,
+    cost_millicents INTEGER,         -- 千分之一分（毫分）；分记账会把单章成本抹成 0
     status TEXT NOT NULL CHECK(status IN ('ok','error')),
     error TEXT,
     created_at TEXT NOT NULL
@@ -113,7 +114,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
 def init_schema(conn: sqlite3.Connection) -> None:
     with _LOCK:
         conn.executescript(SCHEMA)
+        _ensure_column(conn, "generation_log", "cost_millicents", "INTEGER")
         conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
+    """轻量迁移：老库缺列就补上（CREATE TABLE IF NOT EXISTS 不会改已有表）。"""
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +140,7 @@ def log_generation(
     model: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
-    cost: int = 0,
+    cost_millicents: int = 0,
     status: str = "ok",
     error: str | None = None,
 ) -> int:
@@ -139,10 +148,13 @@ def log_generation(
         cur = conn.execute(
             """INSERT INTO generation_log
                (book_id, chapter_no, stage, prompt_id, prompt_version, prompt_digest,
-                model, input_tokens, output_tokens, cost_cents, status, error, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                model, input_tokens, output_tokens, cost_cents, cost_millicents,
+                status, error, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (book_id, chapter_no, stage, prompt_id, prompt_version, prompt_digest,
-             model, input_tokens, output_tokens, cost, status, error, now()),
+             model, input_tokens, output_tokens,
+             round(cost_millicents / 1000), cost_millicents,
+             status, error, now()),
         )
         return cur.lastrowid
 
@@ -189,20 +201,59 @@ def add_snapshot(*, book_id: int, chapter_no: int, version: int, label: str, con
         return cur.fetchone()["id"]
 
 
+def backfill_cost_millicents() -> int:
+    """老行按 model 单价重算毫分——历史 cost_cents 已被逐次进位抹平，反推只能靠 token 数。
+
+    只在单价表里有该模型时回填；查不到单价的保持 NULL，交由 COALESCE 兜底，
+    避免"回填成 0"把「不知道怎么算」永久固化成「确认没花钱」。
+    """
+    from . import settings as _settings
+
+    prices = _settings.load().get("prices", {})
+    n = 0
+    with tx() as conn:
+        rows = conn.execute(
+            "SELECT id, model, input_tokens, output_tokens FROM generation_log "
+            "WHERE cost_millicents IS NULL AND model IS NOT NULL"
+        ).fetchall()
+        for r in rows:
+            p = prices.get(r["model"])
+            if not p:
+                continue
+            mc = round(
+                ((r["input_tokens"] or 0) * p.get("input_per_mtok_cents", 0)
+                 + (r["output_tokens"] or 0) * p.get("output_per_mtok_cents", 0)) / 1000
+            )
+            conn.execute("UPDATE generation_log SET cost_millicents=? WHERE id=?", (mc, r["id"]))
+            n += 1
+    return n
+
+
 def cost_summary(book_id: int, chapter_no: int | None = None) -> dict[str, Any]:
-    """成本汇总（规格03 §4）：本章 / 全书。调用方自行聚卷。"""
+    """成本汇总（规格03 §4）：本章 / 全书。调用方自行聚卷。
+
+    口径统一用 cost_millicents（毫分）—— 按分汇总时单章 0.56 分会进位成 0，
+    几十章加起来仍是 0，用户看到的是「这本书没花钱」。老行没有该列就用
+    cost_cents*1000 回填，保证迁移前后口径连续。
+    """
+    expr = "COALESCE(SUM(COALESCE(cost_millicents, cost_cents * 1000)), 0)"
     with tx() as conn:
         if chapter_no is None:
             row = conn.execute(
-                "SELECT COALESCE(SUM(cost_cents),0) c, COUNT(*) n FROM generation_log WHERE book_id=? AND status='ok'",
+                f"SELECT {expr} c, COUNT(*) n FROM generation_log WHERE book_id=? AND status='ok'",
                 (book_id,),
             ).fetchone()
         else:
             row = conn.execute(
-                "SELECT COALESCE(SUM(cost_cents),0) c, COUNT(*) n FROM generation_log WHERE book_id=? AND chapter_no=? AND status='ok'",
+                f"SELECT {expr} c, COUNT(*) n FROM generation_log "
+                "WHERE book_id=? AND chapter_no=? AND status='ok'",
                 (book_id, chapter_no),
             ).fetchone()
-    return {"cost_cents": row["c"], "calls": row["n"]}
+    return {
+        "cost_millicents": row["c"],
+        "cost_cents": round(row["c"] / 1000),
+        "calls": row["n"],
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -402,7 +402,7 @@ async function audit(): Promise<void> {
         档案编辑
       </el-button>
       <span class="dim">
-        全书成本 {{ ((ov?.cost_total.cost_cents ?? 0) / 100).toFixed(2) }} 元 /
+        全书成本 {{ ((ov?.cost_total.cost_millicents ?? 0) / 100000).toFixed(2) }} 元 /
         {{ ov?.cost_total.calls ?? 0 }} 次调用
       </span>
     </div>
@@ -548,7 +548,7 @@ async function audit(): Promise<void> {
           <el-table-column label="成本" width="90">
             <template #default="{ row }">
               <span :class="{ 'cost-warn': row.cost_over_yuan }">
-                {{ (row.cost_cents / 100).toFixed(2) }}元
+                {{ (row.cost_millicents / 100000).toFixed(2) }}元
               </span>
             </template>
           </el-table-column>

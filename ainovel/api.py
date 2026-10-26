@@ -30,6 +30,12 @@ async def _lifespan(_app: FastAPI):
     用 lifespan 取代已弃用的 @app.on_event（FastAPI 后续版本会移除 on_event）。
     """
     settings.load()
+    try:
+        n = db.backfill_cost_millicents()
+        if n:
+            logger.info("历史成本回填：%d 条按 token 数重算为毫分口径", n)
+    except Exception:  # 回填失败不该拦住启动
+        logger.exception("历史成本回填失败，成本展示可能偏低")
     yield
 
 
@@ -177,13 +183,15 @@ def overview(book: str):
     bid = books.book_id(book)
     with db.tx() as conn:
         vol_rows = conn.execute(
-            "SELECT chapter_no, SUM(cost_cents) c FROM generation_log "
-            "WHERE book_id=? AND status='ok' GROUP BY chapter_no", (bid,)
+            "SELECT chapter_no, SUM(COALESCE(cost_millicents, cost_cents * 1000)) c "
+            "FROM generation_log WHERE book_id=? AND status='ok' GROUP BY chapter_no", (bid,)
         ).fetchall()
     cost_by_ch = {r["chapter_no"]: r["c"] for r in vol_rows}
     for c in chs:
-        c["cost_cents"] = cost_by_ch.get(c["no"], 0)
-        c["cost_over_yuan"] = c["cost_cents"] > 100  # 单章 >1 元标黄（验收线）
+        # 毫分口径：按分聚合时单章 0.56 分会进位成 0，整本书看起来"没花钱"
+        c["cost_millicents"] = cost_by_ch.get(c["no"], 0)
+        c["cost_cents"] = round(c["cost_millicents"] / 1000)
+        c["cost_over_yuan"] = c["cost_millicents"] > 100_000  # 单章 >1 元标黄（验收线）
     return {
         "meta": {k: v for k, v in meta.items() if not k.startswith("_")},
         "chapters": chs,
@@ -906,6 +914,27 @@ def edit_prose(book: str, no: int, payload: ProseEditPayload):
     if st == "pending_finalize":
         statemachine.transition(book, no, "recheck")  # pending_finalize → mech_check
     return {"ok": True, "word_count": fm["word_count"], "status": statemachine.current_status(book, no)}
+
+
+class ProseCorrectPayload(BaseModel):
+    """定稿后字词级订正：逐条 old→new + 强制理由。"""
+    edits: list[dict[str, str]]
+    reason: str = ""
+
+
+@app.post("/api/books/{book}/chapters/{no}/prose/correct")
+def correct_prose_endpoint(book: str, no: int, payload: ProseCorrectPayload):
+    """定稿章的字词级订正（错别字 / 术语旧称 / 事实矛盾）。
+
+    与 `PUT /prose` 的区别：那是整篇覆盖、只对未定稿章开启；这里是受控替换，
+    专给已定稿章用——逐条 old→new、old 必须唯一命中、总改动 ≤5%、强制留痕。
+    没有它，定稿章里一处旧称就只能靠「解锁→重跑机检→重跑审校→重新定稿」，
+    烧一轮 token 只为改三个字。
+    """
+    try:
+        return pipeline.correct_prose(book, no, payload.edits, payload.reason)
+    except Exception as e:
+        raise _err(e)
 
 
 @app.post("/api/books/{book}/chapters/{no}/unlock")

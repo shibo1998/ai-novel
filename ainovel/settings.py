@@ -160,13 +160,16 @@ def masked() -> dict[str, Any]:
 _WARNED_MODELS: set[str] = set()
 
 
-def cost_cents(model: str, input_tokens: int, output_tokens: int) -> int:
-    """按单价折算成本（规格03 §4）。
+def cost_millicents(model: str, input_tokens: int, output_tokens: int) -> int:
+    """按单价折算成本，单位是**千分之一分**（毫分）。
 
-    未配置单价的模型不再静默返回 0 —— 那会让「单章 >1 元标黄」验收线永远不触发，
-    成本汇总也永远是 0（审计发现的真实问题：中转站自定义模型名不在默认单价表里）。
-    现在：首次遇到未知模型记一条告警日志，便于用户在设置页补单价；返回值仍是 0，
-    但调用方与日志能区分「真的 0 成本」和「不知道怎么算」。
+    原来按整数分记账，且是**每次调用各自四舍五入**：gemini-flash 单价 3/15 分
+    每百万 token，一次调用约 7.7k 输入 + 4.4k 输出只值 0.09 分，round() 每次都
+    抹成 0。第 12 章 19 次调用累计 1.68 分，记下来的是 0 —— 成本汇总恒为 0、
+    「单章 >1 元标黄」永不触发，表面上看还像「真的没花钱」，是典型的静默失效。
+    毫分口径下同一章读到 1683，展示时再降到分/元。
+
+    未配置单价的模型不静默返回 0：首次遇到记一条告警，便于在设置页补单价。
     """
     prices = load().get("prices", {})
     p = prices.get(model)
@@ -178,6 +181,11 @@ def cost_cents(model: str, input_tokens: int, output_tokens: int) -> int:
                 "成本汇总与 >1 元标黄验收线不生效）", model)
         return 0
     return round(
-        input_tokens / 1_000_000 * p.get("input_per_mtok_cents", 0)
-        + output_tokens / 1_000_000 * p.get("output_per_mtok_cents", 0)
+        (input_tokens * p.get("input_per_mtok_cents", 0)
+         + output_tokens * p.get("output_per_mtok_cents", 0)) / 1000
     )
+
+
+def cost_cents(model: str, input_tokens: int, output_tokens: int) -> int:
+    """整数分（兼容旧调用与旧字段）。精度损失由 cost_millicents 承担。"""
+    return round(cost_millicents(model, input_tokens, output_tokens) / 1000)

@@ -7,6 +7,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   backToOutline,
   confirmOutline,
+  correctProse,
   finalizeChapter,
   generateOutlineG6,
   getAssemblyPreview,
@@ -117,6 +118,11 @@ async function viewSnapshot(version: number | null): Promise<void> {
 const proseDialog = ref(false)
 const proseEditText = ref('')
 const proseSaving = ref(false)
+// 定稿章订正：每行「旧文 ==>> 新文」。逐条替换、旧文须唯一命中、总改动 ≤5%、强制理由。
+const correctDialog = ref(false)
+const correctText = ref('')
+const correctReason = ref('')
+const correctSaving = ref(false)
 const canEditProse = computed(() =>
   [
     'generating',
@@ -146,6 +152,61 @@ async function saveProseEdit(): Promise<void> {
     // 拦截器已提示（含 finalized 拒绝）
   } finally {
     proseSaving.value = false
+  }
+}
+
+// —— 定稿章订正（后端只给 finalized 开这条窄通道）——
+// 为什么不用「编辑正文」：那个一律拒绝已定稿章（防随手重写）；也不用「解锁返工」，
+// 那要把机检+审校+定稿全部重跑，只为改三个字烧一轮 token。
+function openCorrect(): void {
+  correctText.value = ''
+  correctReason.value = ''
+  correctDialog.value = true
+}
+
+function parseCorrectEdits(): { old: string; new: string }[] {
+  const out: { old: string; new: string }[] = []
+  for (const raw of correctText.value.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    const i = line.indexOf('==>>')
+    if (i < 0) throw new Error(`格式不对（应为「旧文 ==>> 新文」）：${line.slice(0, 30)}`)
+    const old = line.slice(0, i).trim()
+    const nw = line.slice(i + 4).trim()
+    if (!old) throw new Error(`缺旧文：${line.slice(0, 30)}`)
+    out.push({ old, new: nw })
+  }
+  return out
+}
+
+async function submitCorrect(): Promise<void> {
+  let edits: { old: string; new: string }[]
+  try {
+    edits = parseCorrectEdits()
+  } catch (e) {
+    ElMessage.error((e as Error).message)
+    return
+  }
+  if (!edits.length) {
+    ElMessage.error('至少填一条订正')
+    return
+  }
+  if (!correctReason.value.trim()) {
+    ElMessage.error('订正必须填写理由，会写进审校记录')
+    return
+  }
+  correctSaving.value = true
+  try {
+    const r = await correctProse(book.value, no.value, edits, correctReason.value.trim())
+    ElMessage.success(
+      `已订正 ${r.applied.length} 处 → v${r.version}（改动 ${(r.change_ratio * 100).toFixed(2)}%）`,
+    )
+    correctDialog.value = false
+    await reload()
+  } catch {
+    // 拦截器已提示（唯一命中 / 5% 上限 / 禁词都在后端拦）
+  } finally {
+    correctSaving.value = false
   }
 }
 
@@ -550,6 +611,13 @@ async function finalize(): Promise<void> {
       message: `已定稿，快照 v${r.snapshot_version}；回写：${JSON.stringify(r.writeback).slice(0, 200)}`,
       duration: 10000,
     })
+    // 细纲说 pay、记忆卡记 advance 时，台账不会推进，下一章会重复回收同一伏笔
+    if ((r.foreshadow_drift ?? []).length) {
+      ElMessage.warning({
+        message: `伏笔漂移：${(r.foreshadow_drift ?? []).join('；')}`,
+        duration: 15000,
+      })
+    }
     await reload()
     void store.refreshConflicts()
   } catch {
@@ -621,7 +689,8 @@ async function rewrite(): Promise<void> {
     </span>
     <span class="dim">版本 {{ data?.row ? 'v' + data.row.current_version : '-' }}</span>
     <span class="dim"
-      >本章成本 {{ data?.cost ? (data.cost.cost_cents / 100).toFixed(2) + '元' : '0元' }}</span
+      >本章成本
+      {{ data?.cost ? (data.cost.cost_millicents / 100000).toFixed(2) + '元' : '0元' }}</span
     >
     <el-tag v-if="data?.golden3" type="warning" size="small">黄金三章专项</el-tag>
     <span class="flex-1"></span>
@@ -715,6 +784,10 @@ async function rewrite(): Promise<void> {
           <!-- 人工手改正文（规格03 §2.5 三选项之一）：finalized 由后端 400 拒绝，这里同步禁用 -->
           <el-button :disabled="!canEditProse" @click="openProseEdit">
             {{ data?.status === 'finalized' ? '编辑正文（已定稿，请先解锁）' : '编辑正文' }}
+          </el-button>
+          <!-- 定稿章专用：逐条替换、唯一命中、≤5%、强制理由；不必解锁重跑全链路 -->
+          <el-button v-if="data?.status === 'finalized'" @click="openCorrect">
+            订正（字词级）
           </el-button>
         </div>
         <!-- 按行渲染：机检/审校命中可跳到 [data-line] 并高亮（规格04 §2） -->
@@ -957,6 +1030,30 @@ async function rewrite(): Promise<void> {
       </span>
       <el-button @click="proseDialog = false">取消</el-button>
       <el-button type="primary" :loading="proseSaving" @click="saveProseEdit">保存正文</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="correctDialog" width="720px" top="6vh" destroy-on-close>
+    <template #header>
+      <span class="font-bold">定稿章订正 · 第 {{ no }} 章</span>
+      <span class="dim ml-2">错别字 / 术语旧称 / 事实矛盾，逐条替换并留痕</span>
+    </template>
+    <div class="dim mb-1">
+      每行一条，格式 <code>旧文 ==>> 新文</code>。旧文必须在正文里恰好出现一次； 总改动不得超过全文
+      5%（超过请走「解锁返工」）；订正结果另存新版本快照，定稿原文保留。
+    </div>
+    <el-input
+      v-model="correctText"
+      type="textarea"
+      :rows="8"
+      class="mono"
+      placeholder="筑基修士 ==>> 凝煞修士"
+    />
+    <div class="dim mt-2 mb-1">订正理由（必填，写进审校记录）</div>
+    <el-input v-model="correctReason" placeholder="例：统一境界口径，炼气/筑基为历史遗留旧称" />
+    <template #footer>
+      <el-button @click="correctDialog = false">取消</el-button>
+      <el-button type="primary" :loading="correctSaving" @click="submitCorrect">执行订正</el-button>
     </template>
   </el-dialog>
 </template>

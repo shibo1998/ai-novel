@@ -267,3 +267,143 @@ class TestRealmOrderStripsMarkdown:
         assert _realm_index("感气境初入", order) is not None
         assert _realm_index("凝煞境淬骨", order) > _realm_index("感气境初入", order)
 
+
+
+class TestCostPrecision:
+    """成本曾经恒为 0，而且是"看起来有值（0）"的静默失效。
+
+    两重原因叠加：①按整数分记账；②每次调用各自 round。单次调用约 7.7k 输入
+    + 4.4k 输出只值 0.09 分，每次都抹成 0，整章 19 次调用累计 1.68 分全丢。
+    结果：成本汇总恒 0、「单章 >1 元标黄」验收线永不触发。
+    """
+
+    MODEL = "gemini-3.8-flash-high"
+
+    def test_single_call_not_rounded_to_zero(self, home):
+        from ainovel import settings
+
+        mc = settings.cost_millicents(self.MODEL, 7700, 4400)
+        assert mc > 0, "一次常规调用的成本不能被抹成 0"
+        # 分口径本来就是 0——这正是不能再用它记账的原因
+        assert settings.cost_cents(self.MODEL, 7700, 4400) == 0
+
+    def test_chapter_summary_keeps_precision(self, book_env):
+        from ainovel import books as B
+        from ainovel import db, settings
+
+        book, _ = book_env
+        bid = B.book_id(book)
+        db.log_generation(book_id=bid, chapter_no=1, stage="prose", model=self.MODEL,
+                          input_tokens=7700, output_tokens=4400,
+                          cost_millicents=settings.cost_millicents(self.MODEL, 7700, 4400))
+        s = db.cost_summary(bid, 1)
+        assert s["calls"] == 1
+        assert s["cost_millicents"] > 0, s
+        assert s["cost_cents"] == 0, "1 分不到的章在分口径下仍应是 0，毫分口径才看得见"
+
+    def test_backfill_recomputes_legacy_rows(self, book_env):
+        from ainovel import books as B
+        from ainovel import db
+
+        book, _ = book_env
+        bid = B.book_id(book)
+        with db.tx() as conn:
+            conn.execute(
+                "INSERT INTO generation_log (book_id, chapter_no, stage, model, input_tokens,"
+                " output_tokens, cost_cents, cost_millicents, status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,NULL,?,?)",
+                (bid, 2, "prose", self.MODEL, 7700, 4400, 0, "ok", db.now()),
+            )
+        assert db.backfill_cost_millicents() >= 1
+        assert db.cost_summary(bid, 2)["cost_millicents"] > 0
+
+    def test_backfill_leaves_unknown_price_null(self, book_env):
+        """查不到单价就保持 NULL，不能回填成 0——那是把「不会算」固化成「没花钱」。"""
+        from ainovel import books as B
+        from ainovel import db
+
+        book, _ = book_env
+        bid = B.book_id(book)
+        with db.tx() as conn:
+            conn.execute(
+                "INSERT INTO generation_log (book_id, chapter_no, stage, model, input_tokens,"
+                " output_tokens, cost_cents, cost_millicents, status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,NULL,?,?)",
+                (bid, 3, "prose", "some-unknown-model", 7700, 4400, 0, "ok", db.now()),
+            )
+        db.backfill_cost_millicents()
+        with db.tx() as conn:
+            row = conn.execute(
+                "SELECT cost_millicents FROM generation_log WHERE book_id=? AND chapter_no=3",
+                (bid,)).fetchone()
+        assert row["cost_millicents"] is None
+
+
+class TestCostPrecision:
+    """成本曾经恒为 0，而且是"看起来有值（0）"的静默失效。
+
+    两重原因叠加：①按整数分记账；②每次调用各自 round。单次调用约 7.7k 输入
+    + 4.4k 输出只值 0.09 分，每次都抹成 0，整章 19 次调用累计 1.68 分全丢。
+    结果：成本汇总恒 0、「单章 >1 元标黄」验收线永不触发。
+    """
+
+    MODEL = "gemini-3.8-flash-high"
+
+    def test_single_call_not_rounded_to_zero(self, home):
+        from ainovel import settings
+
+        mc = settings.cost_millicents(self.MODEL, 7700, 4400)
+        assert mc > 0, "一次常规调用的成本不能被抹成 0"
+        # 分口径本来就是 0——这正是不能再用它记账的原因
+        assert settings.cost_cents(self.MODEL, 7700, 4400) == 0
+
+    def test_chapter_summary_keeps_precision(self, book_env):
+        from ainovel import books as B
+        from ainovel import db, settings
+
+        book, _ = book_env
+        bid = B.book_id(book)
+        db.log_generation(book_id=bid, chapter_no=1, stage="prose", model=self.MODEL,
+                          input_tokens=7700, output_tokens=4400,
+                          cost_millicents=settings.cost_millicents(self.MODEL, 7700, 4400))
+        s = db.cost_summary(bid, 1)
+        assert s["calls"] == 1
+        assert s["cost_millicents"] > 0, s
+        assert s["cost_cents"] == 0, "1 分不到的章在分口径下仍应是 0，毫分口径才看得见"
+
+    def test_backfill_recomputes_legacy_rows(self, book_env):
+        from ainovel import books as B
+        from ainovel import db
+
+        book, _ = book_env
+        bid = B.book_id(book)
+        with db.tx() as conn:
+            conn.execute(
+                "INSERT INTO generation_log (book_id, chapter_no, stage, model, input_tokens,"
+                " output_tokens, cost_cents, cost_millicents, status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,NULL,?,?)",
+                (bid, 2, "prose", self.MODEL, 7700, 4400, 0, "ok", db.now()),
+            )
+        assert db.backfill_cost_millicents() >= 1
+        assert db.cost_summary(bid, 2)["cost_millicents"] > 0
+
+    def test_backfill_leaves_unknown_price_null(self, book_env):
+        """查不到单价就保持 NULL，不能回填成 0——那是把「不会算」固化成「没花钱」。"""
+        from ainovel import books as B
+        from ainovel import db
+
+        book, _ = book_env
+        bid = B.book_id(book)
+        with db.tx() as conn:
+            conn.execute(
+                "INSERT INTO generation_log (book_id, chapter_no, stage, model, input_tokens,"
+                " output_tokens, cost_cents, cost_millicents, status, created_at)"
+                " VALUES (?,?,?,?,?,?,?,NULL,?,?)",
+                (bid, 3, "prose", "some-unknown-model", 7700, 4400, 0, "ok", db.now()),
+            )
+        db.backfill_cost_millicents()
+        with db.tx() as conn:
+            row = conn.execute(
+                "SELECT cost_millicents FROM generation_log WHERE book_id=? AND chapter_no=3",
+                (bid,)).fetchone()
+        assert row["cost_millicents"] is None

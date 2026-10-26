@@ -262,3 +262,214 @@ class TestAuditRecordPersisted:
         assert rows, "审计结论必须入 review_records（kind='audit'）"
         assert rows[0]["verdict"] == "pass"
         assert json.loads(rows[0]["scores_json"])["foreshadow_total"] >= 0
+
+
+class TestTermCrosscheck:
+    """术语预检必须双向。
+
+    旧实现只查「术语表里的词没在正文出现」——33 条术语逐条报缺席，全是噪声，
+    夹在 6 条状态 diff 里没人看。而真问题（正文冒出来的新名词在圣经里查不到定义）
+    完全没人查，于是审校把 NH-01/NH-02 当成 FO-013「LT77-SQ82」的冲突报出来，
+    白烧一轮修复额度。
+    """
+
+    def _define(self, book: str, term_line: str) -> None:
+        from ainovel import bible
+
+        sec = bible.read(book)
+        sec["术语表"] = sec["术语表"].rstrip() + "\n" + term_line
+        bible.write(book, sec)
+
+    def test_undefined_code_reported_defined_one_silent(self, book_env):
+        book, _ = book_env
+        self._define(book, "| NH-01 | 休眠舱活体编号 |")
+        prose = "他摸到 NH-01 的卡槽，又看见钢印上刻着 XY-99。"
+        joined = "\n".join(pipeline._term_crosscheck(book, prose, {}))
+        assert "XY-99" in joined, "未定义编号必须报出来"
+        assert "NH-01" not in joined, "术语表已定义，不该再报"
+
+    def test_cjk_candidate_strips_stop_prefix(self, book_env):
+        """中文没有词边界，正向取字会把「没有太昊门阀」整串当成名字。"""
+        text = "没有太昊门阀的许可。太昊门阀的人却已经到了。"
+        counts = pipeline._proper_noun_counts(text)
+        assert "太昊门阀" in counts, f"专名没认出来：{counts}"
+        assert not any(c.startswith("没有") or c.startswith("那是") for c in counts), counts
+
+    def test_term_named_in_outline_but_absent_in_prose(self, book_env):
+        book, _ = book_env
+        contract = {"purpose": "拿到玄铁令并脱身", "scenes": [], "hook": {"content": ""}}
+        lines = pipeline._term_crosscheck(book, "他什么也没拿到。", contract)
+        assert any("玄铁令" in l and "缺席" in l for l in lines), lines
+
+    def test_single_weak_signal_not_reported(self, book_env):
+        """只出现一次的中文后缀词是行文巧合，不算设定，不许刷进清单。"""
+        book, _ = book_env
+        lines = pipeline._term_crosscheck(book, "他看了一眼那口井。", {})
+        assert not any("井" in l for l in lines), lines
+
+
+class TestOutlineBannedGuard:
+    """禁词源头在细纲，就该在细纲拦。
+
+    第 12 章实测：「云雾缭绕」先写进细纲 hook，W1 原样继承进正文，机检 M-02
+    判 block，再走 V5 定向修复——同一处问题白烧两次调用，还占掉一次修复轮次。
+    """
+
+    def test_banned_word_in_hook_rejected(self, book_env):
+        book, _ = book_env
+        fm = {"hook": {"type": "悬念", "content": "山门之外云雾缭绕，他把手按在刀上。"}}
+        with pytest.raises(pipeline.PipelineError, match="禁词"):
+            pipeline._validate_outline_banned(fm, book)
+
+    def test_banned_word_in_scene_goal_rejected(self, book_env):
+        book, _ = book_env
+        fm = {"scenes": [{"goal": "穿过云雾缭绕的回廊", "conflict": "守卫盘查"}]}
+        with pytest.raises(pipeline.PipelineError, match="禁词"):
+            pipeline._validate_outline_banned(fm, book)
+
+    def test_clean_outline_passes(self, book_env):
+        book, _ = book_env
+        pipeline._validate_outline_banned(
+            {"hook": {"content": "他推开门，直接看见了她手里那半截断箭。"}}, book)
+
+    def test_book_whitelist_respected(self, book_env):
+        book, _ = book_env
+        cfg = books.load_config(book)
+        cfg["lint_whitelist"] = ["云雾缭绕"]
+        books.save_config(book, cfg)
+        pipeline._validate_outline_banned({"hook": {"content": "云雾缭绕"}}, book)
+
+
+class TestForeshadowDrift:
+    """细纲声明的伏笔操作 vs 记忆卡实际执行的操作。
+
+    第 11 章实测：细纲写 pay FO-001，正文没真正回收，V4 抽出 advance，台账停在
+    building。设计上以记忆卡为准是对的（正文写了什么才算数），但没人提示，
+    第 12 章就又安排了一次回收——同一个伏笔被回收两遍。
+    """
+
+    def _patch(self, monkeypatch, declared, actual):
+        monkeypatch.setattr(chapters, "read_outline_contract",
+                            lambda b, n: {"foreshadow_ops": declared})
+        monkeypatch.setattr(chapters, "read_memory", lambda b, n: {"foreshadow_ops": actual})
+
+    def test_op_mismatch_reported(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch,
+                    [{"fo_id": "FO-001", "op": "pay"}],
+                    [{"fo_id": "FO-001", "op": "advance"}])
+        d = pipeline.foreshadow_drift(book, 1)
+        assert len(d) == 1, d
+        assert "FO-001" in d[0] and "pay" in d[0] and "advance" in d[0]
+
+    def test_missing_in_card_reported(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch, [{"fo_id": "FO-009", "op": "advance"}], [])
+        d = pipeline.foreshadow_drift(book, 1)
+        assert len(d) == 1 and "未出现" in d[0]
+
+    def test_consistent_ops_silent(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch,
+                    [{"fo_id": "FO-002", "op": "plant"}],
+                    [{"fo_id": "FO-002", "op": "plant"}, {"fo_id": "FO-003", "op": "advance"}])
+        assert pipeline.foreshadow_drift(book, 1) == []
+
+    def test_no_declared_ops_silent(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch, [], [{"fo_id": "FO-001", "op": "pay"}])
+        assert pipeline.foreshadow_drift(book, 1) == []
+
+    def test_missing_card_does_not_crash(self, book_env, monkeypatch):
+        """记忆卡还没生成时（定稿前的章节）不能抛错，否则定稿返回体直接崩。"""
+        book, _ = book_env
+        monkeypatch.setattr(chapters, "read_outline_contract",
+                            lambda b, n: {"foreshadow_ops": [{"fo_id": "FO-001", "op": "pay"}]})
+
+        def _boom(b, n):
+            raise FileNotFoundError("no card")
+
+        monkeypatch.setattr(chapters, "read_memory", _boom)
+        assert pipeline.foreshadow_drift(book, 1) == []
+
+
+class TestProseCorrect:
+    """定稿章的字词级订正通道。
+
+    `PUT /prose` 一律拒 finalized（防重写），`human_rewrite` 要把章打回 generating
+    （机检/审校/定稿全重跑）。结果定稿章里的错别字、旧称没有合规通道——
+    真实书第 8/10 章因此留着「筑基修士」「练气一层」。
+    """
+
+    BODY = (
+        "林寒把玄铁令按进凹槽，雨水顺着铁皮棚往下淌。远处的探照灯扫过来又扫过去，"
+        "他压低身子贴着墙面挪了半步，指节因为用力而发白。"
+        + "他把呼吸放到最缓，听着巷口的脚步近了又远。" * 3
+    )
+
+    def _patch(self, monkeypatch, body=None, status="finalized"):
+        from ainovel import chapters as C
+        from ainovel import statemachine as SM
+
+        body = self.BODY if body is None else body
+        written: dict = {}
+        monkeypatch.setattr(SM, "current_status", lambda b, n: status)
+        monkeypatch.setattr(SM, "set_current_version", lambda b, n, v: None)
+        monkeypatch.setattr(C, "read_prose", lambda b, n: {
+            "chapter_no": n, "version": 1, "status": "final",
+            "word_count": len(body), "_body": body})
+        monkeypatch.setattr(C, "write_prose", lambda b, n, fm, bd: written.update({"fm": fm, "body": bd}))
+        monkeypatch.setattr(pipeline, "_next_version", lambda b, n: 2)
+        return written
+
+    def test_replaces_and_bumps_version(self, book_env, monkeypatch):
+        book, _ = book_env
+        written = self._patch(monkeypatch)
+        r = pipeline.correct_prose(
+            book, 1, [{"old": "玄铁令", "new": "铁牌"}], "统一术语")
+        assert "铁牌" in written["body"] and "玄铁令" not in written["body"]
+        assert written["fm"]["version"] == 2
+        assert written["fm"]["status"] == "final"
+        assert r["version"] == 2 and len(r["applied"]) == 1
+
+    def test_old_must_appear_exactly_once(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch)
+        with pytest.raises(pipeline.PipelineError, match="0 次"):
+            pipeline.correct_prose(book, 1, [{"old": "不存在的一句话", "new": "x"}], "理由")
+        with pytest.raises(pipeline.PipelineError, match="3 次"):
+            # 「他把呼吸」出现 6 次，用它验证多次命中会被拒
+            pipeline.correct_prose(book, 1, [{"old": "他把呼吸", "new": "他喘息"}], "理由")
+
+    def test_reason_required(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch)
+        with pytest.raises(pipeline.PipelineError, match="理由"):
+            pipeline.correct_prose(book, 1, [{"old": "玄铁令", "new": "铁牌"}], "   ")
+
+    def test_over_five_percent_rejected_as_rewrite(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch)
+        with pytest.raises(pipeline.PipelineError, match="超过"):
+            pipeline.correct_prose(book, 1, [{
+                "old": "玄铁令按进凹槽，雨水顺着铁皮棚往下淌",
+                "new": "铁牌按进凹槽，雨水顺着铁皮棚往下淌，冷风从巷口灌进来吹得他眼眶发酸",
+            }], "重写")
+
+    def test_banned_word_introduced_rejected(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch)
+        with pytest.raises(pipeline.PipelineError, match="禁词"):
+            pipeline.correct_prose(book, 1, [{"old": "凹槽", "new": "凹槽云雾缭绕"}], "试试")
+
+    def test_only_finalized_allowed(self, book_env, monkeypatch):
+        book, _ = book_env
+        self._patch(monkeypatch, status="mech_check")
+        from ainovel import chapters as C
+
+        monkeypatch.setattr(C, "read_prose", lambda b, n: {
+            "chapter_no": 1, "version": 1, "status": "draft", "_body": self.BODY})
+        with pytest.raises(pipeline.PipelineError, match="尚未定稿"):
+            pipeline.correct_prose(book, 1, [{"old": "玄铁令", "new": "铁牌"}], "理由")
+
+

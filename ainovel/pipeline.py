@@ -54,13 +54,13 @@ def _call(
     try:
         res = cli.chat(model=model, system="", user=full_text,
                        temperature=temperature, stream_cb=stream_cb)
-        cost = settings.cost_cents(model, res.input_tokens, res.output_tokens)
+        cost_mc = settings.cost_millicents(model, res.input_tokens, res.output_tokens)
         db.log_generation(
             book_id=books.book_id(book), chapter_no=no, stage=stage,
             prompt_id=prompt_id, prompt_version=str(p.fm.get("version")),
             prompt_digest=p.digest, model=model,
             input_tokens=res.input_tokens, output_tokens=res.output_tokens,
-            cost=cost, status="ok",
+            cost_millicents=cost_mc, status="ok",
         )
         return res, p, full_text
     except Exception as e:
@@ -164,6 +164,7 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
         try:
             fm2, body2 = _parse_outline_output(res.text, no)
             _validate_contract_ops(fm2, book, prev_hook_type)
+            _validate_outline_banned(fm2, book)
             break
         except (FM.FrontmatterError, PipelineError) as e:
             last_err = str(e)
@@ -253,6 +254,41 @@ def _coerce_contract(fm2: dict[str, Any]) -> None:
             fm2[key] = [x.strip() for x in re.split(r"[,，、;；]", v) if x.strip()]
     if isinstance(fm2.get("foreshadow_ops"), str):
         fm2["foreshadow_ops"] = []
+
+
+def _outline_prose_seed(fm: dict[str, Any]) -> str:
+    """细纲里会被正文继承的那部分文字（钩子、场景目标/冲突、必含项）。"""
+    parts = [
+        str(fm.get("purpose") or ""),
+        str(fm.get("core_event") or ""),
+        " ".join(str(x) for x in (fm.get("must_include") or [])),
+        str((fm.get("hook") or {}).get("content") or ""),
+    ]
+    for s in fm.get("scenes") or []:
+        parts.append(str(s.get("goal") or ""))
+        parts.append(str(s.get("conflict") or ""))
+        parts.append(str(s.get("end_state") or ""))
+    return "\n".join(parts)
+
+
+def _validate_outline_banned(fm: dict[str, Any], book: str) -> None:
+    """细纲含禁词 → 当场回喂重写。
+
+    第 12 章实测：「云雾缭绕」先出现在细纲的 hook 里，W1 生成正文时原样继承，
+    机检 M-02 判 block，再走 V5 定向修复——同一处问题白烧两次调用，还占掉
+    一次修复轮次。禁词源头在 G6，就该在 G6 拦。
+    """
+    text = _outline_prose_seed(fm)
+    if not text:
+        return
+    whitelist = _lint_whitelist(book)
+    hits = sorted({w for w in mechcheck.load_banned_words()
+                   if w not in whitelist and w and w in text})
+    if hits:
+        raise PipelineError(
+            "细纲含禁词：" + "、".join(hits[:8])
+            + f"（共 {len(hits)} 个）——这些表述会被正文原样继承并触发机检阻断，请换写法"
+        )
 
 
 def _validate_contract_ops(fm2: dict[str, Any], book: str, prev_hook_type: str) -> None:
@@ -802,7 +838,10 @@ def build_suspect_list(book: str, no: int) -> str:
         elif row and kind == "pay" and row.get("状态") != "building":
             lines.append(f"[伏笔] {fo_id} 状态 {row.get('状态')} 不满足 pay 前置（building）")
 
-    # 术语表比对：Bible 术语在正文中未出现（提醒级）
+    # 术语表比对（双向）—— 旧实现只查「术语表里的词没在正文出现」：
+    # 33 条术语逐条报一遍，全是噪声，而真正该查的「正文新造的名词有没有定义」
+    # 没人看。于是审校把 NH-01/NH-02（休眠舱活体编号，术语表已列）报成
+    # FO-013「LT77-SQ82」的冲突，浪费了一轮修复额度。
     prose = None
     try:
         prose = chapters.read_prose(book, no)["_body"]
@@ -810,12 +849,124 @@ def build_suspect_list(book: str, no: int) -> str:
         pass
     if prose:
         try:
-            for term in bible.terms(book):
-                if term not in prose:
-                    lines.append(f"[术语] 「{term}」为本世界核心术语但正文未出现（若本章应涉及请指出）")
+            lines.extend(_term_crosscheck(book, prose, contract))
         except Exception:
             pass
     return "\n".join(lines) or "（程序预检未发现疑似冲突）"
+
+
+# 专名候选：【方括号术语】、【编号】（NH-01 / LT77-SQ82）、中文专名+建制后缀
+_BRACKET_TERM_RE = re.compile(r"【([^】\n]{2,20})】")
+_CODE_TERM_RE = re.compile(r"[A-Z]{2,}[A-Z0-9]*(?:-[A-Z0-9]+)+|[A-Z]{2,}\d+[A-Z0-9]*")
+_SUFFIX_TERM_RE = re.compile(r"(集团|门阀|协议|阁|司|堂|局|井|仓|峰|城|院|所|部|队|锁|令|丹|符|阵)")
+# 中文无词边界，正向取字必然粘连成「没有太昊集团」「那是太昊门阀」，剥掉这些停用字
+_STOP_CHARS = set("的了是在把被让给和与及又就都也还不没有这那个些里上下中外内之其他她它我你们"
+                  "着过得地很更最并或但却才只已将正便从向对于为以所由至到")
+
+
+def _trim_stop_prefix(s: str) -> str:
+    i = 0
+    while i < len(s) - 1 and s[i] in _STOP_CHARS:
+        i += 1
+    return s[i:]
+
+
+def _proper_noun_counts(text: str) -> dict[str, int]:
+    """抽出正文里"像专名"的串及其出现次数（不判对错，交给下面的定义集过滤）。
+
+    中文专名靠后缀反向定位再向前取 4 字，然后剥停用前缀——正向正则会把
+    「没有太昊集团」整串当成一个名字，比不查还糟。
+    """
+    counts: dict[str, int] = {}
+    high: set[str] = set()  # 高置信候选：方括号标注 / 带编号，出现一次也算数
+
+    def bump(k: str) -> None:
+        counts[k] = counts.get(k, 0) + 1
+
+    for m in _BRACKET_TERM_RE.finditer(text):
+        k = m.group(1).strip()
+        bump(k)
+        high.add(k)
+    for m in _CODE_TERM_RE.finditer(text):
+        if re.search(r"\d", m.group(0)):  # 纯字母缩写（NH、AI）不是设定编号
+            bump(m.group(0))
+            high.add(m.group(0))
+    for m in _SUFFIX_TERM_RE.finditer(text):
+        # 从后缀往前扫到非汉字边界（标点/换行）为止，最多 4 字：
+        # 固定取 4 字会跨标点粘连，句首专名又会因为前面是标点而整条丢掉
+        i = m.start()
+        j = i
+        while j > 0 and i - j < 4 and "\u4e00" <= text[j - 1] <= "\u9fa5":
+            j -= 1
+        head = text[j:i]
+        if not head:
+            continue
+        cand = _trim_stop_prefix(head) + m.group(1)
+        if len(cand) >= 3:
+            bump(cand)
+    # 中文后缀词是弱信号，只出现一次多半是行文巧合（「里的水比井」），要求复现才算设定
+    return {k: n for k, n in counts.items()
+            if n >= 2 or k in high or any(not ("\u4e00" <= ch <= "\u9fa5") for ch in k)}
+
+
+def _term_crosscheck(book: str, prose: str, contract: dict[str, Any],
+                     limit: int = 20) -> list[str]:
+    """术语双向核对：①细纲点名却缺席 ②正文新造却无定义。
+
+    方向二才是真问题所在——它是术语一致性检查唯一能提前发现「AI 自己造了个
+    新名词、圣经里没有」的地方；方向一必须收窄到「细纲点了名」，否则整本术语表
+    逐条报缺席，噪声大到没人看。
+    """
+    out: list[str] = []
+    try:
+        defined = list(bible.terms(book))
+    except Exception:
+        defined = []
+    known: set[str] = set()
+    try:
+        known.update(characters.read_all(book).keys())
+    except Exception:
+        pass
+    try:
+        for r in outline.read_locations(book):
+            nm = str(r.get("名称") or "").strip()
+            if nm:
+                known.add(nm)
+    except Exception:
+        pass
+
+    def is_defined(cand: str) -> bool:
+        if cand in known:
+            return True
+        if any(cand in t or t in cand for t in defined):
+            return True
+        # 同族专名：前两字命中任一已定义词（太昊集团 ← 太昊生命医疗集团）
+        if len(cand) >= 2:
+            head = cand[:2]
+            return any(head in t or t in head for t in (*defined, *known))
+        return False
+
+    # 方向一：细纲点名的术语，正文里没有
+    contract_text = "\n".join(str(v) for v in (
+        contract.get("purpose"),
+        contract.get("core_event"),
+        " ".join(str(x) for x in (contract.get("must_include") or [])),
+        " ".join(f"{s.get('goal') or ''} {s.get('conflict') or ''}"
+                 for s in (contract.get("scenes") or [])),
+        str((contract.get("hook") or {}).get("content") or ""),
+    ))
+    for term in defined:
+        if term and term in contract_text and term not in prose:
+            out.append(f"[术语·缺席] 「{term}」被细纲点名，正文却未出现——确认设定没被写丢")
+
+    # 方向二：正文出现、却查不到定义的新名词
+    unknown = {k: n for k, n in _proper_noun_counts(prose).items() if not is_defined(k)}
+    for cand, n in sorted(unknown.items(), key=lambda kv: -kv[1])[:limit]:
+        out.append(
+            f"[术语·新名词] 「{cand}」正文出现 {n} 次但术语表无定义"
+            f"——若属设定请补录进 STORY_BIBLE 术语表，若是笔误请统一写法"
+        )
+    return out
 
 
 RUBRIC_DIMS = ("ai_flavor", "plot", "pacing", "prose", "hook")
@@ -1082,6 +1233,90 @@ def human_rewrite(book: str, no: int, base_version: int | None = None) -> int:
     return new_version
 
 
+PROSE_CORRECT_MAX_RATIO = 0.05  # 订正上限：超过 5% 就是重写
+
+
+def correct_prose(book: str, no: int, edits: list[dict[str, Any]], reason: str) -> dict[str, Any]:
+    """定稿后的字词级订正通道（错别字 / 术语旧称 / 事实矛盾）。
+
+    为什么需要单独一条：`PUT /prose` 一律拒绝 finalized（防随手重写已定稿章，
+    AGENTS.md 红线 3），`human_rewrite` 又要把章打回 generating（机检、审校、
+    定稿全部重跑，还得重烧 token）。结果定稿章里一个错别字、一处旧称没有合规
+    通道，只能忍着——真实书第 8/10 章至今留着「筑基修士」「练气一层」。
+
+    通道刻意做窄：
+    - 逐条 old→new，old 必须在正文中**恰好出现一次**（0 次=没找到，≥2 次=会误伤）
+    - 总改动量 ≤5%，超过就是重写，请走解锁返工
+    - 不得引入新禁词
+    - 强制理由，写进 review_records 与 generation_log
+    - 定稿原文留在旧快照里，订正结果另存新版本快照
+    """
+    import difflib
+
+    st = statemachine.current_status(book, no)
+    try:
+        prose = chapters.read_prose(book, no)
+    except Exception as e:
+        raise PipelineError(f"读不到第{no}章正文：{e}")
+    if st != "finalized" and prose.get("status") != "final":
+        raise PipelineError(
+            f"第{no}章状态 {st} 尚未定稿——未定稿章节请用「编辑正文」整篇改"
+        )
+    reason = (reason or "").strip()
+    if not reason:
+        raise PipelineError("订正必须填写理由（会写进审校记录，事后要能解释改了什么）")
+    if not edits:
+        raise PipelineError("没有要订正的内容")
+
+    body = prose["_body"]
+    whitelist = _lint_whitelist(book)
+    banned = [w for w in mechcheck.load_banned_words() if w and w not in whitelist]
+    new_body = body
+    applied: list[dict[str, str]] = []
+    for e in edits:
+        old = str(e.get("old") or "")
+        new = str(e.get("new") or "")
+        if not old:
+            raise PipelineError("订正项的 old 不能为空")
+        if old == new:
+            raise PipelineError(f"订正项新旧相同：「{old[:30]}」")
+        cnt = new_body.count(old)
+        if cnt != 1:
+            raise PipelineError(
+                f"「{old[:40]}」在正文出现 {cnt} 次，必须恰好 1 次才能安全替换"
+                f"（0 次=没找到，多次=会误伤别的句子，请带足上下文")
+        introduced = [w for w in banned if w in new and w not in old]
+        if introduced:
+            raise PipelineError(f"订正文本引入禁词：{'、'.join(introduced[:5])}")
+        new_body = new_body.replace(old, new, 1)
+        applied.append({"old": old, "new": new})
+
+    ratio = 1 - difflib.SequenceMatcher(None, body, new_body, autojunk=False).ratio()
+    if ratio > PROSE_CORRECT_MAX_RATIO:
+        raise PipelineError(
+            f"改动量 {ratio:.1%} 超过 {PROSE_CORRECT_MAX_RATIO:.0%} 上限——"
+            f"这是重写而不是订正，请走「解锁返工」"
+        )
+
+    new_version = _next_version(book, no)
+    fm = {k: v for k, v in prose.items() if not k.startswith("_")}
+    fm["version"] = new_version
+    fm["word_count"] = mechcheck.count_words(new_body)
+    fm["status"] = "final"
+    fm["corrected_at"] = datetime.now().isoformat(timespec="seconds")
+    chapters.write_prose(book, no, fm, new_body)
+    statemachine.set_current_version(book, no, new_version)
+    bid = books.book_id(book)
+    db.add_snapshot(book_id=bid, chapter_no=no, version=new_version,
+                    label=f"订正 {len(applied)} 处", content=new_body)
+    db.add_review(book_id=bid, chapter_no=no, version=new_version,
+                  kind="polish", issues=applied, verdict="correct")
+    db.log_generation(book_id=bid, chapter_no=no, stage="correct",
+                      status="ok", error=f"订正理由：{reason}")
+    return {"version": new_version, "applied": applied, "reason": reason,
+            "change_ratio": round(ratio, 4)}
+
+
 def _next_version(book: str, no: int) -> int:
     row = statemachine.get_row(book, no)
     cur = row["current_version"] if row else 1
@@ -1111,6 +1346,40 @@ def list_versions(book: str, no: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def foreshadow_drift(book: str, no: int) -> list[str]:
+    """细纲声明的伏笔操作 vs 记忆卡（V4 从正文抽取）实际执行的操作。
+
+    第 11 章实测：细纲写 pay FO-001，但正文没真正回收，V4 抽出来是 advance，
+    台账停在 building。设计上「以记忆卡为准」是对的——正文写了什么才算数。
+    问题在于两边不一致时没有任何提示，于是第 12 章又安排了一次回收，
+    读者会看到同一个伏笔被回收两遍。这里把差异摆到定稿返回里。
+    """
+    try:
+        contract = chapters.read_outline_contract(book, no)
+    except Exception:
+        return []
+    declared = [(str(o.get("fo_id") or ""), str(o.get("op") or ""))
+                for o in (contract.get("foreshadow_ops") or [])]
+    if not declared:
+        return []
+    try:
+        card = chapters.read_memory(book, no)
+    except Exception:
+        return []
+    actual = {(str(o.get("fo_id") or ""), str(o.get("op") or ""))
+              for o in (card.get("foreshadow_ops") or [])}
+    out: list[str] = []
+    for fo_id, op in declared:
+        if not fo_id or (fo_id, op) in actual:
+            continue
+        got = sorted({o for f, o in actual if f == fo_id})
+        out.append(
+            f"{fo_id}：细纲声明 {op}，记忆卡记的是 {'/'.join(got) or '未出现'}"
+            f"——台账按记忆卡推进，下一章可能重复安排同一操作"
+        )
+    return out
+
+
 def finalize(book: str, no: int, client=None) -> dict[str, Any]:
     """定稿 = 二次确认（API 层）→ 快照 + status:final → 记忆卡回写。"""
     st = statemachine.current_status(book, no)
@@ -1128,7 +1397,8 @@ def finalize(book: str, no: int, client=None) -> dict[str, Any]:
     db.add_snapshot(book_id=books.book_id(book), chapter_no=no, version=version,
                     label=f"定稿 {fm['word_count']}字", content=prose["_body"])
 
-    result = {"snapshot_version": version, "writeback": None, "audit": None}
+    result = {"snapshot_version": version, "writeback": None, "audit": None,
+              "foreshadow_drift": []}
     try:
         result["writeback"] = writeback_memory(book, no, client=client)
     except Exception as e:
@@ -1138,6 +1408,7 @@ def finalize(book: str, no: int, client=None) -> dict[str, Any]:
         return result
 
     result["audit"] = _maybe_audit(book, no, client=client)
+    result["foreshadow_drift"] = foreshadow_drift(book, no)
     return result
 
 

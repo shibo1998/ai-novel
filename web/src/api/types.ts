@@ -16,12 +16,15 @@ export interface ChapterRow {
   status: string
   current_version: number
   fix_rounds: number
+  cost_millicents: number
   cost_cents: number
   cost_over_yuan: boolean
   [k: string]: unknown
 }
 
 export interface CostSummary {
+  /** 千分之一分（毫分）。按分聚合会把单章 0.56 分进位成 0 */
+  cost_millicents: number
   cost_cents: number
   calls: number
   [k: string]: unknown
@@ -141,6 +144,8 @@ export interface PolishResult {
 export interface FinalizeResult {
   snapshot_version: number
   writeback: unknown
+  /** 细纲声明的伏笔操作与记忆卡实际执行的不一致，台账按记忆卡推进 */
+  foreshadow_drift?: string[]
   [k: string]: unknown
 }
 

@@ -34,7 +34,7 @@ python run.py            # 打开 http://127.0.0.1:8765
 ## 测试
 
 ```bash
-python -m pytest tests/          # 196 项全绿（管线全链路用 MockLLM，不耗 token）
+python -m pytest tests/          # 225 项全绿（管线全链路用 MockLLM，不耗 token）
 python scripts/smoke.py          # 端到端冒烟（跑在临时目录，不污染仓库）
 cd web && npm run typecheck      # 前端严格类型检查（vue-tsc）
 cd web && npm run lint:check     # 前端 ESLint 检查
@@ -81,7 +81,7 @@ lint/               禁词/敏感词/对话后缀禁式（每行一个，# 注�
 web/                前端 UI（Vue3 + Vite 源码；构建产物 web/dist/ 由 FastAPI 静态挂载）
 books/<书名>/       数据：档案 + 章节 + config.json（单一真相源）
 data/               SQLite、设置、裁决队列、装配预览（可随时重建）
-tests/              pytest（196 项）
+tests/              pytest（225 项）
 ```
 
 ## 与规格的对应与偏差（重要）

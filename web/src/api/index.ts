@@ -199,6 +199,15 @@ export const finalizeChapter = (book: string, no: number): Promise<FinalizeResul
 // 要手改/修复/重写得先解锁（否则后端一律 400「已定稿，请先解锁」）。
 export const unlockChapter = (book: string, no: number): Promise<{ ok: boolean; status: string }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/unlock`))
+// 定稿章的字词级订正：逐条 old→new，old 必须唯一命中、总改动 ≤5%、强制理由。
+// 与 PUT /prose 的分工：那是整篇覆盖（仅未定稿），这是受控替换（仅已定稿）。
+export const correctProse = (
+  book: string,
+  no: number,
+  edits: { old: string; new: string }[],
+  reason: string,
+): Promise<{ version: number; applied: { old: string; new: string }[]; change_ratio: number }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/prose/correct`, { edits, reason }))
 export const listVersions = (book: string, no: number): Promise<VersionInfo[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/versions`))
 export const rewriteFrom = (
