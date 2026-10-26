@@ -158,21 +158,12 @@ def rollback_foreshadow_ops(book: str, chapter_no: int,
     """
     rows = read_plot_points(book)
     tag = f"第{chapter_no}章"
-    planted_by_card = {str(o.get("fo_id") or "") for o in (ops or [])
-                       if str(o.get("op") or "") == "plant"}
-    removed = reverted = advanced = reset = 0
+    removed = reverted = advanced = 0
     kept: list[dict[str, str]] = []
     for r in rows:
-        fid = str(r.get("编号", ""))
-        if fid in planted_by_card:
-            removed += 1
-            continue
-        if str(r.get("埋设章", "")).strip() == str(chapter_no):
-            # 无法确认是本章新埋的（没有卡或卡里没记），保守回退状态而不删行
-            if r.get("状态") != "planted" or r.get("推进章"):
-                reset += 1
-            r["状态"] = "planted"
-            r["推进章"] = ""
+        # 本章 plant 出来的行**不动**：plant 本身不写 `推进章`，而后续章节可能已经
+        # 推进过它（`埋设章=1` 的伏笔常常在第 2、6、9 章被推进）。重跑同一章时
+        # 由 `apply_foreshadow_ops` 的幂等 plant 兜住，不能在这里清空推进记录。
         chapters_str = str(r.get("推进章", "") or "")
         parts = [p.strip() for p in chapters_str.split(",") if p.strip()]
         if str(chapter_no) in parts:
@@ -188,10 +179,9 @@ def rollback_foreshadow_ops(book: str, chapter_no: int,
                 r["状态"] = "building"
             reverted += 1
         kept.append(r)
-    if removed or advanced or reverted or reset:
+    if removed or advanced or reverted:
         write_plot_points(book, kept)
-    return {"deleted": removed, "unadvanced": advanced, "unpaid": reverted,
-            "reset": reset}
+    return {"deleted": removed, "unadvanced": advanced, "unpaid": reverted}
 
 
 
@@ -213,6 +203,14 @@ def apply_foreshadow_ops(
             continue
         if kind == "plant":
             if fo_id in by_id:
+                existing = by_id[fo_id]
+                # 幂等：同一章重放 plant 不报错也不新建行（记忆卡补做会重跑同一张卡）
+                if str(existing.get("埋设章", "")).strip() == str(chapter_no):
+                    if op.get("note"):
+                        existing["内容"] = op["note"]
+                    if op.get("expected_pay"):
+                        existing["预计回收章"] = str(op["expected_pay"])
+                    continue
                 errors.append(f"{fo_id}: 台账已存在，不能重复埋设")
                 continue
             rows.append({
@@ -223,6 +221,12 @@ def apply_foreshadow_ops(
         row = by_id.get(fo_id)
         if row is None:
             errors.append(f"{fo_id}: 台账中不存在（advance/pay 必须引用已有编号）")
+            continue
+        # 时序护栏：补做历史章时，活跃清单里可能有"后面才埋"的伏笔，
+        # V4 会顺手推进它——这会让台账出现"第 8 章推进第 12 章才埋的伏笔"。
+        planted_at = str(row.get("埋设章", "") or "").strip()
+        if planted_at.isdigit() and int(planted_at) > int(chapter_no):
+            errors.append(f"{fo_id}: 该伏笔第{planted_at}章才埋设，第{chapter_no}章不能推进")
             continue
         st = row.get("状态", "")
         if kind == "advance":

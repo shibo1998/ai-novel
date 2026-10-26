@@ -458,8 +458,11 @@ def _state_hits(body: str, ctx: dict[str, Any]) -> list[Hit]:
                 hits.append(Hit("M-13", "block", 0, f"{name}:{prev_pw}→{cur_pw}",
                                 f"{name} 战力倒退：第{prev.get('chapter_no')}章 {prev_pw} → "
                                 f"第{row.get('chapter_no')}章 {cur_pw}"))
-        # M-14 死者复现
-        if char_status.get(name) == "死亡":
+        # M-14 死者复现（必须带时间比较：角色卡记的是**全书最终**状态，
+        # 拿它去判"死亡之前"的章节会把正常出场判成死者复现——实测 ch1/2 的
+        # 刀疤强（第 2 章才死）与 ch10/11 的执事（第 11 章才死）全被误判。
+        # 只有在"卡状态更新章 < 本章"时才可能构成复现。）
+        if char_status.get(name) == "死亡" and _death_known_before(ctx, name, row):
             acted = any((row.get(k) or "").strip() for k in
                         ("location", "physical", "mental"))
             if acted:
@@ -472,6 +475,38 @@ def _state_hits(body: str, ctx: dict[str, Any]) -> list[Hit]:
             hits.append(Hit("M-15", "warn", 0, f"{name}:{prev_loc}→{cur_loc}",
                             f"{name} 位置从 {prev_loc} 变到 {cur_loc}，正文无位移描写"))
     return hits
+
+
+def _death_known_before(ctx: dict[str, Any], name: str, row: dict[str, Any]) -> bool:
+    """该角色"已知死亡"是否早于本章。拿不到更新章就保守不判（宁可漏报不误杀）。"""
+    meta = (ctx.get("char_death") or {}).get(name)
+    if meta is None:
+        return False
+    try:
+        died_at = int(meta)
+    except (TypeError, ValueError):
+        return False
+    try:
+        cur = int(row.get("chapter_no") or 0)
+    except (TypeError, ValueError):
+        return False
+    return died_at < cur
+
+
+def _death_known_before(ctx: dict[str, Any], name: str, row: dict[str, Any]) -> bool:
+    """该角色"已知死亡"是否早于本章。拿不到更新章就保守不判（宁可漏报不误杀）。"""
+    meta = (ctx.get("char_death") or {}).get(name)
+    if meta is None:
+        return False
+    try:
+        died_at = int(meta)
+    except (TypeError, ValueError):
+        return False
+    try:
+        cur = int(row.get("chapter_no") or 0)
+    except (TypeError, ValueError):
+        return False
+    return died_at < cur
 
 
 def _realm_index(value: str, order: list[str]) -> int | None:

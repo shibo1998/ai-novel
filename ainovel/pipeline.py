@@ -1682,8 +1682,12 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
         "正文": prose["_body"],
         "章号": str(no),
         "现有角色名清单": "\n".join(characters.list_characters(book)) or "（无）",
+        # 只给"本章之前已埋设"的伏笔：补做历史章时若把未来的编号给模型，
+        # 它会写出"第 8 章推进第 12 章的伏笔"这种时序错误
         "活跃伏笔编号清单": "\n".join(
             f"{r.get('编号')}[{r.get('状态')}]" for r in outline.active_foreshadows(book)
+            if str(r.get("埋设章", "") or "").strip().isdigit()
+            and int(str(r.get("埋设章")).strip()) <= no
         ) or "（无）",
     }
     result: dict[str, Any] | None = None

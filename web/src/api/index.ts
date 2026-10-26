@@ -2,15 +2,21 @@
 import { http } from './client'
 import type {
   AppSettings,
+  AttachResult,
   AuditReport,
   AuditResult,
   BookCard,
   BookConfig,
   BookMeta,
   CharacterData,
+  CheckStatus,
   Conflict,
+  DeslopResult,
+  DraftInfo,
   FinalizeResult,
+  ImportPreview,
   MechHit,
+  MemoryPendingItem,
   OutlineFull,
   Overview,
   PolishResult,
@@ -18,6 +24,8 @@ import type {
   ProseEditResult,
   ReviewResult,
   SnapshotDetail,
+  TimelineData,
+  TimelineRow,
   VersionInfo,
   WorkbenchData,
 } from './types'
@@ -278,3 +286,77 @@ export const exportMd = (book: string): Promise<void> =>
   downloadBlob(`/api/books/${enc(book)}/export/md`)
 export const exportZip = (book: string): Promise<void> =>
   downloadBlob(`/api/books/${enc(book)}/export/zip`)
+
+// —— 规格05 能力补齐 ——
+/** 机检结论 + 过期判定（正文改过 → stale） */
+export const getCheckStatus = (book: string, no: number): Promise<CheckStatus> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/checkstatus`))
+/** AI 味确定性检测（零 token，只报不改） */
+export const getDeslop = (book: string, no: number): Promise<DeslopResult> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/deslop`))
+/** 半成品草稿：生成中断后仍在，可采纳/丢弃 */
+export const getDraft = (book: string, no: number): Promise<DraftInfo> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/draft`))
+export const adoptDraft = (
+  book: string,
+  no: number,
+  force = false,
+): Promise<{ ok: boolean; chars: number; status: string }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/draft/adopt`, { force }))
+export const discardDraft = (book: string, no: number): Promise<{ ok: boolean }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/draft/discard`))
+/** 缺卡章列表（导入待补 / 回写失败 / 卡过期） */
+export const listMemoryPending = (book: string): Promise<{ chapters: MemoryPendingItem[] }> =>
+  unwrap(http.get(`/api/books/${enc(book)}/memory-card/pending`))
+export const rebuildMemoryCard = (book: string, no: number): Promise<Record<string, unknown>> =>
+  unwrap(
+    http.post(`/api/books/${enc(book)}/chapters/${no}/memory-card/rebuild`, null, { timeout: 0 }),
+  )
+export const rebuildMemoryBatch = (
+  book: string,
+  chapters?: number[],
+): Promise<{ queued: number; done: number[]; failed: { no: number; error: string }[] }> =>
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/memory-card/rebuild-batch`,
+      chapters ? { chapters } : { all_missing: true },
+      { timeout: 0 },
+    ),
+  )
+/** 挂载已存在的书稿目录（原地接管，不搬迁） */
+export const attachBook = (body: {
+  name: string
+  path: string
+  scaffold?: boolean
+}): Promise<AttachResult> => unwrap(http.post('/api/books/attach', body))
+export const detachBook = (book: string): Promise<Record<string, unknown>> =>
+  unwrap(http.post(`/api/books/${enc(book)}/detach`, { delete_files: false }))
+/** 导入 txt：两段式（预演不写盘 → 确认后落盘） */
+export const previewImport = (
+  book: string,
+  file_path: string,
+  regex?: string,
+): Promise<ImportPreview> =>
+  unwrap(http.post(`/api/books/${enc(book)}/import/novel/preview`, { file_path, regex }))
+export const commitImport = (
+  book: string,
+  body: {
+    file_path: string
+    regex?: string
+    encoding?: string
+    mode?: 'draft' | 'finalized'
+    rebuild_memory?: boolean
+    confirm_warnings?: boolean
+  },
+): Promise<Record<string, unknown>> =>
+  unwrap(http.post(`/api/books/${enc(book)}/import/novel/commit`, body, { timeout: 0 }))
+/** 长期记忆派生视图 */
+export const getState = (book: string): Promise<{ content: string; path: string; rows: number }> =>
+  unwrap(http.get(`/api/books/${enc(book)}/state`))
+export const getTimeline = (book: string): Promise<TimelineData> =>
+  unwrap(http.get(`/api/books/${enc(book)}/timeline`))
+export const putTimeline = (
+  book: string,
+  truth: TimelineRow[],
+): Promise<{ ok: boolean; issues: MechHit[] }> =>
+  unwrap(http.put(`/api/books/${enc(book)}/timeline`, { truth }))

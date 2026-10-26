@@ -5,18 +5,24 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
+  adoptDraft,
   backToOutline,
   confirmOutline,
   correctProse,
+  discardDraft,
   finalizeChapter,
+  getCheckStatus,
   generateOutlineG6,
   getAssemblyPreview,
+  getDeslop,
+  getDraft,
   getOutlineRaw,
   getSnapshot,
   getWorkbench,
   listVersions,
   putChapterOutline,
   putProse,
+  rebuildMemoryCard,
   retryChapter,
   rewriteFrom,
   runExempt,
@@ -26,7 +32,15 @@ import {
   runReview,
   unlockChapter,
 } from '@/api'
-import type { PreviewResult, SnapshotDetail, VersionInfo, WorkbenchData } from '@/api/types'
+import type {
+  CheckStatus,
+  DeslopResult,
+  DraftInfo,
+  PreviewResult,
+  SnapshotDetail,
+  VersionInfo,
+  WorkbenchData,
+} from '@/api/types'
 import { useBookStore } from '@/stores/book'
 import { tagType } from '@/utils/status'
 
@@ -58,6 +72,10 @@ onUnmounted(() => abortCtrl?.abort())
 const rawDialog = ref(false)
 const rawText = ref('')
 const preview = ref<PreviewResult | null>(null)
+// 规格05：机检过期判定 / AI 味客观分 / 断线草稿
+const checkStatus = ref<CheckStatus | null>(null)
+const deslopRes = ref<DeslopResult | null>(null)
+const draft = ref<DraftInfo | null>(null)
 
 // —— 正文按行渲染 + 机检/审校命中跳转（规格04 §2「点击跳转正文位置」）——
 // 生成区必须是可定位的：把正文按行拆成 div，机检命中带 line 就直接滚到那一行并高亮 2 秒。
@@ -280,7 +298,86 @@ async function load(): Promise<void> {
   store.setCurrentBook(book.value)
   data.value = await getWorkbench(book.value, no.value)
   streamText.value = data.value.prose?._body ?? '（生成区）'
+  // 三个只读状态并行拉；任一失败都不能挡住工作台（主数据已到手）
+  void loadSideState()
   await loadVersions()
+}
+
+async function loadSideState(): Promise<void> {
+  const b = book.value
+  const n = no.value
+  const [cs, dr, dl] = await Promise.all([
+    getCheckStatus(b, n).catch(() => null),
+    getDraft(b, n).catch(() => null),
+    getDeslop(b, n).catch(() => null),
+  ])
+  checkStatus.value = cs
+  draft.value = dr
+  deslopRes.value = dl
+}
+
+/** 未生效项文案：必须点名规则，不能只说"检查异常" */
+function ineffectiveText(list: { rule: string; reason: string; detail: string }[]): string {
+  const REASON: Record<string, string> = {
+    missing_file: '文件缺失',
+    empty_file: '文件为空',
+    suspiciously_small: '条目过少',
+    bad_threshold: '阈值非法',
+    disabled: '已关闭',
+    unparsed: '本次无法解析',
+    crash: '检查器异常',
+  }
+  return list.map((i) => `${i.rule}（${REASON[i.reason] ?? i.reason}：${i.detail}）`).join('；')
+}
+
+async function adoptDraftNow(): Promise<void> {
+  const chars = draft.value?.chars ?? 0
+  try {
+    await ElMessageBox.confirm(
+      `采纳草稿会用它覆盖本章正文（${chars} 字），并立刻重跑机检。继续？`,
+      '采纳草稿',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const r = await adoptDraft(book.value, no.value, true)
+    ElMessage.success(`已采纳 ${r.chars} 字草稿，状态 → ${r.status}（机检照常执行）`)
+    await reload()
+    void loadSideState()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function discardDraftNow(): Promise<void> {
+  try {
+    await discardDraft(book.value, no.value)
+    ElMessage.success('已丢弃草稿')
+    void loadSideState()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function rebuildMemory(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      '补做记忆卡会重跑 V4（一次模型调用），并先回滚本章已产生的伏笔推进与状态快照。继续？',
+      '补做记忆卡',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await rebuildMemoryCard(book.value, no.value)
+    ElMessage.success('记忆卡已补做（伏笔/状态不会重复推进）')
+    void loadSideState()
+  } catch {
+    // 拦截器已提示
+  }
 }
 watch(
   [book, no],
@@ -705,6 +802,25 @@ async function rewrite(): Promise<void> {
     </div>
   </div>
 
+  <!-- 草稿救援：钱已经花了，稿只写了一半（规格05 F-09） -->
+  <el-alert
+    v-if="draft?.exists && (data?.status === 'error' || data?.status === 'generating')"
+    type="warning"
+    :closable="false"
+    class="mb-2"
+    show-icon
+  >
+    <template #title>
+      检测到 {{ draft.chars }} 字草稿（{{ draft.generated_at }}），可采纳为本章正文
+      <el-tag v-if="draft.stale" type="danger" size="small" class="ml-2">比正文旧</el-tag>
+    </template>
+    <div class="flex items-center gap-2">
+      <span class="dim">采纳后会立刻重跑机检，不放宽任何门禁。</span>
+      <el-button type="warning" size="small" @click="adoptDraftNow">采纳草稿</el-button>
+      <el-button size="small" @click="discardDraftNow">丢弃</el-button>
+    </div>
+  </el-alert>
+
   <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
     <div>
       <!-- ① 细纲 -->
@@ -845,6 +961,34 @@ async function rewrite(): Promise<void> {
         <div v-if="autoLog.length" class="dim mb-2" style="max-height: 130px; overflow: auto">
           <div v-for="(l, i) in autoLog" :key="i">{{ l }}</div>
         </div>
+        <!-- 未生效必须显式可见：不允许折叠进"通过"（规格05 P-2） -->
+        <el-alert
+          v-if="(data?.mech?.ineffective ?? []).some((i) => i.blocking !== false)"
+          type="error"
+          :closable="false"
+          class="mb-2"
+          show-icon
+          title="机检未完整执行，已转人工"
+        >
+          本次未检查：{{
+            ineffectiveText((data?.mech?.ineffective ?? []).filter((i) => i.blocking !== false))
+          }}
+          —— 修复词表/配置后点「跑机械检查」重跑
+        </el-alert>
+        <el-alert
+          v-else-if="(data?.mech?.ineffective ?? []).length"
+          type="info"
+          :closable="false"
+          class="mb-2"
+          show-icon
+          title="本次有规则未执行（不影响判定）"
+        >
+          {{ ineffectiveText(data?.mech?.ineffective ?? []) }}
+        </el-alert>
+        <div v-if="checkStatus?.stale" class="dim mb-2">
+          <el-tag type="warning" size="small">结论已过期</el-tag>
+          正文在上次机检后改动过（指纹 {{ checkStatus.current_fingerprint }}）， 请重跑机检再定稿。
+        </div>
         <template v-if="data?.mech">
           <div class="mb-1">
             结论：<el-tag :type="tagType(data.mech.verdict)" size="small">{{
@@ -868,6 +1012,50 @@ async function rewrite(): Promise<void> {
           </div>
         </template>
         <span v-else class="dim">（未跑）</span>
+      </div>
+
+      <!-- ③b AI 味确定性检测（零 token，只报不改） -->
+      <div class="panel">
+        <h3 class="panel-title">③b AI 味检测（规则集，零 token）</h3>
+        <div class="mb-2 flex flex-wrap items-center gap-2">
+          <el-button @click="loadSideState">重跑检测</el-button>
+          <template v-if="deslopRes && deslopRes.score >= 0">
+            <span>干净度</span>
+            <el-tag
+              :type="
+                deslopRes.score >= 80 ? 'success' : deslopRes.score >= 60 ? 'warning' : 'danger'
+              "
+              size="small"
+            >
+              {{ deslopRes.score }} / 100
+            </el-tag>
+            <span class="dim">
+              结构性硬伤 {{ deslopRes.hits_count.blocking }} 条 · 提示
+              {{ deslopRes.hits_count.advisory }} 条 · {{ deslopRes.word_count }} 字
+            </span>
+          </template>
+          <span v-else-if="deslopRes" class="dim">正文过短，未评分</span>
+          <span v-else class="dim">（未检测）</span>
+        </div>
+        <div
+          v-for="(h, i) in (deslopRes?.hits ?? []).slice(0, 12)"
+          :key="i"
+          class="issue clickable"
+          :class="{ blocking: h.level === 'blocking' }"
+          :title="`点击跳转到正文第 ${h.line} 行`"
+          @click="jumpToLine(h.line)"
+        >
+          <b>{{ h.rule }}</b>
+          <el-tag :type="h.level === 'blocking' ? 'danger' : 'warning'" size="small">
+            {{ h.level }}
+          </el-tag>
+          行{{ h.line }} · {{ h.quote }}<br />
+          <span class="dim">{{ h.message }}</span>
+        </div>
+        <div class="dim mt-2">
+          检测器只给客观证据（哪条规则、第几行），改写仍由「整章润色 /
+          定向修复」做，改完重新跑机检。
+        </div>
       </div>
 
       <!-- ④ LLM 审校 -->
@@ -939,6 +1127,16 @@ async function rewrite(): Promise<void> {
         </div>
         <div class="flex flex-wrap items-center gap-2">
           <el-button type="primary" @click="finalize">定稿（二次确认→快照+回写）</el-button>
+          <!-- 记忆卡回写失败时定稿仍然成立（不该因回写丢稿），但事实没进长期记忆；
+               没有这个入口，那一章的状态/伏笔就永久缺席，下游毫无提示 -->
+          <el-button
+            v-if="data?.status === 'finalized'"
+            type="warning"
+            plain
+            @click="rebuildMemory"
+          >
+            补做记忆卡
+          </el-button>
           <el-button type="danger" plain @click="rewrite">从版本重写</el-button>
           <el-select v-model="rewriteVer" placeholder="选择快照版本" clearable style="width: 260px">
             <el-option

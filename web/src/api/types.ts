@@ -95,9 +95,118 @@ export interface ReviewResult {
   issues?: ReviewIssue[]
 }
 
+export interface MechIneffective {
+  rule: string
+  reason: string
+  detail: string
+  /** true=禁止推进（词表缺失）；false=本阶段拿不到数据（如定稿后才有快照） */
+  blocking?: boolean
+}
+
 export interface MechReport {
   verdict: string
   issues: MechHit[]
+  fingerprint?: string | null
+  ineffective?: MechIneffective[]
+  checked_at?: string | null
+}
+
+/** GET .../checkstatus：结论 + 是否过期（正文改过即 stale） */
+export interface CheckStatus {
+  verdict: string | null
+  checked_status?: string | null
+  checked_at: string | null
+  checked_fingerprint: string | null
+  current_fingerprint: string
+  stale: boolean
+  ineffective: MechIneffective[]
+  hits_count: { block: number; warn: number }
+  imported?: boolean
+}
+
+/** AI 味确定性检测结果（只报不改） */
+export interface DeslopHit {
+  rule: string
+  level: string
+  line: number
+  quote: string
+  weight: number
+  message: string
+}
+
+export interface DeslopResult {
+  score: number
+  hits: DeslopHit[]
+  ineffective: MechIneffective[]
+  word_count: number
+  hits_count: { blocking: number; advisory: number }
+  density_penalty: number
+}
+
+/** 半成品草稿状态（生成为中断时仍在） */
+export interface DraftInfo {
+  exists: boolean
+  chars: number | null
+  generated_at: string | null
+  preview: string | null
+  stale: boolean | null
+}
+
+export interface MemoryPendingItem {
+  no: number
+  title: string
+  reason: string
+  has_card: boolean
+}
+
+export interface TimelineRow {
+  [k: string]: string
+}
+
+export interface TimelineData {
+  exists: boolean
+  truth: TimelineRow[]
+  released: TimelineRow[]
+  issues: MechHit[]
+  path: string
+}
+
+export interface AttachDetected {
+  layout: string
+  chapters: number
+  txt_files: number
+  has_config: boolean
+  has_meta: boolean
+  has_bible: boolean
+  has_outline: boolean
+  has_plot_points: boolean
+  has_locations: boolean
+  has_characters: boolean
+}
+
+export interface AttachResult {
+  ok: boolean
+  name: string
+  path: string
+  detected: AttachDetected
+  scaffolded: string[]
+  backup: string
+}
+
+export interface ImportChapterPreview {
+  no: number
+  title: string
+  chars: number
+  start_line: number
+}
+
+export interface ImportPreview {
+  encoding: string
+  total_chars: number
+  chapters: ImportChapterPreview[]
+  warnings: { kind: string; detail: string }[]
+  guessed_regex: string
+  file_path: string
 }
 
 export interface WorkbenchData {

@@ -26,8 +26,18 @@ import {
   putStyleEnabled,
   runAudit,
   listAudits,
+  listMemoryPending,
+  rebuildMemoryBatch,
+  getTimeline,
+  getState,
 } from '@/api'
-import type { AuditReport, CharacterData, Overview } from '@/api/types'
+import type {
+  AuditReport,
+  CharacterData,
+  MemoryPendingItem,
+  Overview,
+  TimelineData,
+} from '@/api/types'
 import { useBookStore } from '@/stores/book'
 import { parseMdTable, toMdTable } from '@/utils/mdtable'
 import { tagType } from '@/utils/status'
@@ -86,6 +96,57 @@ const charEditBody = ref('')
 const gotoNo = ref(1)
 const auditNo = ref<number | undefined>(undefined)
 
+// —— 长期记忆健康度（规格05 §11.3）——
+const memPending = ref<MemoryPendingItem[]>([])
+const timelineData = ref<TimelineData | null>(null)
+const stateRows = ref(0)
+const memBusy = ref(false)
+
+const REASON_LABEL: Record<string, string> = {
+  missing: '缺卡（回写失败/导入待补）',
+  fingerprint_mismatch: '卡记的是旧版正文',
+  legacy_no_state: '老格式卡（无结构化状态）',
+  unreadable: '卡无法解析',
+}
+
+async function loadMemoryHealth(): Promise<void> {
+  const b = name.value
+  const [mp, tl, st] = await Promise.all([
+    listMemoryPending(b).catch(() => ({ chapters: [] })),
+    getTimeline(b).catch(() => null),
+    getState(b).catch(() => null),
+  ])
+  memPending.value = mp.chapters ?? []
+  timelineData.value = tl
+  stateRows.value = st?.rows ?? 0
+}
+
+async function rebuildAllMemory(): Promise<void> {
+  const n = memPending.value.length
+  if (!n) return
+  try {
+    await ElMessageBox.confirm(
+      `将逐章重跑 V4 补做记忆卡，共 ${n} 章（每章一次模型调用，耗时较长）。继续？`,
+      '批量补做记忆卡',
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  memBusy.value = true
+  try {
+    const r = await rebuildMemoryBatch(name.value)
+    const failed = r.failed?.length ?? 0
+    ElMessage.success(`补做完成：成功 ${r.done?.length ?? 0} 章，失败 ${failed} 章`)
+    await loadMemoryHealth()
+    await load()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    memBusy.value = false
+  }
+}
+
 async function load(): Promise<void> {
   store.setCurrentBook(name.value)
   // 读请求并行（老版串行串成 4×RTT）
@@ -105,6 +166,7 @@ async function load(): Promise<void> {
   styleCard.value = st.card
   styleEnabled.value = st.enabled
   overdue.value = od
+  void loadMemoryHealth()
   await loadAudits()
 }
 watch(name, () => void load().catch(() => {}), { immediate: true })
@@ -409,6 +471,72 @@ async function audit(): Promise<void> {
     <div class="dim mt-1">
       {{ ov?.meta.genre }} · 目标{{ ((ov?.meta.target_words ?? 0) / 10000).toFixed(0) }}万字 ·
       {{ ov?.meta.platform }} · {{ ov?.meta.status }}
+    </div>
+  </div>
+
+  <!-- 长期记忆健康度：缺卡/过期卡/时间线冲突，一眼看出"记忆有没有断" -->
+  <div class="panel">
+    <h3 class="panel-title">长期记忆健康度</h3>
+    <div class="flex flex-wrap items-center gap-3">
+      <span>
+        待补记忆卡
+        <el-tag :type="memPending.length ? 'danger' : 'success'" size="small">
+          {{ memPending.length }}
+        </el-tag>
+      </span>
+      <span>
+        结构化状态
+        <el-tag :type="stateRows > 0 ? 'success' : 'info'" size="small">{{ stateRows }} 条</el-tag>
+      </span>
+      <span>
+        时间线
+        <el-tag
+          :type="
+            !timelineData?.exists
+              ? 'info'
+              : (timelineData.issues ?? []).length
+                ? 'danger'
+                : 'success'
+          "
+          size="small"
+        >
+          {{
+            !timelineData?.exists
+              ? '未建立'
+              : (timelineData.issues ?? []).length
+                ? '格式有误'
+                : '正常'
+          }}
+        </el-tag>
+      </span>
+      <span class="flex-1"></span>
+      <el-button
+        :disabled="!memPending.length"
+        :loading="memBusy"
+        type="warning"
+        plain
+        @click="rebuildAllMemory"
+      >
+        批量补做记忆卡
+      </el-button>
+      <el-button @click="router.push(`/book/${encodeURIComponent(name)}/state`)">
+        查看状态卡
+      </el-button>
+    </div>
+    <div v-if="memPending.length" class="mt-2" style="max-height: 150px; overflow: auto">
+      <div v-for="it in memPending.slice(0, 20)" :key="it.no" class="dim">
+        第{{ it.no }}章 {{ it.title }} —— {{ REASON_LABEL[it.reason] ?? it.reason }}
+        <el-button link type="primary" @click="gotoWorkbench(it.no)">去处理</el-button>
+      </div>
+    </div>
+    <div v-if="(timelineData?.issues ?? []).length" class="mt-2">
+      <div v-for="(i, idx) in (timelineData?.issues ?? []).slice(0, 5)" :key="idx" class="dim">
+        {{ i.rule }} 行{{ i.line }}：{{ i.message }}
+      </div>
+    </div>
+    <div class="dim mt-2">
+      记忆卡缺失不会让书立刻出错，但那一章的事实（状态/伏笔/地点）永久缺席——
+      三五章之后才会以"前后矛盾"的形式暴露，比流程报错更难查。
     </div>
   </div>
 

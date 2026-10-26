@@ -364,6 +364,7 @@ def mech_context(book: str, chapter_no: int) -> dict[str, Any]:
     from . import bible, characters
 
     char_status: dict[str, str] = {}
+    char_death: dict[str, int] = {}
     for name in characters.list_characters(book):
         try:
             data = characters.read(book, name)
@@ -371,12 +372,19 @@ def mech_context(book: str, chapter_no: int) -> dict[str, Any]:
             continue
         status = data.get("status") or {}
         char_status[name] = _alive_label(status)
+        if char_status[name] == "死亡":
+            # 死亡是在哪一章被记下的：只有"死亡章 < 本章"才谈得上死者复现
+            try:
+                char_death[name] = int(status.get("updated_chapter") or 0)
+            except (TypeError, ValueError):
+                continue
     try:
         realm = bible.realm_order(book)
     except Exception:
         realm = []
     return {"has_state": bool(rows), "rows": rows, "prev": prev,
-            "char_status": char_status, "realm_order": realm}
+            "char_status": char_status, "char_death": char_death,
+            "realm_order": realm}
 
 
 def _alive_label(status: dict[str, Any]) -> str:
