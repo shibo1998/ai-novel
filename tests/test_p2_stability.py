@@ -230,3 +230,40 @@ class TestLifespanInsteadOfOnEvent:
 
         settings.load()
         assert (data_dir() / "settings.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# 6. 境界序列要剥 markdown 强调符（真实书把大境界写成 **感气境**）
+# ---------------------------------------------------------------------------
+
+class TestRealmOrderStripsMarkdown:
+    """真实书的「力量体系」大境界列普遍写成 `**感气境**`。
+
+    realm_order() 原样取值 → 序列里全是带星号的词条 → `感气境` 整体匹配不上
+    → characters._realm_index 返回 None → 境界倒退检测静默跳过（不报错的失效）。
+    """
+
+    POWER = ("| 大境界 | 子境界 | 突破条件 | 能力边界(不能做什么) | 战力对标 | 寿元 | 代价与风险 | 突破异象 |\n"
+             "|---|---|---|---|---|---|---|---|\n"
+             "| **感气境** | 初入、洗髓 | 引气入体 | 不能离体 | 特种兵 | 百岁 | 经脉撕裂 | 渗油脂 |\n"
+             "| **凝煞境** | 淬骨 | 结煞 | 不能抗重火力 | 破小队 | 120岁 | 煞气攻心 | 霜降 |\n")
+
+    def test_bold_realm_names_clean(self, home):
+        books.create_book("境界书", genre_template="urban")
+        bible.update_section("境界书", "力量体系", self.POWER)
+        order = bible.realm_order("境界书")
+        assert "感气境" in order, order
+        assert "凝煞境" in order, order
+        assert not [x for x in order if "*" in x], order
+
+    def test_realm_index_matches_in_characters(self, home):
+        """characters 侧的索引函数必须能在同一序列上定位到大境界。"""
+        from ainovel.characters import _realm_index
+
+        books.create_book("境界书2", genre_template="urban")
+        bible.update_section("境界书2", "力量体系", self.POWER)
+        order = bible.realm_order("境界书2")
+        assert _realm_index("感气境", order) is not None
+        assert _realm_index("感气境初入", order) is not None
+        assert _realm_index("凝煞境淬骨", order) > _realm_index("感气境初入", order)
+

@@ -127,6 +127,9 @@ def realm_order(book: str) -> list[str]:
     order: list[str] = []
     for row in power_rows(book):
         for cell in (row.get("大境界", ""), row.get("子境界", "")):
+            # 真实书的大境界列普遍写成 **感气境**，不剥强调符会让「感气境」整体匹配不上
+            # → _realm_index 返回 None → 境界倒退检测静默跳过（不报错的失效）。
+            cell = cell.replace("**", "").replace("*", "")
             for r in [x for x in re.split(r"[·/、,，\s]+", cell) if x]:
                 if r not in order:
                     order.append(r)
