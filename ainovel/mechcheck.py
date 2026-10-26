@@ -402,6 +402,14 @@ def check_full(body: str, *, word_range: list[int] | None = None,
                                 int(d.get("line") or 0), str(d.get("word") or ""),
                                 str(d.get("message") or "")))
 
+        # M-18 开篇衔接（只报警：语义判断，不该硬拦）
+        if context.get("prev_ending") is None:
+            ineffective.append(Ineffective("M-18", REASON_UNPARSED,
+                                           "未提供上一章结尾，衔接检查未执行",
+                                           blocking=False))
+        else:
+            hits.extend(_continuity_hits(body or "", context))
+
     for item in ineffective:
         item.blocking = _is_block_level(item)
     blocked_ineffective = [i for i in ineffective if i.blocking]
@@ -429,6 +437,44 @@ def _is_block_level(item: Ineffective) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# M-18 开篇衔接（不依赖快照，只比对「上一章末尾」与「本章开头」）
+_CONTINUITY_WORDS = (
+    "次日", "第二天", "翌日", "半日", "一夜", "当晚", "天亮", "天亮前", "三天", "两天", "一个时辰",
+    "回到", "走出", "爬出", "离开", "赶到", "抵达", "路上", "途中", "沿着", "顺着", "穿过", "翻墙",
+    "上楼", "下楼", "上了车", "下了车", "推门", "混进", "跟上去", "溜出",
+)
+
+
+def _continuity_hits(body: str, ctx: dict[str, Any]) -> list[Hit]:
+    """M-18：本章开头有没有真的接上「上一章停在哪」。
+
+    实测来源：第 5 章收在「沉降口铁盖上、主阀自毁倒计时 180 秒」，第 6 章第一段
+    直接是「烂尾楼六层」，中间一个字不交——读者要自己脑补六层楼的距离。
+    细纲作者看不到上章原文时最容易犯这个错，所以细纲侧加了 `opening_bridge`，
+    这里做最后一道可见性兜底。
+
+    判据（宽进严出，只报警不阻断）：本章前 800 字里
+      - 出现过上一章末尾也出现的地点名 → 算接上；
+      - 或出现明确的时间/位移词（次日/爬出/赶往…）→ 算交代过了；
+      - 两者都没有 → 报警，让人自己看一眼是不是凭空换场。
+    """
+    prev = str(ctx.get("prev_ending") or "").strip()
+    if len(prev) < 50:
+        return []
+    head = (body or "")[:800]
+    if not head.strip():
+        return []
+    places = [str(p) for p in (ctx.get("places") or []) if len(str(p)) >= 2]
+    if any(p in prev and p in head for p in places):
+        return []
+    if any(w in head for w in _CONTINUITY_WORDS):
+        return []
+    hint = "、".join(places[:4]) or "上一章末尾的地点"
+    return [Hit("M-18", "warn", 1, "开篇衔接",
+                f"本章开头 800 字内既没出现上一章末的地点（{hint}），"
+                f"也没有时间/位移交代，检查是否凭空换场（看「上一章末尾原文」槽）")]
+
+
 # M-13 ~ M-15 状态一致性（依赖 chapter_state 快照）
 # ---------------------------------------------------------------------------
 

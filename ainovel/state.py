@@ -382,7 +382,23 @@ def mech_context(book: str, chapter_no: int) -> dict[str, Any]:
         realm = bible.realm_order(book)
     except Exception:
         realm = []
-    return {"has_state": bool(rows), "rows": rows, "prev": prev,
+
+    # M-18 开篇衔接所需：上一章结尾原文 + 地点名表（LOCATIONS.md）
+    prev_ending, places = "", []
+    if chapter_no > 1:
+        try:
+            prev_ending = chapters.read_prose(book, chapter_no - 1)["_body"].strip()[-400:]
+        except Exception:
+            prev_ending = ""
+    try:
+        from . import outline as outline_mod
+
+        places = [str(r.get("名称") or "") for r in outline_mod.read_locations(book)]
+    except Exception:
+        places = []
+    return {"chapter_no": chapter_no, "prev_ending": prev_ending, "places": places,
+            "char_names": [str(n) for n in char_status],
+            "has_state": bool(rows), "rows": rows, "prev": prev,
             "char_status": char_status, "char_death": char_death,
             "realm_order": realm}
 

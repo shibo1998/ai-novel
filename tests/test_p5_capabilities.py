@@ -638,10 +638,12 @@ class TestTimeline:
         preview = assembler.assemble(book, 1).preview()
         bible_slot = [s for s in preview["slots"] if s["name"] == "bible_core"][0]
         assert "【时间线约束】" in bible_slot["content"]
-        assert "T-002" in bible_slot["content"]
-        assert "林寒 不知情" in bible_slot["content"]
-        # 只为本章出场角色注入，不把全表刷进来
-        assert "老周 不知情" not in bible_slot["content"]
+        # 约束段按「事件」合并且点名到人：T-002 是读者未知的秘密 → 只能暗示
+        block = bible_slot["content"].split("【时间线约束】", 1)[-1]
+        assert "T-002" in block
+        assert "林寒" in block and "连暗示都要克制" in block
+        # 只为本章出场角色注入：老周没出场，不能被点名（事件文字里出现"老周"是正常的）
+        assert "老周 不得" not in block and "老周 连暗示" not in block
 
 
 # ---------------------------------------------------------------------------
@@ -716,10 +718,12 @@ class TestTimeline:
         preview = assembler.assemble(book, 1).preview()
         bible_slot = [s for s in preview["slots"] if s["name"] == "bible_core"][0]
         assert "【时间线约束】" in bible_slot["content"]
-        assert "T-002" in bible_slot["content"]
-        assert "林寒 不知情" in bible_slot["content"]
-        # 只为本章出场角色注入，不把全表刷进来
-        assert "老周 不知情" not in bible_slot["content"]
+        # 约束段按「事件」合并且点名到人：T-002 是读者未知的秘密 → 只能暗示
+        block = bible_slot["content"].split("【时间线约束】", 1)[-1]
+        assert "T-002" in block
+        assert "林寒" in block and "连暗示都要克制" in block
+        # 只为本章出场角色注入：老周没出场，不能被点名（事件文字里出现"老周"是正常的）
+        assert "老周 不得" not in block and "老周 连暗示" not in block
 
 
 # ---------------------------------------------------------------------------
@@ -1125,3 +1129,119 @@ class TestFlowGuards:
         outline.write_plot_points(book, [row])
         drift = pipeline.foreshadow_drift(book, 1)
         assert drift and "FO-001" in drift[0]
+
+
+# ---------------------------------------------------------------------------
+# T-51 ~ T-54  脱节与字数：新章最容易踩的两个坑
+# ---------------------------------------------------------------------------
+
+class TestContinuityAndLength:
+    """「上章在六层、本章在荒滩」这类断档和「越写越长」是长篇最常犯的两个错。
+
+    两个 check 都必须**能在坏样本上红**，否则等于没写。
+    """
+
+    def test_t51_scene_jump_is_flagged(self):
+        """上一章收在沉降口，本章直接出现在别处且不交代 → M-18 报警。"""
+        ctx = {"prev_ending": (
+            "他踩在沉降口的铁盖上，脚下一阵阵发麻。主阀自毁倒计时一百八十秒，"
+            "覆盖半径一千二百米。合成音在废铁堆里来回撞击，他把苏婉往肩上挪了挪，"
+            "盯着脚下那口抽取整座城市地脉的工业灵井。"),
+            "places": ["青云坊", "灵枢阁", "烂尾楼"]}
+        body = "天台的风把雨吹成斜的。他把刀横在膝上，盯着对面那扇铁门。"
+        hits = mechcheck._continuity_hits(body, ctx)
+        assert [h.rule for h in hits] == ["M-18"]
+        assert hits[0].level == "warn"
+
+    def test_t52_transition_word_passes(self):
+        """有明确时间/位移交代就不报警——不能变成「每章都红」的噪声源。"""
+        ctx = {"prev_ending": (
+            "他踩在沉降口的铁盖上，脚下一阵阵发麻。主阀自毁倒计时一百八十秒，"
+            "覆盖半径一千二百米。合成音在废铁堆里来回撞击，他把苏婉往肩上挪了挪。"),
+            "places": ["青云坊", "灵枢阁"]}
+        for body in ("天亮时，他拖着苏婉爬出了排污渠的检修井。",
+                     "次日，山脚的卡口已经封了。"):
+            assert mechcheck._continuity_hits(body, ctx) == [], body
+
+    def test_t53_shared_place_passes(self):
+        """开头还在上一章那个地点 → 算接上了。"""
+        ctx = {"prev_ending": (
+            "他踩在青云坊西门外的泥水里，牌子的青光还没散尽。守门的巡检修士收了伞，"
+            "把灵镜往门洞里一搁，镜面上那层冷白的光缓缓沉下去。"),
+            "places": ["青云坊", "灵枢阁"]}
+        assert mechcheck._continuity_hits("青云坊西门的牌楼底下没有灯。雨还在下。", ctx) == []
+
+    def test_t54_fit_length_shrinks_and_rejects(self, home, book_env):
+        """超字数用 W6 收敛；模型给的方向不对就保留原稿（不许越改越差）。"""
+        book, _ = book_env
+        long_body = make_prose((2850, 3000))
+        assert mechcheck.count_words(long_body) > 2800
+
+        good = make_prose((2250, 2600))
+        new, log = pipeline.fit_length(book, 1, long_body, [2200, 2800], client=_TextLLM(good))
+        assert 2200 <= mechcheck.count_words(new) <= 2800
+        assert log and log[0]["dir"] == "shrink" and log[0]["to"] < log[0]["from"]
+
+        # 让它「压缩」却返回更长 → 不采纳
+        worse = make_prose((3000, 3200))
+        new2, log2 = pipeline.fit_length(book, 1, long_body, [2200, 2800], client=_TextLLM(worse))
+        assert new2 == long_body
+        assert log2 and log2[0]["to"] > log2[0]["from"]
+
+
+# ---------------------------------------------------------------------------
+# T-51 ~ T-54  脱节与字数：新章最容易踩的两个坑
+# ---------------------------------------------------------------------------
+
+class TestContinuityAndLength:
+    """「上章在六层、本章在荒滩」这类断档和「越写越长」是长篇最常犯的两个错。
+
+    两个 check 都必须**能在坏样本上红**，否则等于没写。
+    """
+
+    def test_t51_scene_jump_is_flagged(self):
+        """上一章收在沉降口，本章直接出现在别处且不交代 → M-18 报警。"""
+        ctx = {"prev_ending": (
+            "他踩在沉降口的铁盖上，脚下一阵阵发麻。主阀自毁倒计时一百八十秒，"
+            "覆盖半径一千二百米。合成音在废铁堆里来回撞击，他把苏婉往肩上挪了挪，"
+            "盯着脚下那口抽取整座城市地脉的工业灵井。"),
+            "places": ["青云坊", "灵枢阁", "烂尾楼"]}
+        body = "天台的风把雨吹成斜的。他把刀横在膝上，盯着对面那扇铁门。"
+        hits = mechcheck._continuity_hits(body, ctx)
+        assert [h.rule for h in hits] == ["M-18"]
+        assert hits[0].level == "warn"
+
+    def test_t52_transition_word_passes(self):
+        """有明确时间/位移交代就不报警——不能变成「每章都红」的噪声源。"""
+        ctx = {"prev_ending": (
+            "他踩在沉降口的铁盖上，脚下一阵阵发麻。主阀自毁倒计时一百八十秒，"
+            "覆盖半径一千二百米。合成音在废铁堆里来回撞击，他把苏婉往肩上挪了挪。"),
+            "places": ["青云坊", "灵枢阁"]}
+        for body in ("天亮时，他拖着苏婉爬出了排污渠的检修井。",
+                     "次日，山脚的卡口已经封了。"):
+            assert mechcheck._continuity_hits(body, ctx) == [], body
+
+    def test_t53_shared_place_passes(self):
+        """开头还在上一章那个地点 → 算接上了。"""
+        ctx = {"prev_ending": (
+            "他踩在青云坊西门外的泥水里，牌子的青光还没散尽。守门的巡检修士收了伞，"
+            "把灵镜往门洞里一搁，镜面上那层冷白的光缓缓沉下去。"),
+            "places": ["青云坊", "灵枢阁"]}
+        assert mechcheck._continuity_hits("青云坊西门的牌楼底下没有灯。雨还在下。", ctx) == []
+
+    def test_t54_fit_length_shrinks_and_rejects(self, home, book_env):
+        """超字数用 W6 收敛；模型给的方向不对就保留原稿（不许越改越差）。"""
+        book, _ = book_env
+        long_body = make_prose((2850, 3000))
+        assert mechcheck.count_words(long_body) > 2800
+
+        good = make_prose((2250, 2600))
+        new, log = pipeline.fit_length(book, 1, long_body, [2200, 2800], client=_TextLLM(good))
+        assert 2200 <= mechcheck.count_words(new) <= 2800
+        assert log and log[0]["dir"] == "shrink" and log[0]["to"] < log[0]["from"]
+
+        # 让它「压缩」却返回更长 → 不采纳
+        worse = make_prose((3000, 3200))
+        new2, log2 = pipeline.fit_length(book, 1, long_body, [2200, 2800], client=_TextLLM(worse))
+        assert new2 == long_body
+        assert log2 and log2[0]["to"] > log2[0]["from"]

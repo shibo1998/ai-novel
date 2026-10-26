@@ -14,6 +14,8 @@ OUTLINE_CONTRACT_SCHEMA: FM.Schema = {
     "types": {
         "chapter_no": int, "volume": int, "stage": str, "emotion_task": str,
         "purpose": (list, type(None)), "core_event": str, "scenes": list,
+        # 可选：开篇承接点（老细纲没有这个字段，只能按可选处理）
+        "opening_bridge": (str, type(None)),
         "emotion_arc": dict, "must_include": (list, type(None)),
         "hook": dict, "foreshadow_ops": (list, type(None)),
         "word_range": list, "pov": str, "confirmed": bool,

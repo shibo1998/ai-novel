@@ -114,6 +114,9 @@ def _split_names(cell: str) -> list[str]:
     return [n.strip() for n in re.split(r"[,，、;；]", cell or "") if n.strip()]
 
 
+MAX_CONSTRAINT_EVENTS = 8
+
+
 def constraints_for_chapter(book: str, chapter_no: int, limit: int = 800) -> str:
     """本章出场角色的知情禁区（只注入相关条目，不注入全表）。"""
     data = read(book)
@@ -129,10 +132,17 @@ def constraints_for_chapter(book: str, chapter_no: int, limit: int = 800) -> str
             name = c.get("name", "")
             if name and name not in present:
                 present.append(name)
+    # 主视角角色在「读者已知=是」的事件上一律视为知情：读者是通过他看到的，
+    # 再去禁止他提及只会写出「主角回避自己刚发现的事」这种别扭戏。
+    pov = str(contract.get("pov") or "").strip()
     if not present:
         return "（本章出场角色未知，未注入时间线约束）"
 
-    lines: list[str] = []
+    # 按「事件」合并同一批人，而不是一人一行：18 条时间线 × 2 个角色 = 36 行，
+    # 塞进上下文只会被整体截断，模型一条都没读到（实测截断在第十条）。
+    order: list[tuple[str, bool]] = []
+    events: dict[str, str] = {}
+    blocked: dict[tuple[str, bool], list[str]] = {}
     for row in data["truth"]:
         tid = (row.get("编号") or "").strip()
         event = (row.get("事件") or "").strip()
@@ -140,16 +150,30 @@ def constraints_for_chapter(book: str, chapter_no: int, limit: int = 800) -> str
             continue
         informed = _split_names(row.get("知情角色", ""))
         reader_known = (row.get("读者已知") or "").strip() == "是"
+        key = (tid, reader_known)
+        events[tid] = event
         for name in present:
             if name in informed:
                 continue
-            if reader_known:
-                lines.append(f"- {tid}「{event}」：{name} 不知情，不得让其提及或指向该事件。")
-            else:
-                lines.append(f"- {tid}「{event}」：{name} 不知情，且读者也未知——只能暗示，不能点明。")
+            if reader_known and name == pov:
+                continue
+            if key not in blocked:
+                blocked[key] = []
+                order.append(key)
+            blocked[key].append(name)
+
+    lines: list[str] = []
+    for key in order[:MAX_CONSTRAINT_EVENTS]:
+        tid, reader_known = key
+        names = blocked[key]
+        tail = ("不得让其提及或指向" if reader_known
+                else "连暗示都要克制，不能点明")
+        lines.append(f"- {tid}「{events[tid][:40]}」：{'、'.join(names)} {tail}。")
     if not lines:
         return "（本章出场角色均无知情禁区）"
     text = "\n".join(lines)
+    if len(order) > MAX_CONSTRAINT_EVENTS:
+        text += f"\n（另有 {len(order) - MAX_CONSTRAINT_EVENTS} 条禁区未列出，写作时同样成立）"
     return text[:limit] + ("\n（……已截断……）" if len(text) > limit else "")
 
 

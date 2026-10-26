@@ -144,6 +144,11 @@ def _char_card_text(data: dict[str, Any], state_row: dict[str, Any] | None = Non
         status = data.get("status", {})
         st = "、".join(f"{k}={status.get(k, '')}" for k in
                        ("realm", "location", "emotion", "alive") if status.get(k) != "")
+        # 没有快照时只有「档案状态」，而档案可能已经更新到很后面的章。
+        # 标出更新时间，模型才不会把"全书终态"当成"本章开始时"。
+        upd = status.get("updated_chapter")
+        if upd:
+            st += f"　【档案状态，更新于第{upd}章，可能晚于本章】"
     return f"### {data['name']}（{data.get('role','')}）\n当前状态：{st}\n{data.get('_body','').strip()}"
 
 

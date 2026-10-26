@@ -121,6 +121,7 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
                 f"｜目标={vol.get('goal')}｜卷末高潮={vol.get('climax')}") if vol else "（卷信息缺失）"
 
     prev_hook_content, prev_hook_type, prev_scene_struct = "", "", ""
+    prev_ending = ""
     if no > 1:
         try:
             prev = chapters.read_outline_contract(book, no - 1)
@@ -131,6 +132,13 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
             )
         except Exception:
             pass
+        # 只给「钩子一句话」不够：细纲作者不知道上一章**停在哪**，就会凭空换场。
+        # 第 5→6 章实测：上章收在沉降口，第 6 章细纲直接写「烂尾楼六层」，
+        # 正文照抄 → 空间断档，读者要自己脑补一层楼的距离。
+        try:
+            prev_ending = chapters.read_prose(book, no - 1)["_body"].strip()[-600:]
+        except Exception:
+            prev_ending = ""
 
     char_states = []
     try:
@@ -157,6 +165,7 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
         "全局大纲该章行": " | ".join(f"{k}={v}" for k, v in row.items()),
         "所属卷目标": vol_goal,
         "上一章钩子": prev_hook_content or "（第一章，无上章钩子；用开篇钩子设计）",
+        "上一章结尾原文": prev_ending or "（第一章 / 上一章正文缺失）",
         "上一章钩子类型": prev_hook_type or "无",
         "上一章场景结构": prev_scene_struct or "（第一章）",
         "出场角色状态": "\n".join(char_states) or "（暂无角色档案）",
@@ -601,6 +610,12 @@ def _generate_prose_inner(book: str, no: int, client=None,
     # 原实现只给 W1/W3 传，导致场景专项被当作整章调用时没有任何字数约束，
     # 只能靠 M-01 事后兜底，用户看不出为什么生成完就变红。
     variables["字数区间"] = f"{wr[0]}-{wr[1]}"
+    # 只给区间，模型容易顶到上限再冲出去；给「目标值」才收得住
+    variables["目标字数"] = str((wr[0] + wr[1]) // 2)
+    variables["开篇承接点"] = (
+        str(contract.get("opening_bridge") or "").strip()
+        or "（细纲未写承接点：按「上一章末尾原文」自己接，必须交代位置与时间）"
+    )
     if prompt_id == "W1":
         variables["黄金三章附加要求"] = "（本章为黄金三章，严格执行专项标准）" if no <= 3 else ""
     elif prompt_id == "W3":
@@ -625,6 +640,12 @@ def _generate_prose_inner(book: str, no: int, client=None,
                 body, fr = res2.text.strip(), res2.finish_reason
 
     body = body.strip()
+    # 生成/重跑都越界时，用 W6 做确定性收敛（最多 2 轮，方向不对就停）
+    fit_log: list[dict[str, Any]] = []
+    if not _in_range(body, wr):
+        body, fit_log = fit_length(book, no, body, wr, client=client)
+        if fit_log:
+            logger.info("第%s章 生成后字数收敛 %s", no, fit_log)
     row = statemachine.get_row(book, no)
     version = row["current_version"] if row else 1
     fm = {
@@ -635,7 +656,8 @@ def _generate_prose_inner(book: str, no: int, client=None,
     chapters.clear_draft(book, no)  # 成功落正式正文后清掉半成品
     statemachine.transition(book, no, "complete")  # → mech_check
     return {"word_count": fm["word_count"], "version": version, "finish_reason": fr,
-            "mode": "scene" if cfg.get("scene_mode") else "whole"}
+            "mode": "scene" if cfg.get("scene_mode") else "whole",
+            "length_fit": fit_log}
 
 
 def _generate_by_scenes(book: str, no: int, base_vars: dict[str, Any], wr: list[int],
@@ -645,16 +667,20 @@ def _generate_by_scenes(book: str, no: int, base_vars: dict[str, Any], wr: list[
     n = len(scenes)
     total_mid = (wr[0] + wr[1]) // 2
     per_mid = max(500, total_mid // n)
-    # 配额从紧（总和留余量），防止各场景都顶配额导致全章超上限
-    per_lo, per_hi = max(400, int(per_mid * 0.8)), int(per_mid * 1.15)
     parts: list[str] = []
+    used = 0  # 已写出的字数：后面场景按剩余预算收紧，单个场景超了不会把全章拖爆
     fr = "stop"
     for i, sc in enumerate(scenes, 1):
         chars = "、".join(f"{c.get('name')}({c.get('state')})" for c in sc.get("chars", []) or [])
+        left = n - i + 1
+        remain = max(600, wr[1] - 200 - used)   # 留 200 字给收尾钩子
+        sc_lo = max(400, int(remain / left * 0.8))
+        sc_hi = max(500, int(remain / left * 1.05))
         task = (
             f"【本场景生成任务】场景 {i}/{n}（只写这一个场景，禁止写到后续场景内容）\n"
             f"目标：{sc.get('goal')}\n冲突：{sc.get('conflict')}\n出场：{chars}\n"
-            f"本场景结束状态：{sc.get('end_state')}\n本场景字数：{per_lo}-{per_hi} 字\n"
+            f"本场景结束状态：{sc.get('end_state')}\n"
+            f"本场景字数：{sc_lo}-{sc_hi} 字（全章还剩约 {remain} 字额度，后续还有 {left - 1} 个场景）\n"
         )
         if i > 1 and parts:
             task += f"【上一场景结尾（开头直接衔接）】{parts[-1].strip()[-200:]}\n"
@@ -664,13 +690,16 @@ def _generate_by_scenes(book: str, no: int, base_vars: dict[str, Any], wr: list[
             task += "【收尾要求】本场景是全章末场景，必须落在章合同钩子指向的画面/台词上，戛然而止。\n"
         v = dict(base_vars)
         v["章合同"] = base_vars["章合同"] + "\n\n" + task
-        v["字数区间"] = f"{per_lo}-{per_hi}"
+        v["字数区间"] = f"{sc_lo}-{sc_hi}"
+        v["目标字数"] = str((sc_lo + sc_hi) // 2)
         v.setdefault("黄金三章附加要求", "")
         res, _p, _t = _call(book, no, "prose", "W1", v, client=client,
                             stream_cb=stream_cb if i == n else None)
         if res.finish_reason == "length":
             fr = "length"
-        parts.append(res.text.strip())
+        part = res.text.strip()
+        parts.append(part)
+        used += mechcheck.count_words(part)
     return "\n\n".join(parts), fr
 
 
@@ -713,6 +742,62 @@ def _scene_special_vars(book: str, no: int, contract: dict[str, Any], prompt_id:
 
 def _in_range(text: str, wr: list[int]) -> bool:
     return wr[0] <= mechcheck.count_words(text) <= wr[1]
+
+
+LENGTH_FIT_MAX_ROUNDS = 2
+LENGTH_FIT_RATIO = 0.97
+
+
+def fit_length(book: str, no: int, body: str, wr: list[int],
+               client=None) -> tuple[str, list[dict[str, Any]]]:
+    """把正文收进字数区间（确定性收敛，不指望模型一次写准）。
+
+    为什么单独一条通道：M-01 超字数原本走 V5「定向修复」，而 V5 的纪律是
+    「只改问题句段、其余一字不动」——它天生不适合整章删减，实测经常原样返回，
+    然后一路当成「修过了」，白烧一轮审校（详见 FixIneffective）。
+
+    这里用 W6 明确「只删不加 / 只加不删 + 目标字数」，并且：
+    - 每轮只在**方向正确**（超了就变短、少了就变长）且**没把正文删残**时才采纳；
+    - 模型摆烂就直接停，不无限重试烧 token；
+    - 最多 LENGTH_FIT_MAX_ROUNDS 轮，仍不达标就如实返回，交给 M-01 阻断。
+    """
+    lo, hi = wr
+    log: list[dict[str, Any]] = []
+    for _ in range(LENGTH_FIT_MAX_ROUNDS):
+        n = mechcheck.count_words(body)
+        if lo <= n <= hi:
+            break
+        shrink = n > hi
+        target = int(hi * LENGTH_FIT_RATIO) if shrink else (lo + hi) // 2
+        try:
+            res, _p, _t = _call(book, no, "fit_length", "W6", {
+                "正文": body,
+                "当前字数": str(n),
+                "目标字数": str(target),
+                "增减字数": str(abs(n - target)),
+                "字数区间": f"{lo}-{hi}",
+                "方向": "压缩" if shrink else "扩写",
+                # 只说"压缩"模型会顺手润色成更长；必须点明这是删字任务
+                "方向说明": ("这是删字任务：删掉约 %d 字的内容冗余，不是重写、不是润色、不许增句。"
+                          % (n - target)) if shrink else (
+                          "这是补字任务：补足约 %d 字的具体细节，不许新增情节。" % (target - n)),
+            }, client=client)
+        except Exception as e:
+            logger.warning("第%s章 长度收敛调用失败，保留原稿: %s", no, e)
+            break
+        cand = _clean_draft_text(res.text)
+        cw = mechcheck.count_words(cand)
+        log.append({"dir": "shrink" if shrink else "expand",
+                    "from": n, "to": cw, "target": target})
+        improved = (cw < n) if shrink else (cw > n)
+        # 低于下限 40% 说明它直接删了半章——宁可不采纳
+        if not improved or cw < max(300, int(lo * 0.4)):
+            logger.warning("第%s章 W6 输出不可用（%d→%d 字），保留原稿", no, n, cw)
+            break
+        body = cand
+        if lo <= cw <= hi:
+            break
+    return body, log
 
 
 def _better(a: str, b: str, wr: list[int]) -> bool:
@@ -759,6 +844,24 @@ def run_mech_check(book: str, no: int, client=None,
         return res
 
     hits = res.hits
+    # 只卡字数时先走「长度收敛」，不走 V5：V5 的纪律是「只改问题句段、其余一字不动」，
+    # 它天生不适合整章删减（实测原样返回，然后白烧一轮审校）。
+    if auto_fix and res.blocks and all(h.rule == "M-01" for h in res.blocks) \
+            and not mechcheck.has_sensitive(hits):
+        prose = chapters.read_prose(book, no)
+        new_body, fit_log = fit_length(book, no, prose["_body"], wr, client=client)
+        if fit_log and new_body != prose["_body"]:
+            fm = {k: v for k, v in prose.items() if k != "_body"}
+            fm["word_count"] = mechcheck.count_words(new_body)
+            chapters.write_prose(book, no, fm, new_body)
+            logger.info("第%s章 字数收敛 %s", no, fit_log)
+            res = _check(book, no, wr)
+            _record(res)
+            if res.verdict == "pass":
+                statemachine.transition(book, no, "pass")  # → llm_review
+                return res
+            hits = res.hits
+
     if mechcheck.has_sensitive(hits) or not auto_fix:
         logger.warning("第%s章 命中敏感词红线，阻断转人工（禁止自动改写）", no)
         statemachine.transition(book, no, "blocked_after_fix")  # → human_review（敏感词禁止自动改写）
