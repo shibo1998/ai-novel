@@ -50,6 +50,7 @@ def test_rebuild_drops_deleted_book(book_env):
     from ainovel import books
 
     statemachine.ensure_chapter_row(book, 1)
+    pipeline.generate_outline(book, 1, client=MockLLM())
     db.rebuild()  # 入库
     with db.tx() as conn:
         n = conn.execute("SELECT COUNT(*) n FROM chapters").fetchone()["n"]

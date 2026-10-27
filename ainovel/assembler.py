@@ -209,7 +209,7 @@ def assemble(book: str, chapter_no: int) -> Assembly:
     try:
         from . import state as state_mod
 
-        state_rows = state_mod.latest_map(book, chapter_no - 1)
+        state_rows = state_mod.confirmed_map(book, chapter_no - 1)
     except Exception:
         state_rows = {}
     cards = []

@@ -4,6 +4,9 @@ SQLite = 可随时重建的索引与历史；文件才是单一真相源。
 """
 from __future__ import annotations
 
+import json
+import logging
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -12,7 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from . import frontmatter as FM
-from .paths import book_dir, books_dir, data_dir
+from .paths import attached_books, book_dir, books_dir, data_dir, validate_book_name
 
 _LOCK = threading.RLock()
 _CONN: sqlite3.Connection | None = None
@@ -56,7 +59,8 @@ CREATE TABLE IF NOT EXISTS books (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     path TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    detached INTEGER NOT NULL DEFAULT 0  -- 摘除保留主键及不可恢复的运行历史
 );
 CREATE TABLE IF NOT EXISTS chapters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +71,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     prev_status TEXT,                -- error 恢复用（规格01 §4：error──重试──▶原状态）
     fix_rounds INTEGER NOT NULL DEFAULT 0,
     current_version INTEGER NOT NULL DEFAULT 1,
+    state_revision INTEGER NOT NULL DEFAULT 0,
     checked_fingerprint TEXT,        -- 机检结论对应的正文指纹（规格05 P-3）
     checked_status TEXT,             -- pass | blocked | not_effective | stale
     imported INTEGER NOT NULL DEFAULT 0,  -- 由 txt 导入（无细纲、无记忆卡）
@@ -138,11 +143,13 @@ CREATE TABLE IF NOT EXISTS snapshots (
 def init_schema(conn: sqlite3.Connection) -> None:
     with _LOCK:
         conn.executescript(SCHEMA)
+        _ensure_column(conn, "books", "detached", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "generation_log", "cost_millicents", "INTEGER")
         # 规格05 §11.1：老库轻量迁移（CREATE TABLE IF NOT EXISTS 不会改已有表）
         _ensure_column(conn, "chapters", "checked_fingerprint", "TEXT")
         _ensure_column(conn, "chapters", "checked_status", "TEXT")
         _ensure_column(conn, "chapters", "imported", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "chapters", "state_revision", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "review_records", "fingerprint", "TEXT")
         _ensure_column(conn, "review_records", "ineffective_json", "TEXT")
         conn.commit()
@@ -344,103 +351,185 @@ def cost_summary(book_id: int, chapter_no: int | None = None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def rebuild() -> dict[str, Any]:
-    """扫描 books/ 目录重建 books 与 chapters 索引行 + FTS。
+    """从活动内置/外挂文件重建索引（规格01 §5.4、规格05 F-07/F-08/C-02）。
 
-    - generation_log / review_records / snapshots 保留原值（运行历史，
-      DB 文件本身丢失时这部分历史无法从文件恢复——已在 README 声明）。
-    - 章节状态从文件证据推导（推导规则见 _derive_status），中段瞬态
-      统一停靠到可恢复状态。
+    摘除或目录丢失只停用主记录，不级联删除 generation_log/review_records/snapshots。
+    路径登记表是活动外挂的真相源；chapter_state 从记忆卡重建，导入标志从正文恢复。
     """
     from . import fts
 
-    report = {"books": 0, "chapters": 0, "fts_reindexed": 0, "dropped": []}
+    report: dict[str, Any] = {"books": 0, "chapters": 0, "fts_reindexed": 0, "dropped": []}
+    external = attached_books()
+    directories: dict[str, Path] = {}
+    if books_dir().exists():
+        for p in books_dir().iterdir():
+            if p.is_dir() and (p / "meta.md").is_file():
+                try:
+                    validate_book_name(p.name)
+                except ValueError:
+                    continue
+                directories[p.name] = p
+    # 未补骨架的外挂书也可以只有正文或 txt，不能以 meta.md 作为入库前提。
+    directories.update({name: Path(path) for name, path in external.items()
+                        if Path(path).is_dir()})
     with tx() as conn:
-        # 清掉文件里已不存在的书
-        for row in conn.execute("SELECT id, name FROM books").fetchall():
-            if not book_dir(row["name"]).exists():
-                conn.execute("DELETE FROM books WHERE id=?", (row["id"],))
-                report["dropped"].append(row["name"])
-        seen_books: set[str] = set()
-        for bdir in sorted(books_dir().glob("*")) if books_dir().exists() else []:
-            if not bdir.is_dir() or not (bdir / "meta.md").exists():
-                continue
-            seen_books.add(bdir.name)
-            bid = conn.execute("SELECT id FROM books WHERE name=?", (bdir.name,)).fetchone()
-            if bid is None:
-                cur = conn.execute(
-                    "INSERT INTO books (name, path, created_at) VALUES (?,?,?)",
-                    (bdir.name, str(bdir), now()),
-                )
-                book_id: int = cur.lastrowid
-            else:
-                book_id = bid["id"]
+        for row in conn.execute("SELECT id, name, path, detached FROM books").fetchall():
+            name = row["name"]
+            candidate = directories.get(name)
+            if candidate is not None and Path(row["path"]).resolve() != candidate.resolve():
+                raise ValueError(f"书名对应的路径与历史不一致，拒绝复用运行历史: {name}")
+            # 兼容旧版 detach：外部路径已不在活动登记表时，补记停用而非级联删除。
+            if candidate is None:
+                conn.execute("UPDATE books SET detached=1 WHERE id=?", (row["id"],))
+                conn.execute("DELETE FROM chapters WHERE book_id=?", (row["id"],))
+                conn.execute("DELETE FROM chapter_state WHERE book_id=?", (row["id"],))
+                if not row["detached"]:
+                    report["dropped"].append(name)
+        for name, bdir in sorted(directories.items()):
+            report["chapters"] += _rebuild_book(conn, name, bdir)
             report["books"] += 1
-            for chapter_no, title, status, version in _scan_chapters(bdir):
-                conn.execute(
-                    """INSERT INTO chapters (book_id, no, title, status, current_version, updated_at)
-                       VALUES (?,?,?,?,?,?)
-                       ON CONFLICT(book_id, no) DO UPDATE SET
-                         title=excluded.title, current_version=excluded.current_version,
-                         status=excluded.status, updated_at=excluded.updated_at""",
-                    (book_id, chapter_no, title, status, version, now()),
-                )
-                report["chapters"] += 1
-    # FTS 重建
     fts.rebuild_index()
     report["fts_reindexed"] = 1
     return report
 
 
-def _scan_chapters(bdir: Path) -> Iterator[tuple[int, str, str, int]]:
-    chapters_dir = bdir / "chapters"
-    if not chapters_dir.exists():
-        return
-    nos: set[int] = set()
-    for f in chapters_dir.glob("*.md"):
+def rebuild_book(name: str) -> None:
+    """挂载后立即同步该书的章节、状态与 FTS（规格05 F-07），不改其他书。"""
+    from . import fts
+
+    bdir = book_dir(name)
+    with tx() as conn:
+        _rebuild_book(conn, name, bdir)
+        row = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
+    fts.rebuild_index(book_id=row["id"])
+
+
+def _rebuild_book(conn: sqlite3.Connection, name: str, bdir: Path) -> int:
+    row = conn.execute("SELECT id, path FROM books WHERE name=?", (name,)).fetchone()
+    if row and Path(row["path"]).resolve() != bdir.resolve():
+        raise ValueError(f"书名对应的路径与历史不一致，拒绝复用运行历史: {name}")
+    conn.execute(
+        "INSERT INTO books (name, path, created_at) VALUES (?,?,?) "
+        "ON CONFLICT(name) DO UPDATE SET detached=0",
+        (name, str(bdir), now()),
+    )
+    book_id = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()["id"]
+    files = _chapter_files(bdir)
+    conn.execute("DELETE FROM chapter_state WHERE book_id=?", (book_id,))
+    for chapter_no, title, status, version in _scan_chapters(bdir, files):
+        paths = files[chapter_no]
+        body_fm = _read_fm(paths.get("正文"))
+        imported = int(body_fm.get("imported") is True)
+        conn.execute(
+            """INSERT INTO chapters (book_id, no, title, status, current_version, imported, updated_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(book_id, no) DO UPDATE SET
+                 title=excluded.title, current_version=excluded.current_version,
+                 status=excluded.status, imported=excluded.imported, prev_status=NULL,
+                 state_revision=chapters.state_revision+1, updated_at=excluded.updated_at""",
+            (book_id, chapter_no, title, status, version, imported, now()),
+        )
+        _restore_chapter_state(conn, book_id, chapter_no, paths.get("记忆卡"))
+    # 不使用超长 IN 参数列表，千章以上的书也能重建；运行历史没有章节级联关系。
+    for row in conn.execute("SELECT no FROM chapters WHERE book_id=?", (book_id,)).fetchall():
+        if row["no"] not in files:
+            conn.execute("DELETE FROM chapters WHERE book_id=? AND no=?", (book_id, row["no"]))
+    return len(files)
+
+
+def _chapter_files(bdir: Path) -> dict[int, dict[str, Path]]:
+    """只扫描数字_细纲/正文/记忆卡.md（规格01 §1），排除半成品及备份。"""
+    found: dict[int, dict[str, Path]] = {}
+    for p in sorted((bdir / "chapters").glob("*.md")):
+        m = re.fullmatch(r"([0-9]+)_(细纲|正文|记忆卡)\.md", p.name)
+        if m and p.is_file():
+            found.setdefault(int(m[1]), {})[m[2]] = p
+    return found
+
+
+def _read_fm(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {}
+    try:
+        return FM.read_file(path)[0]
+    except (OSError, ValueError, FM.FrontmatterError):
+        return {}
+
+
+def _scan_chapters(bdir: Path, files: dict[int, dict[str, Path]] | None = None
+                   ) -> Iterator[tuple[int, str, str, int]]:
+    files = _chapter_files(bdir) if files is None else files
+    for chapter_no, paths in sorted(files.items()):
+        outline_fm = _read_fm(paths.get("细纲"))
+        body_fm = _read_fm(paths.get("正文"))
+        title = str(outline_fm.get("title") or body_fm.get("title") or "")
         try:
-            nos.add(int(f.name.split("_", 1)[0]))
-        except ValueError:
-            continue
-    for chapter_no in sorted(nos):
-        title = ""
-        version = 1
-        outline_p = bdir / "chapters" / f"{chapter_no:03d}_细纲.md"
-        if outline_p.exists():
-            try:
-                fm, _ = FM.parse(outline_p.read_text(encoding="utf-8"))
-                title = str(fm.get("title") or "")
-            except Exception:
-                pass
-        status = _derive_status(bdir, chapter_no)
-        body = chapters_dir / f"{chapter_no:03d}_正文.md"
-        if body.exists():
-            try:
-                fm, _ = FM.parse(body.read_text(encoding="utf-8"))
-                version = int(fm.get("version") or 1)
-            except Exception:
-                pass
-        yield chapter_no, title, status, version
+            version = int(body_fm.get("version") or 1)
+        except (TypeError, ValueError):
+            version = 1
+        yield chapter_no, title, _derive_status(bdir, chapter_no, paths), version
 
 
-def _derive_status(bdir: Path, chapter_no: int) -> str:
-    """备用：单章状态推导（供 _scan_chapters 之外的测试使用）。"""
-    outline = bdir / "chapters" / f"{chapter_no:03d}_细纲.md"
-    body = bdir / "chapters" / f"{chapter_no:03d}_正文.md"
-    if not outline.exists():
-        return "awaiting_outline"
-    try:
-        fm, _ = FM.parse(outline.read_text(encoding="utf-8"))
-        if not fm.get("confirmed"):
-            return "outline_draft"
-    except Exception:
+def _derive_status(bdir: Path, chapter_no: int, paths: dict[str, Path] | None = None) -> str:
+    """从文件证据恢复状态（规格01 §4、规格05 F-08）；导入章不要求伪造细纲。"""
+    paths = _chapter_files(bdir).get(chapter_no, {}) if paths is None else paths
+    body_fm = _read_fm(paths.get("正文"))
+    if body_fm.get("status") == "final":
+        return "finalized"
+    if body_fm.get("imported") is True:
+        return "pending_finalize"
+    if "细纲" not in paths:
+        return "human_review" if "正文" in paths else "awaiting_outline"
+    if not _read_fm(paths["细纲"]).get("confirmed"):
         return "outline_draft"
-    if not body.exists():
+    if "正文" not in paths:
         return "outline_locked"
+    return "mech_check" if body_fm else "human_review"
+
+
+def _restore_chapter_state(conn: sqlite3.Connection, book_id: int, chapter_no: int,
+                           memory_path: Path | None) -> None:
+    """从有效记忆卡恢复结构化状态（规格01 §2.9/§5.4、规格05 F-05），不重写档案。"""
+    from . import chapters
+
+    if memory_path is None:
+        return
     try:
-        fm, _ = FM.parse(body.read_text(encoding="utf-8"))
-        return "finalized" if fm.get("status") == "final" else "mech_check"
-    except Exception:
-        return "human_review"
+        fm, _ = FM.read_file(memory_path)
+        chapters.validate_memory(fm)
+        if fm["chapter_no"] != chapter_no:
+            raise ValueError("记忆卡章号与文件名不一致")
+    except (OSError, ValueError, FM.FrontmatterError) as e:
+        logging.getLogger(__name__).warning("跳过无效记忆卡 %s: %s", memory_path, e)
+        return
+
+    def text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple)):
+            return "、".join(str(v) for v in value if str(v).strip())
+        return str(value).strip()
+
+    entries = fm.get("state_delta")
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        character = entry.get("character") or entry.get("name")
+        if not isinstance(character, str) or not character.strip():
+            continue
+        conn.execute(
+            """INSERT OR REPLACE INTO chapter_state
+               (book_id, chapter_no, character, location, physical, mental, power_level,
+                arc_stage, knowledge_json, goals_json, delta_json, fingerprint, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (book_id, chapter_no, character.strip(),
+             *(text(entry.get(k)) for k in ("location", "physical", "mental", "power_level", "arc_stage")),
+             json.dumps(entry["knowledge"], ensure_ascii=False) if entry.get("knowledge") is not None else None,
+             json.dumps(entry["goals"], ensure_ascii=False) if entry.get("goals") is not None else None,
+             json.dumps(entry, ensure_ascii=False), str(fm.get("source_fingerprint") or ""), now()),
+        )
 
 
 def set_imported(*, book_id: int, chapter_no: int) -> None:

@@ -8,6 +8,7 @@ export interface BookCard {
   platform?: string
   status?: string
   author?: string
+  external?: boolean
   [k: string]: unknown
 }
 
@@ -169,6 +170,18 @@ export interface TimelineData {
   released: TimelineRow[]
   issues: MechHit[]
   path: string
+  fingerprint?: string
+}
+
+/** 状态卡提议须人工确认后才进入已确认档案（规格05 C-05）。 */
+export interface StateData {
+  content: string
+  path: string
+  rows: number
+  proposed_content: string
+  proposed_fingerprint: string | null
+  accepted_fingerprint: string | null
+  proposed_stale: boolean
 }
 
 export interface AttachDetected {
@@ -212,7 +225,7 @@ export interface ImportPreview {
 export interface WorkbenchData {
   no: number
   status: string
-  row: { current_version: number; [k: string]: unknown } | null
+  row: { current_version: number; state_revision: number; [k: string]: unknown } | null
   outline: OutlineContract | null
   prose: Prose | null
   mech: MechReport | null

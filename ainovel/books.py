@@ -26,6 +26,14 @@ META_SCHEMA: FM.Schema = {
 
 BIBLE_SECTIONS = ["基础设定", "力量体系", "势力格局", "历史脉络", "隐藏规则", "术语表", "日常细节"]
 
+DEFAULT_MODEL_STAGES: dict[str, str] = {
+    "plan": "deepseek-chat",
+    "prose": "gemini-2.5-pro",
+    "polish": "gemini-2.5-pro",
+    "review": "deepseek-chat",
+    "longctx": "gemini-2.5-pro",
+}
+
 
 def create_book(
     name: str,
@@ -42,6 +50,10 @@ def create_book(
     bdir = book_dir(name)
     if bdir.exists():
         raise FileExistsError(f"书已存在: {name}")
+    with db.tx() as conn:
+        row = conn.execute("SELECT path, detached FROM books WHERE name=?", (name,)).fetchone()
+    if row and (row["detached"] or Path(row["path"]).resolve() != bdir.resolve()):
+        raise ValueError(f"书名保留着既有历史，请重新挂载原目录或使用其他书名: {name}")
     word_range = chapter_word_range or [2200, 2800]
     bdir.mkdir(parents=True)
     (bdir / "characters").mkdir()
@@ -64,13 +76,7 @@ def create_book(
 
     config = {
         "genre_template": genre_template,
-        "model_stages": model_stages or {
-            "plan": "deepseek-chat",
-            "prose": "gemini-2.5-pro",
-            "polish": "gemini-2.5-pro",
-            "review": "deepseek-chat",
-            "longctx": "gemini-2.5-pro",
-        },
+        "model_stages": dict(model_stages or DEFAULT_MODEL_STAGES),
         "chapter_word_range": word_range,
         "review_fix_max_rounds": 2,
         "assembly_budget_overrides": {},
@@ -140,6 +146,10 @@ def delete_book(name: str) -> None:
     if name in attached_books():
         raise ValueError(f"{name} 是外挂书，不能删除文件；请用『摘除』（只从书架移除）")
     bdir = book_dir(name)
+    with db.tx() as conn:
+        row = conn.execute("SELECT path, detached FROM books WHERE name=?", (name,)).fetchone()
+    if row and (row["detached"] or Path(row["path"]).resolve() != bdir.resolve()):
+        raise ValueError(f"书名保留着既有历史，不能通过删除同名内置目录清掉外挂历史: {name}")
     if not bdir.exists():
         raise FileNotFoundError(name)
     if bdir.parent != books_dir():
@@ -187,15 +197,21 @@ def save_config(name: str, cfg: dict[str, Any]) -> None:
 
 
 def book_id(name: str) -> int:
+    """取得活动书 ID（规格05 F-07）；摘除行只保留历史，不可被普通接口复活。"""
+    bdir = book_dir(name)
     with db.tx() as conn:
-        row = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
-    if row is None:
-        # 兼容：books 表缺行时自动补（文件为准）
-        with db.tx() as conn:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO books (name, path, created_at) VALUES (?,?,?)",
-                (name, str(book_dir(name)), db.now()),
-            )
-            row2 = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
-        return row2["id"]
-    return row["id"]
+        row = conn.execute("SELECT id, path, detached FROM books WHERE name=?", (name,)).fetchone()
+        if row is not None:
+            if row["detached"]:
+                raise FileNotFoundError(f"书已从书架摘除: {name}")
+            if Path(row["path"]).resolve() != bdir.resolve():
+                raise ValueError(f"书名对应的路径与历史不一致: {name}")
+            return row["id"]
+        if not bdir.is_dir():
+            raise FileNotFoundError(name)
+        # 文件为准：删库后允许活动书自动补行。
+        conn.execute(
+            "INSERT INTO books (name, path, created_at) VALUES (?,?,?)",
+            (name, str(bdir), db.now()),
+        )
+        return conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()["id"]

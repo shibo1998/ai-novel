@@ -4,7 +4,15 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { attachBook, commitImport, createBook, deleteBook, listBooks, previewImport } from '@/api'
+import {
+  attachBook,
+  commitImport,
+  createBook,
+  deleteBook,
+  detachBook,
+  listBooks,
+  previewImport,
+} from '@/api'
 import type { AttachResult, BookCard, ImportPreview } from '@/api/types'
 import { useBookStore } from '@/stores/book'
 
@@ -121,20 +129,26 @@ async function create(): Promise<void> {
   }
 }
 
-async function del(name: string): Promise<void> {
+async function del(book: BookCard): Promise<void> {
+  const { name, external } = book
   try {
     await ElMessageBox.confirm(
-      `删除《${name}》将删除 books/${name}/ 整个目录（含全部章节与档案），不可恢复。确认？`,
-      '删除书',
+      external
+        ? `摘除《${name}》只解除书架挂载，不删除外部目录及其中任何章节、档案文件。确认？`
+        : `删除《${name}》将删除 books/${name}/ 整个目录（含全部章节与档案），不可恢复。确认？`,
+      external ? '摘除外挂书' : '删除书',
       { type: 'warning' },
     )
-    await ElMessageBox.confirm(`再次确认：真的删除《${name}》？`, '删除书', { type: 'warning' })
+    if (!external) {
+      await ElMessageBox.confirm(`再次确认：真的删除《${name}》？`, '删除书', { type: 'warning' })
+    }
   } catch {
     return // 用户取消
   }
   try {
-    await deleteBook(name)
-    ElMessage.success('已删除')
+    if (external) await detachBook(name)
+    else await deleteBook(name)
+    ElMessage.success(external ? '已摘除，外部文件未删除' : '已删除')
     if (store.currentBook === name) store.clearBook()
     await load()
   } catch {
@@ -291,7 +305,9 @@ async function del(name: string): Promise<void> {
       </div>
       <div class="mt-2 flex gap-2">
         <el-button type="primary" @click="open(b.name)">打开</el-button>
-        <el-button type="danger" plain @click="del(b.name)">删除</el-button>
+        <el-button type="danger" plain @click="del(b)">{{
+          b.external ? '摘除' : '删除'
+        }}</el-button>
       </div>
     </div>
   </div>

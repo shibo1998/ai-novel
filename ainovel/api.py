@@ -19,6 +19,7 @@ from . import (assembler, bible, books, chapters, characters, conflicts, db,
                fts, llm, mechcheck, outline, pipeline, prompts, settings,
                statemachine)
 from .paths import book_dir, project_root
+from .operations import BusyError, serialized
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,18 @@ async def _lifespan(_app: FastAPI):
 app = FastAPI(title="AI 网文工作台", lifespan=_lifespan)
 
 
+@app.exception_handler(BusyError)
+async def _busy_handler(request: Request, exc: BusyError) -> JSONResponse:
+    """（规格05 C-02）重复写请求返回冲突，不让客户端误以为内部错误。"""
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(ValueError)
+async def _input_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    """（规格05 C-02）互斥入口的路径/参数校验失败同样返回 400。"""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
 @app.exception_handler(Exception)
 async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """未处理异常统一兜底：服务端留全量堆栈日志，前端只拿笼统提示（不泄内部细节）。"""
@@ -51,6 +64,8 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 
 def _err(e: Exception, code: int = 400) -> HTTPException:
     logger.warning("请求处理失败: %s", e)
+    if isinstance(e, BusyError) or (isinstance(e, statemachine.StateError) and "并发" in str(e)):
+        code = 409
     return HTTPException(status_code=code, detail=str(e))
 
 
@@ -65,7 +80,10 @@ def health():
 
 @app.post("/api/db/rebuild")
 def rebuild():
-    return db.rebuild()
+    from .operations import maintenance
+
+    with maintenance():
+        return db.rebuild()
 
 
 @app.get("/api/fts/mode")
@@ -177,10 +195,12 @@ class DetachPayload(BaseModel):
 @app.post("/api/books/attach")
 def attach_book(payload: AttachPayload):
     """挂载已存在的书稿目录（原地接管，不搬不复制）。"""
+    from .operations import maintenance
     from . import attach as attach_mod
 
     try:
-        return attach_mod.attach(payload.name, payload.path, scaffold=payload.scaffold)
+        with maintenance():
+            return attach_mod.attach(payload.name, payload.path, scaffold=payload.scaffold)
     except attach_mod.AttachError as e:
         raise _err(e, 400)
     except Exception as e:
@@ -188,6 +208,7 @@ def attach_book(payload: AttachPayload):
 
 
 @app.post("/api/books/{book}/detach")
+@serialized
 def detach_book(book: str, payload: DetachPayload | None = None):
     from . import attach as attach_mod
 
@@ -198,6 +219,7 @@ def detach_book(book: str, payload: DetachPayload | None = None):
 
 
 @app.delete("/api/books/{book}")
+@serialized
 def delete_book(book: str):
     try:
         books.delete_book(book)
@@ -242,6 +264,7 @@ def get_config(book: str):
 
 
 @app.put("/api/books/{book}/config")
+@serialized
 def put_config(book: str, payload: dict):
     cfg = books.load_config(book)
     cfg.update(payload)
@@ -255,6 +278,7 @@ def get_meta(book: str):
 
 
 @app.put("/api/books/{book}/meta")
+@serialized
 def put_meta(book: str, payload: dict):
     body = payload.pop("_body", None)
     try:
@@ -279,6 +303,7 @@ def get_bible(book: str):
 
 
 @app.put("/api/books/{book}/bible")
+@serialized
 def put_bible(book: str, payload: dict):
     try:
         bible.write(book, payload)
@@ -301,6 +326,7 @@ def get_character(book: str, name: str):
 
 
 @app.put("/api/books/{book}/characters/{name}")
+@serialized
 def put_character(book: str, name: str, payload: dict):
     body = payload.pop("_body", None)
     try:
@@ -312,6 +338,7 @@ def put_character(book: str, name: str, payload: dict):
 
 
 @app.post("/api/books/{book}/characters")
+@serialized
 def post_character(book: str, payload: dict):
     try:
         characters.create(book, payload["name"], role=payload.get("role", "龙套"))
@@ -326,6 +353,7 @@ def get_outline(book: str):
 
 
 @app.put("/api/books/{book}/outline")
+@serialized
 def put_outline(book: str, payload: dict):
     """保存大纲（规格01 §2.4）。
 
@@ -366,6 +394,7 @@ def get_pp_overdue(book: str, chapter: int | None = None):
 
 
 @app.put("/api/books/{book}/plot_points")
+@serialized
 def put_pp(book: str, payload: dict):
     rows = payload.get("rows", [])
     old = outline.read_plot_points(book)
@@ -382,6 +411,7 @@ def get_locations(book: str):
 
 
 @app.put("/api/books/{book}/locations")
+@serialized
 def put_locations(book: str, payload: LocationPayload):
     """整表保存地点档案（规格01 §2.6 / 规格04 §1"地点档案可导航可编辑"）。
 
@@ -444,6 +474,7 @@ class AdoptPayload(BaseModel):
 
 
 @app.post("/api/books/{book}/adopt/bible")
+@serialized
 def adopt_bible(book: str, payload: AdoptPayload):
     """合并式采纳：G1 整本或 G2 单节都只更新出现的节，其余保留。"""
     incoming = bible._parse_sections(payload.content)
@@ -462,6 +493,7 @@ def adopt_bible(book: str, payload: AdoptPayload):
 
 
 @app.post("/api/books/{book}/adopt/outline")
+@serialized
 def adopt_outline(book: str, payload: AdoptPayload):
     """解析 G5 输出 → OUTLINE.md + PLOT_POINTS.md（伏笔编号自动转 FO-xxx）。
 
@@ -591,6 +623,7 @@ def _merge_foreshadows(
 
 
 @app.post("/api/books/{book}/adopt/characters")
+@serialized
 def adopt_characters(book: str, payload: AdoptPayload):
     """解析 G3/G4 输出（===角色:<名>=== 分卡）→ 建角色档案 + 关系网合并写回。
 
@@ -746,6 +779,7 @@ class OutlineEditPayload(BaseModel):
 
 
 @app.put("/api/books/{book}/chapters/{no}/outline")
+@serialized
 def edit_outline_file(book: str, no: int, payload: OutlineEditPayload):
     st = statemachine.current_status(book, no)
     if st not in ("awaiting_outline", "outline_draft", "error"):
@@ -864,6 +898,7 @@ def discard_draft(book: str, no: int):
 
 
 @app.post("/api/books/{book}/chapters/{no}/mechcheck")
+@serialized
 def mech_check(book: str, no: int):
     try:
         # 人工复核后重新验：human_review 因机检阻断而落点，用户定点修复/手改正文
@@ -948,6 +983,7 @@ class FixPayload(BaseModel):
 
 
 @app.post("/api/books/{book}/chapters/{no}/fix")
+@serialized
 def manual_fix(book: str, no: int, payload: FixPayload | None = None):
     issues = (payload.issues if payload and payload.issues else None)
     if not issues:
@@ -1027,6 +1063,7 @@ def memory_rebuild_batch(book: str, payload: MemoryRebuildBatch | None = None):
 class TimelinePayload(BaseModel):
     truth: list[dict] | None = None
     released: list[dict] | None = None
+    expected_fingerprint: str | None = None
 
 
 @app.get("/api/books/{book}/timeline")
@@ -1040,16 +1077,21 @@ def get_timeline(book: str):
         raise _err(e)
     return {"exists": data["exists"], "truth": data["truth"],
             "released": data["released"], "issues": issues,
-            "path": str(timeline.timeline_path(book))}
+            "path": str(timeline.timeline_path(book)),
+            "fingerprint": mechcheck.fingerprint(data["raw"])}
 
 
 @app.put("/api/books/{book}/timeline")
+@serialized
 def put_timeline(book: str, payload: TimelinePayload):
     from . import timeline
 
     try:
         if payload.truth is None:
             raise ValueError("truth 不能为空（要清空请传空数组）")
+        current = timeline.read(book)
+        if payload.expected_fingerprint is not None and payload.expected_fingerprint != mechcheck.fingerprint(current["raw"]):
+            raise statemachine.StateError("并发修改：时间线已更新，请刷新后重试")
         timeline.write(book, payload.truth, payload.released)
         issues = timeline.validate(book)
     except Exception as e:
@@ -1062,11 +1104,36 @@ def get_state(book: str):
     from . import state as state_mod
 
     try:
-        return {"content": state_mod.read_state_md(book),
-                "path": str(state_mod.state_path(book)),
-                "rows": state_mod.count_rows(book)}
+        return state_mod.proposal_info(book)
     except Exception as e:
         raise _err(e)
+
+
+class StateApproval(BaseModel):
+    fingerprint: str
+    expected_fingerprint: str | None = None
+
+
+@app.post("/api/books/{book}/state/approve")
+def approve_state(book: str, payload: StateApproval):
+    from . import state as state_mod
+
+    try:
+        state_mod.approve_proposed(book, payload.fingerprint, payload.expected_fingerprint)
+    except (ValueError, FileNotFoundError, BusyError) as error:
+        raise _err(error, 409)
+    return {"ok": True}
+
+
+@app.post("/api/books/{book}/state/discard")
+def discard_state(book: str, payload: StateApproval):
+    from . import state as state_mod
+
+    try:
+        state_mod.discard_proposed(book, payload.fingerprint)
+    except (ValueError, BusyError) as error:
+        raise _err(error, 409)
+    return {"ok": True}
 
 
 class ImportPreviewPayload(BaseModel):
@@ -1110,17 +1177,26 @@ def import_upload(book: str, payload: ImportUploadPayload):
     from .paths import data_dir
 
     try:
+        from .paths import validate_book_name
+
+        validate_book_name(book)
         d = data_dir() / "imports"
         d.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r"[^\w\u4e00-\u9fff.\-]", "_", Path(payload.filename).name) or "upload.txt"
-        target = d / f"{book}-{safe}"
-        target.write_bytes(base64.b64decode(payload.content_b64))
+        target = (d / f"{book}-{safe}").resolve()
+        if target.parent != d.resolve():
+            raise ValueError("上传路径超出导入目录")
+        raw = base64.b64decode(payload.content_b64, validate=True)
+        if len(raw) > 32 * 1024 * 1024:
+            raise ValueError("上传文件不得超过 32MB")
+        target.write_bytes(raw)
         return importer.preview(target)
     except Exception as e:
         raise _err(e)
 
 
 @app.post("/api/books/{book}/import/novel/commit")
+@serialized
 def import_commit(book: str, payload: ImportCommitPayload):
     from . import importer
 
@@ -1146,6 +1222,7 @@ def finalize(book: str, no: int):
 class ProseEditPayload(BaseModel):
     """人工手改正文（规格03 §2.5 人工关三选项之一）。"""
     content: str
+    expected_revision: int | None = None
 
 
 # 允许手改正文的状态：正文已生成且仍是 draft。finalized 必须拒绝（规格03 §2.5）。
@@ -1154,6 +1231,7 @@ PROSE_EDITABLE_STATES = ("mech_check", "llm_review", "human_review",
 
 
 @app.put("/api/books/{book}/chapters/{no}/prose")
+@serialized
 def edit_prose(book: str, no: int, payload: ProseEditPayload):
     """人工手改正文（规格03 §2.5 人工关三选项之一）。
 
@@ -1178,14 +1256,13 @@ def edit_prose(book: str, no: int, payload: ProseEditPayload):
     fm["word_count"] = mechcheck.count_words(body)
     fm["status"] = "draft"
     try:
-        chapters.write_prose(book, no, fm, body)
+        chapters.write_prose(book, no, fm, body, expected_revision=payload.expected_revision)
     except Exception as e:
         raise _err(e)
-    # 手改正文后必须重新过机械检查（P1 审计：原实现不推进状态，
-    # 于是改完就能直接定稿，M-01~M-11 被绕过）。仅 pending_finalize 需要回退——
-    # 其余可手改状态本来就要重新跑机检，不额外搬动状态机。
-    if st == "pending_finalize":
-        statemachine.transition(book, no, "recheck")  # pending_finalize → mech_check
+    # write_prose 已统一失效结论；缺少旧指纹时也必须回退，不能复用旧状态。
+    current = statemachine.current_status(book, no)
+    if current in ("pending_finalize", "llm_review"):
+        statemachine.transition(book, no, "recheck")
     return {"ok": True, "word_count": fm["word_count"], "status": statemachine.current_status(book, no)}
 
 
@@ -1211,6 +1288,7 @@ def correct_prose_endpoint(book: str, no: int, payload: ProseCorrectPayload):
 
 
 @app.post("/api/books/{book}/chapters/{no}/unlock")
+@serialized
 def unlock_chapter(book: str, no: int):
     """定稿返工：finalized → pending_finalize（规格01 §4）。
 
@@ -1271,6 +1349,7 @@ def rewrite(book: str, no: int, payload: RewritePayload | None = None):
 
 
 @app.post("/api/books/{book}/chapters/{no}/retry")
+@serialized
 def retry(book: str, no: int):
     try:
         st = statemachine.transition(book, no, "retry")
@@ -1337,6 +1416,7 @@ class TextPayload(BaseModel):
 
 
 @app.put("/api/books/{book}/style/corpus")
+@serialized
 def put_corpus(book: str, payload: TextPayload):
     from . import style as st
 
@@ -1345,6 +1425,7 @@ def put_corpus(book: str, payload: TextPayload):
 
 
 @app.put("/api/books/{book}/style/card")
+@serialized
 def put_card(book: str, payload: TextPayload):
     from . import style as st
 
@@ -1373,6 +1454,7 @@ class StyleToggle(BaseModel):
 
 
 @app.put("/api/books/{book}/style/enabled")
+@serialized
 def put_style_enabled(book: str, payload: StyleToggle):
     from . import style as st
 

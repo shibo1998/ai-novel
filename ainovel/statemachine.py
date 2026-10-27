@@ -30,6 +30,7 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     ("lint_fix", "recheck"): "mech_check",
     ("mech_check", "blocked_after_fix"): "human_review",
     ("mech_check", "pass"): "llm_review",
+    ("mech_check", "pass_imported"): "pending_finalize",
     ("llm_review", "fix"): "targeted_fix",
     ("targeted_fix", "recheck"): "mech_check",
     ("llm_review", "pass"): "pending_finalize",
@@ -48,6 +49,7 @@ TRANSITIONS: dict[tuple[str, str], str] = {
     # 人工手改正文后必须重新过机械检查：否则改完就能直接定稿，
     # 机检（M-01~M-11）等于被绕过（P1 审计：手改正文不推进状态的副作用）。
     ("pending_finalize", "recheck"): "mech_check",
+    ("llm_review", "recheck"): "mech_check",
     ("finalized", "rewrite"): "generating",
     # 救援出边（规格03 §3：仍败 → error 状态，UI 可一键重试）
     # 正文生成中途异常必须可落 error，否则该章永久卡死在 generating。
@@ -111,7 +113,7 @@ def transition(book: str, no: int, event: str) -> str:
             if target is None:
                 raise StateError(f"第{no}章状态 {cur} 不允许事件 {event}")
         conn.execute(
-            "UPDATE chapters SET status=?, updated_at=? WHERE book_id=? AND no=?",
+            "UPDATE chapters SET status=?, state_revision=state_revision+1, updated_at=? WHERE book_id=? AND no=?",
             (target, db.now(), book_id, no),
         )
     return target
@@ -194,3 +196,19 @@ def set_status_direct(book: str, no: int, status: str, *, prev_status: str | Non
         conn.execute(
             "UPDATE chapters SET status=?, prev_status=?, updated_at=? WHERE book_id=? AND no=?",
             (status, prev_status, db.now(), book_id, no))
+
+
+def bump_revision(book: str, no: int, expected: int | None = None) -> int:
+    """（规格05 C-02）原子比较修订号；旧页面不得静默覆盖新正文。"""
+    from . import books
+
+    ensure_chapter_row(book, no)
+    with db.tx() as conn:
+        row = conn.execute("SELECT state_revision FROM chapters WHERE book_id=? AND no=?",
+                           (books.book_id(book), no)).fetchone()
+        current = int(row["state_revision"])
+        if expected is not None and expected != current:
+            raise StateError(f"并发修改：本章修订号已从 {expected} 变为 {current}，请刷新后重试")
+        conn.execute("UPDATE chapters SET state_revision=state_revision+1 WHERE book_id=? AND no=?",
+                     (books.book_id(book), no))
+    return current + 1

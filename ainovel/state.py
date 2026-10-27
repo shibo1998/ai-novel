@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 from . import atomic, books, chapters, db, outline, summaries
 from .paths import book_dir
+from .operations import serialized
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +231,11 @@ def rebuild_state_md(book: str, upto_chapter: int | None = None) -> str:
     lines.append("")
 
     text = _enforce_size("\n".join(lines), book)
-    atomic.write_text(state_path(book), text)
+    atomic.write_text(proposed_path(book), text)
+    with db.tx() as conn:
+        confirmed_rows = [dict(r) for r in conn.execute("SELECT * FROM chapter_state WHERE book_id=? AND chapter_no<=? ORDER BY chapter_no",
+                                                       (books.book_id(book), last_no))]
+    atomic.write_text(proposed_meta_path(book), json.dumps({"sources": _source_digest(book), "rows": confirmed_rows}, ensure_ascii=False))
     return text
 
 
@@ -412,3 +417,93 @@ def _alive_label(status: dict[str, Any]) -> str:
     if status.get("状态") in ("死亡", "已死"):
         return "死亡"
     return "存活"
+
+
+def proposed_path(book: str):
+    """（规格05 C-05）待人工确认的状态卡，不覆盖已确认文件。"""
+    return book_dir(book) / "STATE.proposed.md"
+
+
+def proposed_meta_path(book: str):
+    return book_dir(book) / "STATE.proposed.json"
+
+
+def _digest(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _source_digest(book: str) -> str:
+    root = book_dir(book)
+    paths = sorted((root / "chapters").glob("*_记忆卡.md")) + sorted((root / "chapters").glob("*_正文.md"))
+    paths += [root / "PLOT_POINTS.md"]
+    with db.tx() as conn:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM chapter_state WHERE book_id=? ORDER BY chapter_no,character",
+                                             (books.book_id(book),))]
+    logical = [{k: v for k, v in row.items() if k not in ("id", "book_id", "created_at")} for row in rows]
+    files = "\n".join(f"{p.name}:{_digest(p.read_text(encoding='utf-8'))}" for p in paths if p.exists())
+    return _digest(files + json.dumps(logical, ensure_ascii=False, sort_keys=True))
+
+
+def proposal_info(book: str) -> dict[str, Any]:
+    """（规格05 C-05）只读提议与已确认内容及来源是否过期。"""
+    accepted = read_state_md(book)
+    p = proposed_path(book)
+    proposed = p.read_text(encoding="utf-8") if p.exists() else ""
+    stale = False
+    if proposed:
+        try:
+            meta = json.loads(proposed_meta_path(book).read_text(encoding="utf-8"))
+            stale = meta.get("sources") != _source_digest(book)
+        except (OSError, ValueError):
+            stale = True
+    return {"content": accepted, "path": str(state_path(book)), "rows": count_rows(book),
+            "proposed_content": proposed, "proposed_fingerprint": _digest(proposed) if proposed else None,
+            "accepted_fingerprint": _digest(accepted) if accepted else None, "proposed_stale": stale}
+
+
+@serialized
+def approve_proposed(book: str, fingerprint: str | None = None,
+                     expected_fingerprint: str | None = None) -> None:
+    """（规格05 C-05）显式采纳且校验页面指纹，旧提议不得误覆盖新卡。"""
+    info = proposal_info(book)
+    if not info["proposed_content"]:
+        raise FileNotFoundError("没有待确认的状态卡提议")
+    if info["proposed_stale"]:
+        raise ValueError("提议来源已变化，请重新补做记忆卡生成提议")
+    if fingerprint is not None and fingerprint != info["proposed_fingerprint"]:
+        raise ValueError("提议已被更新，请刷新后重新确认")
+    if expected_fingerprint != info["accepted_fingerprint"]:
+        raise ValueError("已确认状态卡发生并发变化，请刷新后重新确认")
+    from .memory_commit import memory_commit
+
+    with memory_commit(book):
+        meta = json.loads(proposed_meta_path(book).read_text(encoding="utf-8"))
+        atomic.write_text(state_path(book), info["proposed_content"])
+        atomic.write_text(book_dir(book) / "STATE.accepted.json", json.dumps(meta["rows"], ensure_ascii=False))
+        proposed_path(book).unlink()
+        proposed_meta_path(book).unlink(missing_ok=True)
+
+
+@serialized
+def discard_proposed(book: str, fingerprint: str) -> None:
+    """（规格05 C-05）只能丢弃当前页面看过的提议。"""
+    info = proposal_info(book)
+    if fingerprint != info["proposed_fingerprint"]:
+        raise ValueError("提议已更新，请刷新后再丢弃")
+    proposed_path(book).unlink(missing_ok=True)
+    proposed_meta_path(book).unlink(missing_ok=True)
+
+
+def confirmed_map(book: str, chapter_no: int) -> dict[str, dict[str, Any]]:
+    """（规格05 C-05）装配只消费人工确认时保存的状态，不偷读未确认提议。"""
+    path = book_dir(book) / "STATE.accepted.json"
+    if not path.exists():
+        return {}
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    latest: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if int(row["chapter_no"]) <= chapter_no:
+            latest[row["character"]] = _row_to_dict(row)
+    return latest

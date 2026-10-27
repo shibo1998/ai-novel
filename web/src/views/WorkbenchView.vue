@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // 章节工作台（规格04 §2 核心页）：细纲 → 流式生成 → 机检 → 审校 → 人工关口/定稿 + 装配预览。
+import { isAxiosError } from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -136,6 +137,13 @@ async function viewSnapshot(version: number | null): Promise<void> {
 const proseDialog = ref(false)
 const proseEditText = ref('')
 const proseSaving = ref(false)
+// 修订号固定为打开编辑器时的值，刷新主数据不能悄悄绕过并发保护（规格05 C-02）。
+const proseEditRevision = ref<number>()
+const proseEditConflict = ref(false)
+const proseEditTarget = ref<{ book: string; no: number } | null>(null)
+watch([book, no], () => {
+  if (proseDialog.value) proseEditConflict.value = true
+})
 // 定稿章订正：每行「旧文 ==>> 新文」。逐条替换、旧文须唯一命中、总改动 ≤5%、强制理由。
 const correctDialog = ref(false)
 const correctText = ref('')
@@ -155,19 +163,35 @@ const canEditProse = computed(() =>
 )
 
 function openProseEdit(): void {
+  const revision = data.value?.row?.state_revision
+  if (revision === undefined) {
+    ElMessage.warning('章节修订号不可用，请刷新后重试')
+    return
+  }
+  proseEditRevision.value = revision
+  proseEditTarget.value = { book: book.value, no: no.value }
+  proseEditConflict.value = false
   proseEditText.value = data.value?.prose?._body ?? ''
   proseDialog.value = true
 }
 
 async function saveProseEdit(): Promise<void> {
+  if (proseSaving.value || proseEditRevision.value === undefined || proseEditConflict.value) return
+  const target = proseEditTarget.value
+  if (!target || target.book !== book.value || target.no !== no.value) {
+    proseEditConflict.value = true
+    ElMessage.warning('编辑目标已切换，请复制修改后关闭编辑框，在当前章重新打开')
+    return
+  }
   proseSaving.value = true
   try {
-    const r = await putProse(book.value, no.value, proseEditText.value)
-    ElMessage.success(`正文已保存，${r.word_count} 字`)
+    const r = await putProse(target.book, target.no, proseEditText.value, proseEditRevision.value)
+    ElMessage.success(`正文已保存，${r.word_count} 字；原检查结论已失效，请重新机检`)
     proseDialog.value = false
     await reload()
-  } catch {
-    // 拦截器已提示（含 finalized 拒绝）
+  } catch (e) {
+    proseEditConflict.value = isAxiosError(e) && e.response?.status === 409
+    // 拦截器已提示；冲突时保留编辑内容和原修订号，禁止直接重试覆盖。
   } finally {
     proseSaving.value = false
   }
@@ -618,7 +642,7 @@ async function review(): Promise<void> {
 async function fix(): Promise<void> {
   try {
     const r = await runFix(book.value, no.value)
-    ElMessage.success(`修复完成 ${r.word_count} 字`)
+    ElMessage.success(`修复完成 ${r.word_count} 字；原检查结论已失效，请重新跑机械检查`)
     await reload()
   } catch {
     // 拦截器已提示
@@ -628,7 +652,7 @@ async function fix(): Promise<void> {
 async function polish(): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      '整章润色（V2 去AI味 + V3 复核）：不改剧情人设，字数浮动>10%或机检阻断会自动丢弃。继续？',
+      '整章润色（V2 去AI味 + V3 复核）：不改剧情人设，字数浮动>10%或机检阻断会自动丢弃；采纳后必须重新机检。继续？',
       '整章润色',
       { type: 'warning' },
     )
@@ -639,7 +663,7 @@ async function polish(): Promise<void> {
     const r = await runPolish(book.value, no.value)
     if (r.ok) {
       ElMessage.success({
-        message: `润色完成：${r.word_count?.before}→${r.word_count?.after} 字，V3=${r.v3?.verdict}，改动 ${r.changes?.length ?? 0} 处`,
+        message: `润色完成：${r.word_count?.before}→${r.word_count?.after} 字，V3=${r.v3?.verdict}，改动 ${r.changes?.length ?? 0} 处；原检查结论已失效，请重新机检`,
         duration: 8000,
       })
     } else {
@@ -1220,16 +1244,26 @@ async function rewrite(): Promise<void> {
     <template #header>
       <span class="font-bold">人工编辑正文 · 第 {{ no }} 章</span>
       <span class="dim ml-2">
-        保存后 version 不变、status 保持 draft、word_count 由后端重算（规格03 §2.5）
+        保存后版本不变，原机检/审校结论失效，必须重新机检（规格05 F-01 / C-02）
       </span>
     </template>
+    <el-alert v-if="proseEditConflict" type="warning" :closable="false" show-icon class="mb-2">
+      章节已被其他操作更新，未覆盖服务器正文。请先复制保留本次修改，再关闭编辑框、刷新工作台并重新打开编辑。
+    </el-alert>
     <el-input v-model="proseEditText" type="textarea" :rows="24" class="mono" />
     <template #footer>
       <span class="dim mr-3">
         当前 {{ proseEditText.replace(/\s+/g, '').length }} 字（中文字数按非空白字符计）
       </span>
       <el-button @click="proseDialog = false">取消</el-button>
-      <el-button type="primary" :loading="proseSaving" @click="saveProseEdit">保存正文</el-button>
+      <el-button
+        type="primary"
+        :loading="proseSaving"
+        :disabled="proseEditConflict"
+        @click="saveProseEdit"
+      >
+        保存正文
+      </el-button>
     </template>
   </el-dialog>
 

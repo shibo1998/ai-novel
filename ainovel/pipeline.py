@@ -20,6 +20,8 @@ from typing import Any, Callable
 from . import (assembler, bible, books, chapters, characters, conflicts, db,
                fts, frontmatter as FM, llm, mechcheck, outline, prompts,
                settings, statemachine, summaries)
+from .memory_commit import memory_commit
+from .operations import serialized
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,7 @@ def _feedback_instruction(error: str) -> str:
 # 1. 细纲生成与确认关（规格03 §2.1）
 # ---------------------------------------------------------------------------
 
+@serialized
 def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
     conflicts.guard(book)  # 台账冲突队列非空 → 禁止开下一章细纲
     statemachine.ensure_chapter_row(book, no)
@@ -339,6 +342,7 @@ def _validate_contract_ops(fm2: dict[str, Any], book: str, prev_hook_type: str) 
             raise PipelineError(f"{fo_id} 状态为 {row.get('状态')}，pay 要求 building")
 
 
+@serialized
 def confirm_outline(book: str, no: int) -> None:
     chapters.confirm_outline(book, no)
     statemachine.transition(book, no, "confirm")
@@ -435,6 +439,7 @@ def _timeline_constraints(book: str, no: int) -> str:
         return "（未建立时间线）"
 
 
+@serialized
 def generate_prose(book: str, no: int, client=None,
                    stream_cb: Callable[[str], None] | None = None,
                    prompt_id: str | None = None) -> dict[str, Any]:
@@ -446,12 +451,13 @@ def generate_prose(book: str, no: int, client=None,
     否则该章会永久卡死在 generating（generating 无 retry 出边，UI 无救援入口）。
     """
     st = statemachine.current_status(book, no)
+    if st == "error":
+        statemachine.transition(book, no, "retry")
+        st = statemachine.current_status(book, no)
     if st == "outline_locked":
         statemachine.transition(book, no, "start_generate")
-    elif st not in ("generating", "error"):
+    elif st != "generating":
         raise statemachine.StateError(f"第{no}章状态 {st} 不能生成正文")
-    elif st == "error":
-        statemachine.transition(book, no, "retry")  # error --retry--> 原状态（→generating）
 
     try:
         return _generate_prose_inner(book, no, client=client, stream_cb=stream_cb,
@@ -501,6 +507,7 @@ def _clean_draft_text(text: str) -> str:
     return t.strip()
 
 
+@serialized
 def adopt_draft(book: str, no: int, force: bool = False) -> dict[str, Any]:
     """把半成品草稿采纳为正式正文，然后**照常过机检**。
 
@@ -548,6 +555,7 @@ def adopt_draft(book: str, no: int, force: bool = False) -> dict[str, Any]:
             "status": statemachine.current_status(book, no)}
 
 
+@serialized
 def discard_draft(book: str, no: int) -> dict[str, Any]:
     chapters.clear_draft(book, no)
     return {"ok": True, "status": statemachine.current_status(book, no)}
@@ -809,6 +817,14 @@ def _better(a: str, b: str, wr: list[int]) -> bool:
 # 4. 机械检查 + 自动修复（规格03 §2.4）
 # ---------------------------------------------------------------------------
 
+def _pass_mechanical_gate(book: str, no: int) -> None:
+    """（规格05 F-08）历史导入章无细纲，不伪造合同，不强迫走 G6/V1。"""
+    prose = chapters.read_prose(book, no)
+    event = "pass_imported" if prose.get("imported") and not chapters.outline_path(book, no).exists() else "pass"
+    statemachine.transition(book, no, event)
+
+
+@serialized
 def run_mech_check(book: str, no: int, client=None,
                    auto_fix: bool = True) -> mechcheck.CheckResult:
     """机械检查（规格05 §2.5）：返回带生效状态的结论，三态驱动流转。
@@ -840,7 +856,7 @@ def run_mech_check(book: str, no: int, client=None,
         statemachine.transition(book, no, "blocked_after_fix")  # → human_review
         return res
     if res.verdict == "pass":
-        statemachine.transition(book, no, "pass")  # → llm_review
+        _pass_mechanical_gate(book, no)
         return res
 
     hits = res.hits
@@ -858,7 +874,7 @@ def run_mech_check(book: str, no: int, client=None,
             res = _check(book, no, wr)
             _record(res)
             if res.verdict == "pass":
-                statemachine.transition(book, no, "pass")  # → llm_review
+                _pass_mechanical_gate(book, no)
                 return res
             hits = res.hits
 
@@ -883,7 +899,7 @@ def run_mech_check(book: str, no: int, client=None,
     if res2.verdict != "pass":
         statemachine.transition(book, no, "blocked_after_fix")  # 仍有阻断/未生效 → human_review
     else:
-        statemachine.transition(book, no, "pass")  # → llm_review
+        _pass_mechanical_gate(book, no)
     return res2
 
 
@@ -955,25 +971,25 @@ def format_issues(issues: list[Any]) -> str:
 
 
 def _assert_not_finalized(book: str, no: int, action: str) -> None:
-    """定稿守卫：已定稿章节不得被静默改写（规格01 §4、规格03 §2.6、AGENTS.md 红线）。
-
-    定稿即写快照，快照是重写/回滚的唯一依据。若定稿后正文还能被 /fix、/polish、
-    /prose 改写，就会出现「正文已变、status 仍 final、快照未变」的三方不一致，
-    导出的正文与快照对不上。要返工必须先显式解锁（finalized --unlock--> pending_finalize）。
-    """
+    """（规格03 §2.6）状态机和正文文件双重保护已定稿稿件。"""
     st = statemachine.current_status(book, no)
-    if st == "finalized":
-        raise statemachine.StateError(
-            f"第{no}章已定稿，不能{action}；如需返工请先解锁（定稿后正文受快照保护）"
-        )
+    prose = chapters.read_prose(book, no)
+    if st == "finalized" or prose.get("status") == "final":
+        raise statemachine.StateError(f"第{no}章已定稿，不能{action}；请先解锁")
 
 
+@serialized
 def run_targeted_fix(book: str, no: int, issues: list[Any], client=None) -> str:
     _assert_not_finalized(book, no, "定向修复")
     prose = chapters.read_prose(book, no)
     old_body = prose["_body"]
     cfg = books.load_config(book)
     wr = cfg["chapter_word_range"]
+    before = _check(book, no, wr)
+    if before.verdict == "not_effective":
+        raise PipelineError("机检未完整执行，先修复规则配置再调用 AI 修复")
+    if mechcheck.has_sensitive(before.hits):
+        raise PipelineError("命中敏感词红线，禁止自动改写，请人工处理")
     variables = {
         "正文": old_body,
         "问题清单": format_issues(issues),
@@ -1070,10 +1086,8 @@ def _overreach(old: str, new: str, issues: list[Any]) -> bool:
     两个坑（2026-10-26 实测第 12 章修复时暴露）：
     1. 机检存进 review_records 的 dict 带的是 `line`，原实现只读 `quote`，
        于是机检的 8 处具体行一处都没被保护，全章都算「未涉及问题句段」。
-    2. M-01（字数超限）、M-06（感叹号密度）这类问题是**全章级**的（line=0），
-       天然要求通篇调整；按 10% 硬卡必然误杀，表现为「字数超 68 字的极小问题
-       永远修不好，只能整章重写」。存在全章级问题时阈值放宽到 35%，
-       仍然挡得住真正的整章重写。
+    2. 全章级问题无法精确定位时仍保留 10% 上限；字数调整使用独立 W6 通道，
+       不能借全章级问题放宽未涉及句段的越权改动阈值。
     """
     import difflib
 
@@ -1097,18 +1111,14 @@ def _overreach(old: str, new: str, issues: list[Any]) -> bool:
         elif isinstance(it, dict):
             line_no = it.get("line")
             if line_no is None:
-                # LLM 审校（P-V1）不提供行号：location 是「全章多处」「章中段落」
-                # 这类自然语言，quote 还是「A / B / C」跨多段拼接的串。
-                # 程序无法可靠划定"哪些行不该动"，一律按全章级处理（阈值 35%）；
-                # 同时尽力把 quote 里能对上的片段保护起来，减少可改范围。
-                # 否则 10% 硬卡会让"删掉 11 处多余的比喻"这种正常修复永远失败。
+                # 只按实际匹配的引用确定问题句段，所有重复命中都纳入范围。
+                # 无法定位时仍执行 10% 上限，不再把阈值放宽为 35%。
                 whole_chapter = True
                 q = str(it.get("quote") or "")
                 for frag in _split_quote(q):
                     for i, ln in enumerate(old_lines):
                         if frag in ln:
                             protect(i)
-                            break
             elif line_no > 0:
                 protect(line_no - 1)
             else:
@@ -1121,7 +1131,7 @@ def _overreach(old: str, new: str, issues: list[Any]) -> bool:
     changed_outside = sum(len(old_lines[i]) for i in range(len(old_lines))
                           if i not in matched and i not in protected)
     total = max(1, sum(len(l) for l in old_lines))
-    limit = 0.35 if whole_chapter else 0.10
+    limit = 0.10
     return changed_outside / total > limit
 
 
@@ -1296,6 +1306,38 @@ def _term_crosscheck(book: str, prose: str, contract: dict[str, Any],
 RUBRIC_DIMS = ("ai_flavor", "plot", "pacing", "prose", "hook")
 RUBRIC_FIX_THRESHOLD = 70  # 规格03 §6：任一维 <70 触发 fix
 
+def _validate_review(result: Any) -> dict[str, Any]:
+    """（规格02 P-V1）五维分数及举证必须完整，格式错误不得放行。"""
+    import math
+
+    if not isinstance(result, dict) or result.get("verdict") not in ("pass", "fix", "fail"):
+        raise llm.LLMError("审校 verdict 必须为 pass/fix/fail")
+    scores = result.get("scores")
+    if not isinstance(scores, dict):
+        raise llm.LLMError("审校缺少五维 scores")
+    for key in RUBRIC_DIMS:
+        value = scores.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
+            raise llm.LLMError(f"审校 {key} 必须是 0–100 的有限数字")
+    issues = result.get("issues")
+    if not isinstance(issues, list):
+        raise llm.LLMError("审校 issues 必须为数组")
+    for issue in issues:
+        if not isinstance(issue, dict) or issue.get("severity") not in ("blocking", "warning"):
+            raise llm.LLMError("审校问题 severity 非法")
+        if any(not isinstance(issue.get(k), str) or not issue[k].strip()
+               for k in ("category", "location", "quote", "description", "suggestion")):
+            raise llm.LLMError("审校问题缺少原文举证或建议")
+    return result
+
+
+def _assert_current_check(book: str, no: int, body: str, *, allow_exempt: bool = False) -> None:
+    """（规格05 P-3）审校/定稿只能使用当前正文的有效机检或人工豁免。"""
+    checked = db.get_check_status(book_id=books.book_id(book), chapter_no=no) or {}
+    allowed = ("pass", "exempt") if allow_exempt else ("pass",)
+    if checked.get("checked_status") not in allowed or checked.get("checked_fingerprint") != mechcheck.fingerprint(body):
+        raise statemachine.StateError(f"第{no}章机检未通过或已过期，请重新运行机检")
+
 
 def _enforce_rubric(result: dict[str, Any]) -> str:
     """程序强制 rubric 守门（规格02 P-V1 改造点5、规格03 §6）。
@@ -1304,6 +1346,11 @@ def _enforce_rubric(result: dict[str, Any]) -> str:
     verdict：模型若判 pass 却给出低分（放水/自相矛盾），程序直接放行到定稿。
     这里按分数与 blocking 问题重算 verdict，模型只能把结果判得更严、不能更松。
     """
+    try:
+        _validate_review(dict(result, issues=[]))
+    except llm.LLMError as error:
+        result["validation_error"] = str(error)
+        return "fail"
     declared = str(result.get("verdict") or "").strip().lower()
     scores = result.get("scores") or {}
     low = [f"{k}={scores.get(k)}" for k in RUBRIC_DIMS
@@ -1334,6 +1381,7 @@ def _enforce_rubric(result: dict[str, Any]) -> str:
     return declared
 
 
+@serialized
 def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
     st = statemachine.current_status(book, no)
     if st != "llm_review":
@@ -1345,6 +1393,7 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
     rounds = row["fix_rounds"] if row else 0
 
     prose = chapters.read_prose(book, no)
+    _assert_current_check(book, no, prose["_body"])
     contract = chapters.read_outline_contract(book, no)
     variables = {
         "系统段": assembler.render_system(book),
@@ -1367,13 +1416,11 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
         res, _p, _t = _call(book, no, "review", "V1", variables, client=client,
                             extra_instruction=feedback)
         try:
-            result = llm.extract_json(res.text)
-            if not isinstance(result, dict) or "verdict" not in result:
-                raise llm.LLMError("JSON 缺少 verdict 字段")
-            result.setdefault("scores", {})
-            result.setdefault("issues", [])
+            candidate = _validate_review(llm.extract_json(res.text))
+            result = candidate
             break
         except llm.LLMError as e:
+            result = None
             feedback = _feedback_instruction(str(e))
     if result is None:
         statemachine.mark_error(book, no, "V1 JSON 解析失败")
@@ -1390,21 +1437,17 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
                 "重新逐段排查：副词堆叠、重复句式、无信息量对话、概括式描写、情绪直白说出。\n"
                 "至少给出 3 条带原文引用的问题，并按真实水平重新打分。"))
         try:
-            second = llm.extract_json(res2.text)
-            if isinstance(second, dict) and "verdict" in second:
-                second.setdefault("scores", {})
-                second.setdefault("issues", [])
-                result = second
-                result["re_reviewed"] = True
+            second = _validate_review(llm.extract_json(res2.text))
+            result = second
+            result["re_reviewed"] = True
         except llm.LLMError:
             pass  # 复审解析失败则保留首轮结果
 
-    db.add_review(book_id=books.book_id(book), chapter_no=no, version=_version(book, no),
-                  kind="llm", scores=result.get("scores"), issues=result.get("issues"),
-                  verdict=result.get("verdict"))
-
     verdict = _enforce_rubric(result)
     result["verdict"] = verdict
+    db.add_review(book_id=books.book_id(book), chapter_no=no, version=_version(book, no),
+                  kind="llm", scores=result.get("scores"), issues=result.get("issues"),
+                  verdict=verdict, fingerprint=mechcheck.fingerprint(prose["_body"]))
     if verdict == "pass":
         statemachine.transition(book, no, "pass")  # → pending_finalize
         return result
@@ -1439,6 +1482,7 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
 # 5.5 整章润色（P-V2 去AI味 + P-V3 复核，M3；规格02 P-V2 改造点）
 # ---------------------------------------------------------------------------
 
+@serialized
 def polish(book: str, no: int, client=None) -> dict[str, Any]:
     """V2 整章润色：不改剧情人设；程序校验字数浮动≤10% + 机检全绿，否则丢弃。"""
     st = statemachine.current_status(book, no)
@@ -1449,6 +1493,13 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
     prose = chapters.read_prose(book, no)
     old_body = prose["_body"]
     old_wc = mechcheck.count_words(old_body)
+    _assert_not_finalized(book, no, "润色")
+    baseline = _check(book, no, wr)
+    if baseline.verdict == "not_effective":
+        return {"ok": False, "reason": "机检未完整执行，先修复规则配置再润色",
+                "ineffective": [i.to_dict() for i in baseline.ineffective]}
+    if mechcheck.has_sensitive(baseline.hits):
+        return {"ok": False, "reason": "命中敏感词红线，禁止自动改写，请人工处理"}
     banned = "\n".join(f"- {w}" for w in mechcheck.load_banned_words()
                        if w not in _lint_whitelist(book)) or "（词库为空）"
     variables = {
@@ -1466,11 +1517,16 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
     if old_wc and abs(new_wc - old_wc) / old_wc > 0.10:
         result.update(ok=False, reason=f"字数浮动 {abs(new_wc - old_wc) / old_wc:.0%} 超 ±10%，输出已丢弃")
         return result
-    blocks = [h.to_dict() for h in mechcheck.check(new_body, word_range=wr,
-                                                    whitelist=_lint_whitelist(book))
-              if h.level == "block"]
-    if blocks:
-        result.update(ok=False, reason="机械检查仍有阻断，输出已丢弃", blocks=blocks)
+    fidelity = _fidelity_error(old_body, new_body)
+    if fidelity:
+        result.update(ok=False, reason=f"保真校验失败：{fidelity}，输出已丢弃")
+        return result
+    checked = mechcheck.check_full(new_body, word_range=wr, whitelist=_lint_whitelist(book),
+                                   context={"has_state": False, "timeline_hits": timeline_validate(book, new_body)})
+    if checked.verdict != "pass":
+        result.update(ok=False, reason="完整机械检查未通过，输出已丢弃",
+                      blocks=[h.to_dict() for h in checked.blocks],
+                      ineffective=[i.to_dict() for i in checked.ineffective])
         return result
 
     # V3 AI味自检复核
@@ -1481,6 +1537,9 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
         v3 = llm.extract_json(res3.text)
     except llm.LLMError:
         v3 = {"clean": None, "verdict": "unknown", "new_issues": []}
+    if not isinstance(v3, dict) or v3.get("clean") is not True or v3.get("verdict") != "pass":
+        result.update(ok=False, reason="V3 未明确复核通过，保留原文", v3=v3)
+        return result
 
     fm = {k: v for k, v in prose.items() if not k.startswith("_")}
     fm["word_count"] = new_wc
@@ -1489,6 +1548,22 @@ def polish(book: str, no: int, client=None) -> dict[str, Any]:
                   kind="polish", issues=change_list, verdict=v3.get("verdict"))
     result.update(ok=True, v3=v3)
     return result
+
+
+def _fidelity_error(old: str, new: str) -> str | None:
+    """（规格05 C-01）限制长度、句末结构与四元字串骨架丢失，不替代语义人审。"""
+    original = re.sub(r"\s+", "", old)
+    candidate = re.sub(r"\s+", "", new)
+    if not original or not 0.55 <= len(candidate) / len(original) <= 1.9:
+        return "正文长度比例异常"
+    before = len(re.findall(r"[。！？!?]", original))
+    after = len(re.findall(r"[。！？!?]", candidate))
+    if before and after < before * 0.6:
+        return "句末标点数量锐减"
+    grams = {original[i:i + 4] for i in range(max(0, len(original) - 3))}
+    if grams and sum(gram in candidate for gram in grams) / len(grams) < 0.30:
+        return "四元字串骨架覆盖率低于 30%"
+    return None
 
 
 def _parse_polish(text: str) -> tuple[str, list[str]]:
@@ -1505,19 +1580,29 @@ def _parse_polish(text: str) -> tuple[str, list[str]]:
 # 6. 人工关口：豁免 / 定稿 / 重写（规格03 §2.5-§2.6、规格01 §4）
 # ---------------------------------------------------------------------------
 
+@serialized
 def exempt(book: str, no: int, reason: str) -> None:
     """豁免必须填理由，写入 generation_log（合规证据链）。"""
     if not reason or not reason.strip():
         raise PipelineError("豁免必须填写理由")
-    statemachine.transition(book, no, "approve")  # human_review → pending_finalize
+    if statemachine.current_status(book, no) != "human_review":
+        raise statemachine.StateError("仅人工复核状态可豁免")
+    res = _check(book, no, books.load_config(book)["chapter_word_range"])
+    if res.verdict == "not_effective":
+        raise statemachine.StateError("机检未完整执行，请先修复词库或配置，不能豁免未执行检查")
+    statemachine.transition(book, no, "approve")
+    db.set_check_status(book_id=books.book_id(book), chapter_no=no,
+                        fingerprint=res.fingerprint, status="exempt")
     db.log_generation(book_id=books.book_id(book), chapter_no=no, stage="exempt",
-                      status="ok", error=f"豁免理由：{reason.strip()}")
+                      status="ok", error=f"正文指纹 {res.fingerprint}；豁免理由：{reason.strip()}")
 
 
+@serialized
 def edit_outline(book: str, no: int) -> None:
     statemachine.transition(book, no, "edit_outline")  # → outline_draft（改细纲）
 
 
+@serialized
 def human_rewrite(book: str, no: int, base_version: int | None = None) -> int:
     """human_review/finalized → generating，开新 version 分支（不覆盖旧 draft）。
 
@@ -1546,14 +1631,14 @@ def human_rewrite(book: str, no: int, base_version: int | None = None) -> int:
         # 无指定快照：沿用当前正文开新分支（绝不写空正文）
         try:
             body = chapters.read_prose(book, no)["_body"]
-        except Exception:
-            body = ""
+        except Exception as e:
+            raise PipelineError(f"当前正文读取失败，未开新版本、未改动文件：{e}") from e
 
     # 2) 落盘新版本
     new_version = _next_version(book, no)
     fm = {"chapter_no": no, "version": new_version, "status": "draft",
           "word_count": mechcheck.count_words(body), "finalized_at": None}
-    chapters.write_prose(book, no, fm, body)
+    chapters.write_prose(book, no, fm, body, recheck=False)
     statemachine.set_current_version(book, no, new_version)
     statemachine.set_fix_rounds(book, no, 0)
     statemachine.transition(book, no, "rewrite")  # → generating
@@ -1563,6 +1648,7 @@ def human_rewrite(book: str, no: int, base_version: int | None = None) -> int:
 PROSE_CORRECT_MAX_RATIO = 0.05  # 订正上限：超过 5% 就是重写
 
 
+@serialized
 def correct_prose(book: str, no: int, edits: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     """定稿后的字词级订正通道（错别字 / 术语旧称 / 事实矛盾）。
 
@@ -1743,6 +1829,7 @@ def foreshadow_drift(book: str, no: int) -> list[str]:
     return out
 
 
+@serialized
 def finalize(book: str, no: int, client=None) -> dict[str, Any]:
     """定稿 = 二次确认（API 层）→ 快照 + status:final → 记忆卡回写。"""
     st = statemachine.current_status(book, no)
@@ -1750,7 +1837,22 @@ def finalize(book: str, no: int, client=None) -> dict[str, Any]:
         raise statemachine.StateError(f"第{no}章状态 {st} 不能定稿")
 
     prose = chapters.read_prose(book, no)
+    if prose.get("imported") and not (db.get_check_status(book_id=books.book_id(book), chapter_no=no) or {}).get("checked_fingerprint"):
+        checked = _check(book, no, books.load_config(book)["chapter_word_range"])
+        if checked.verdict != "pass":
+            raise statemachine.StateError("导入章机检未通过，请先处理并重跑机检")
+        db.set_check_status(book_id=books.book_id(book), chapter_no=no,
+                            fingerprint=checked.fingerprint, status="pass")
+    _assert_current_check(book, no, prose["_body"], allow_exempt=True)
+    current_check = _check(book, no, books.load_config(book)["chapter_word_range"])
+    saved = db.get_check_status(book_id=books.book_id(book), chapter_no=no) or {}
+    if current_check.verdict == "not_effective" or (current_check.verdict != "pass" and saved.get("checked_status") != "exempt"):
+        raise statemachine.StateError("当前机检规则未通过或未完整执行，请重跑机检或人工处理")
     fm = {k: v for k, v in prose.items() if not k.startswith("_")}
+    previous_snapshot = get_snapshot(book, no, fm["version"])
+    if previous_snapshot is not None and previous_snapshot != prose["_body"]:
+        fm["version"] = _next_version(book, no)
+        statemachine.set_current_version(book, no, fm["version"])
     fm["status"] = "final"
     fm["finalized_at"] = datetime.now().isoformat(timespec="seconds")
     chapters.write_prose(book, no, fm, prose["_body"])
@@ -1766,7 +1868,7 @@ def finalize(book: str, no: int, client=None) -> dict[str, Any]:
         result["writeback"] = writeback_memory(book, no, client=client)
     except Exception as e:
         # 记忆卡失败不回滚定稿，但标记待重试
-        statemachine.mark_error(book, no, f"记忆卡回写失败: {e}")
+        logger.warning("第%s章已定稿但记忆卡回写失败，可从补做入口重试: %s", no, e)
         result["writeback"] = {"error": str(e)}
         return result
 
@@ -1824,12 +1926,9 @@ def _chapter_title(book: str, no: int) -> str:
     return (row or {}).get("title", "") or f"第{no}章"
 
 
+@serialized
 def rebuild_memory_card(book: str, no: int, client=None) -> dict[str, Any]:
-    """单章补做记忆卡（幂等）。
-
-    顺序很关键：先撤销本章已经产生的派生事实，再重跑 V4，否则伏笔会被推第二次
-    （advance/pay 是单向机）。角色状态是覆盖写、天然幂等，不需要回滚。
-    """
+    """（规格05 F-04）先抽取候选，再在可回滚边界内替换旧派生结果。"""
     st = statemachine.current_status(book, no)
     if st != "finalized":
         raise statemachine.StateError(
@@ -1837,37 +1936,28 @@ def rebuild_memory_card(book: str, no: int, client=None) -> dict[str, Any]:
 
     from . import state as state_mod
 
-    rollback = {"state_rows": 0, "foreshadow": {}, "card_deleted": False}
-    ops_from_card: list[dict[str, Any]] = []
-    if chapters.memory_path(book, no).exists():
-        try:
-            ops_from_card = list(chapters.read_memory(book, no).get("foreshadow_ops") or [])
-        except Exception:
-            ops_from_card = []
-    try:
-        existing = state_mod.chapter_rows(book, no)
+    prose = chapters.read_prose(book, no)
+    candidate = _extract_memory(book, no, prose, client=client)
+    with memory_commit(book):
+        old_card = chapters.read_memory(book, no) if chapters.memory_path(book, no).exists() else {}
+        rollback = {"state_rows": len(state_mod.chapter_rows(book, no)),
+                    "foreshadow": outline.rollback_foreshadow_ops(book, no, old_card.get("foreshadow_ops", [])),
+                    "card_deleted": False}
+        for name, baseline in old_card.get("status_before", {}).items():
+            data = characters.read(book, name)
+            if data.get("status", {}).get("updated_chapter") == no:
+                fm = {k: v for k, v in data.items() if not k.startswith("_")}
+                fm["status"] = baseline
+                characters.write(book, fm, data["_body"])
         state_mod.clear_chapter(book, no)
-        rollback["state_rows"] = len(existing)
-    except Exception as e:
-        logger.warning("第%s章旧状态快照清理失败: %s", no, e)
-    try:
-        rollback["foreshadow"] = outline.rollback_foreshadow_ops(book, no, ops_from_card)
-    except Exception as e:
-        logger.warning("第%s章伏笔回滚失败: %s", no, e)
-    if chapters.memory_path(book, no).exists():
-        chapters.clear_memory(book, no)
-        rollback["card_deleted"] = True
-
-    wb = writeback_memory(book, no, client=client)
+        wb = _apply_memory(book, no, prose, candidate)
     db.log_generation(book_id=books.book_id(book), chapter_no=no,
                       stage="memory_rebuild", status="ok")
     return {"ok": True, "chapter_no": no, "rollback": rollback,
-            "applied": {
-                "char_updates": wb.get("applied_chars", []),
-                "foreshadow_warnings": wb.get("warnings", []),
-                "state_entries": len(state_mod.chapter_rows(book, no)),
-                "event_summary": wb.get("event_summary", ""),
-            }}
+            "applied": {"char_updates": wb.get("applied_chars", []),
+                        "foreshadow_warnings": wb.get("warnings", []),
+                        "state_entries": len(state_mod.chapter_rows(book, no)),
+                        "event_summary": wb.get("event_summary", "")}}
 
 
 def rebuild_memory_batch(book: str, chapter_nos: list[int] | None = None,
@@ -1886,8 +1976,16 @@ def rebuild_memory_batch(book: str, chapter_nos: list[int] | None = None,
     return {"queued": len(targets), "done": done, "failed": failed}
 
 
+@serialized
 def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
     prose = chapters.read_prose(book, no)
+    candidate = _extract_memory(book, no, prose, client=client)
+    with memory_commit(book):
+        return _apply_memory(book, no, prose, candidate)
+
+
+def _extract_memory(book: str, no: int, prose: dict[str, Any], client=None) -> dict[str, Any]:
+    """（规格03 §2.7）只抽取并校验，不改档案；重试调用照常记账。"""
     variables = {
         "正文": prose["_body"],
         "章号": str(no),
@@ -1900,33 +1998,31 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
             and int(str(r.get("埋设章")).strip()) <= no
         ) or "（无）",
     }
-    result: dict[str, Any] | None = None
     feedback = ""
-    legacy = False
     for _attempt in range(3):
         res, _p, _t = _call(book, no, "memory", "V4", variables, client=client,
                             extra_instruction=feedback)
         try:
-            result = llm.extract_json(res.text)
-            result["chapter_no"] = no
-            legacy = chapters.validate_memory(result)
-            break
+            candidate = llm.extract_json(res.text)
+            if not isinstance(candidate, dict):
+                raise llm.LLMError("V4 必须输出 JSON 对象")
+            candidate["chapter_no"] = no
+            chapters.validate_memory(candidate)
+            _validate_memory_items(candidate)
+            return candidate
         except (llm.LLMError, FM.FrontmatterError) as e:
             feedback = _feedback_instruction(str(e))
-            # 只有"缺 state_delta"这一种情况可以降级：结构与类型都对，只是没新字段。
-            # 其它错误继续回喂重试（不拿残缺卡污染长期记忆）。
-            if isinstance(e, FM.FrontmatterError) and "state_delta" in str(e):
-                result["chapter_no"] = no
-                legacy = True
-                logger.warning("第%s章 V4 未产出 state_delta，降级为 legacy 记忆卡", no)
-                break
-    if result is None:
-        raise PipelineError("V4 记忆卡 JSON 3 次解析失败")
+    raise PipelineError("V4 记忆卡 3 次解析/校验失败，未改动原档案")
+
+
+def _apply_memory(book: str, no: int, prose: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """（规格03 §2.7）在可回滚保护内应用已校验的候选。"""
 
     body = f"{result.get('event_summary','')}（第{no}章记忆卡）\n"
     result["source_fingerprint"] = mechcheck.fingerprint(prose["_body"])
-    chapters.write_memory(book, no, result, body)
 
+    result["status_before"] = {name: characters.read(book, name).get("status", {})
+                               for name in characters.list_characters(book)}
     applied, conflict_list = characters.apply_status_updates(book, no, result.get("char_updates", []))
     if conflict_list:
         conflicts.enqueue(conflict_list)
@@ -1971,26 +2067,15 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
                 ])
                 logger.warning("第%s章 有 %d 个战力名称不在力量体系内，已入裁决队列", no, len(bad_realm))
             state_mod.upsert_entries(book, no, clean, fingerprint=fp)
-            state_mod.rebuild_state_md(book, upto_chapter=no)
-        except Exception as e:  # 快照失败不能吞掉事实：记警告，章节仍可定稿
-            logger.warning("第%s章状态快照落库失败: %s", no, e)
-    else:
-        try:
-            from . import state as state_mod
-
-            state_mod.rebuild_state_md(book, upto_chapter=no)
-        except Exception as e:
-            logger.warning("第%s章 STATE.md 重建失败: %s", no, e)
+        except Exception:
+            raise
 
     # F-06：时间线候选只进裁决队列，**绝不自动落盘**（骨架真相必须人工确认）
     t_candidates = result.get("timeline_candidates") or []
     if t_candidates:
-        try:
-            from . import timeline
+        from . import timeline
 
-            conflicts.enqueue(timeline.candidates(book, t_candidates, no))
-        except Exception as e:
-            logger.warning("第%s章时间线候选入队失败: %s", no, e)
+        conflicts.enqueue(timeline.candidates(book, t_candidates, no))
 
     fo_errors, fo_warns = outline.apply_foreshadow_ops(book, no, result.get("foreshadow_ops", []))
     if fo_errors:
@@ -2014,6 +2099,10 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
 
     summaries.push(book, no, result.get("event_summary", ""))
     fts.index_chapter(books.book_id(book), no, prose["_body"])
+    chapters.write_memory(book, no, result, body)
+    from . import state as state_mod
+
+    state_mod.rebuild_state_md(book)
 
     return {
         "applied_chars": applied,
@@ -2021,6 +2110,21 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
         "warnings": fo_warns,
         "event_summary": result.get("event_summary", ""),
     }
+
+
+def _validate_memory_items(result: dict[str, Any]) -> None:
+    """（规格05 F-04/F-05）拒绝数组中的坏类型，不允许半途写入后才报错。"""
+    for key in ("char_updates", "new_chars", "foreshadow_ops", "state_delta", "timeline_candidates"):
+        for item in result.get(key) or []:
+            if not isinstance(item, dict):
+                raise llm.LLMError(f"V4 {key} 条目必须为对象")
+    for entry in result.get("state_delta") or []:
+        name = entry.get("character") or entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise llm.LLMError("state_delta 缺角色名")
+        for key in ("location", "physical", "mental", "power_level"):
+            if entry.get(key) is not None and not isinstance(entry[key], str):
+                raise llm.LLMError(f"state_delta.{key} 必须为文本")
 
 
 # ---------------------------------------------------------------------------

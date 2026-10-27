@@ -36,6 +36,7 @@ import type {
   CharacterData,
   MemoryPendingItem,
   Overview,
+  StateData,
   TimelineData,
 } from '@/api/types'
 import { useBookStore } from '@/stores/book'
@@ -99,7 +100,10 @@ const auditNo = ref<number | undefined>(undefined)
 // —— 长期记忆健康度（规格05 §11.3）——
 const memPending = ref<MemoryPendingItem[]>([])
 const timelineData = ref<TimelineData | null>(null)
-const stateRows = ref(0)
+const stateData = ref<StateData | null>(null)
+const memLoading = ref(true)
+const memHealthError = ref(false)
+let memoryRequest = 0
 const memBusy = ref(false)
 
 const REASON_LABEL: Record<string, string> = {
@@ -111,14 +115,23 @@ const REASON_LABEL: Record<string, string> = {
 
 async function loadMemoryHealth(): Promise<void> {
   const b = name.value
-  const [mp, tl, st] = await Promise.all([
-    listMemoryPending(b).catch(() => ({ chapters: [] })),
-    getTimeline(b).catch(() => null),
-    getState(b).catch(() => null),
-  ])
-  memPending.value = mp.chapters ?? []
-  timelineData.value = tl
-  stateRows.value = st?.rows ?? 0
+  const request = ++memoryRequest
+  memLoading.value = true
+  memHealthError.value = false
+  memPending.value = []
+  timelineData.value = null
+  stateData.value = null
+  try {
+    const [mp, tl, st] = await Promise.all([listMemoryPending(b), getTimeline(b), getState(b)])
+    if (request !== memoryRequest || b !== name.value) return
+    memPending.value = mp.chapters
+    timelineData.value = tl
+    stateData.value = st
+  } catch {
+    if (request === memoryRequest && b === name.value) memHealthError.value = true
+  } finally {
+    if (request === memoryRequest) memLoading.value = false
+  }
 }
 
 async function rebuildAllMemory(): Promise<void> {
@@ -138,7 +151,6 @@ async function rebuildAllMemory(): Promise<void> {
     const r = await rebuildMemoryBatch(name.value)
     const failed = r.failed?.length ?? 0
     ElMessage.success(`补做完成：成功 ${r.done?.length ?? 0} 章，失败 ${failed} 章`)
-    await loadMemoryHealth()
     await load()
   } catch {
     // 拦截器已提示
@@ -149,6 +161,7 @@ async function rebuildAllMemory(): Promise<void> {
 
 async function load(): Promise<void> {
   store.setCurrentBook(name.value)
+  void loadMemoryHealth()
   // 读请求并行（老版串行串成 4×RTT）
   const [o, b, pp, st, od] = await Promise.all([
     getOverview(name.value),
@@ -166,7 +179,6 @@ async function load(): Promise<void> {
   styleCard.value = st.card
   styleEnabled.value = st.enabled
   overdue.value = od
-  void loadMemoryHealth()
   await loadAudits()
 }
 watch(name, () => void load().catch(() => {}), { immediate: true })
@@ -477,20 +489,52 @@ async function audit(): Promise<void> {
   <!-- 长期记忆健康度：缺卡/过期卡/时间线冲突，一眼看出"记忆有没有断" -->
   <div class="panel">
     <h3 class="panel-title">长期记忆健康度</h3>
+    <el-alert v-if="memHealthError" type="error" :closable="false" show-icon class="mb-2">
+      长期记忆健康度读取失败，当前状态未知；请刷新健康度后再判断，不能视为健康。
+    </el-alert>
+    <div v-if="memLoading" class="dim mb-2">长期记忆健康度加载中…</div>
     <div class="flex flex-wrap items-center gap-3">
       <span>
-        待补记忆卡
-        <el-tag :type="memPending.length ? 'danger' : 'success'" size="small">
-          {{ memPending.length }}
-        </el-tag>
+        <template v-if="!memLoading && !memHealthError">
+          待补记忆卡
+          <el-tag :type="memPending.length ? 'danger' : 'success'" size="small">
+            {{ memPending.length }}
+          </el-tag>
+        </template>
+        <el-tag v-else type="info" size="small">待补记忆卡：未知</el-tag>
       </span>
       <span>
         结构化状态
-        <el-tag :type="stateRows > 0 ? 'success' : 'info'" size="small">{{ stateRows }} 条</el-tag>
+        <el-tag
+          v-if="!memLoading && !memHealthError && stateData"
+          :type="stateData.rows > 0 ? 'success' : 'info'"
+          size="small"
+        >
+          {{ stateData.rows }} 条
+        </el-tag>
+        <el-tag v-else type="info" size="small">未知</el-tag>
+      </span>
+      <span>
+        状态卡提议
+        <el-tag
+          v-if="!memLoading && !memHealthError && stateData"
+          :type="stateData.proposed_fingerprint ? 'warning' : 'info'"
+          size="small"
+        >
+          {{
+            stateData.proposed_fingerprint
+              ? stateData.proposed_stale
+                ? '有待确认提议（已过期）'
+                : '有待确认提议'
+              : '无待确认提议'
+          }}
+        </el-tag>
+        <el-tag v-else type="info" size="small">未知</el-tag>
       </span>
       <span>
         时间线
         <el-tag
+          v-if="!memLoading && !memHealthError"
           :type="
             !timelineData?.exists
               ? 'info'
@@ -508,10 +552,12 @@ async function audit(): Promise<void> {
                 : '正常'
           }}
         </el-tag>
+        <el-tag v-else type="info" size="small">未知</el-tag>
       </span>
       <span class="flex-1"></span>
+      <el-button :loading="memLoading" @click="loadMemoryHealth">刷新健康度</el-button>
       <el-button
-        :disabled="!memPending.length"
+        :disabled="memLoading || memHealthError || !memPending.length"
         :loading="memBusy"
         type="warning"
         plain
@@ -520,7 +566,7 @@ async function audit(): Promise<void> {
         批量补做记忆卡
       </el-button>
       <el-button @click="router.push(`/book/${encodeURIComponent(name)}/state`)">
-        查看状态卡
+        状态卡 / 时间线
       </el-button>
     </div>
     <div v-if="memPending.length" class="mt-2" style="max-height: 150px; overflow: auto">

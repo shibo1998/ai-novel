@@ -502,6 +502,9 @@ class TestStateSnapshot:
         assert lin["power_level"] == "炼气"
         assert lin["knowledge"] == ["玄铁令发热"]
 
+        assert state_mod.read_state_md(book) == ""
+        assert state_mod.proposed_path(book).exists()
+        state_mod.approve_proposed(book)
         md = state_mod.read_state_md(book)
         assert "截至第 1 章" in md
         assert "| 林寒 | 青云坊 | 右肩刀伤 |" in md

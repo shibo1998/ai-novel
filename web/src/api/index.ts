@@ -24,6 +24,7 @@ import type {
   ProseEditResult,
   ReviewResult,
   SnapshotDetail,
+  StateData,
   TimelineData,
   TimelineRow,
   VersionInfo,
@@ -183,7 +184,7 @@ export const runMechcheck = (
   book: string,
   no: number,
 ): Promise<{ hits: MechHit[]; status: string }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/mechcheck`))
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/mechcheck`, null, { timeout: 0 }))
 export const runReview = (book: string, no: number): Promise<ReviewResult & { status: string }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/review`, null, { timeout: 0 }))
 export const runFix = (book: string, no: number): Promise<{ ok: boolean; word_count: number }> =>
@@ -226,9 +227,19 @@ export const rewriteFrom = (
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/rewrite`, { base_version }))
 
 // 人工手改正文（规格03 §2.5 人工关三选项之一；finalized 状态后端返回 400）。
-// version 不变、status 保持 draft、word_count 由后端重算。
-export const putProse = (book: string, no: number, content: string): Promise<ProseEditResult> =>
-  unwrap(http.put(`/api/books/${enc(book)}/chapters/${no}/prose`, { content }))
+// 版本不变；正文变更后原检查结论失效，必须重新机检。修订号按打开编辑器时的值提交。
+export const putProse = (
+  book: string,
+  no: number,
+  content: string,
+  expectedRevision?: number,
+): Promise<ProseEditResult> =>
+  unwrap(
+    http.put(`/api/books/${enc(book)}/chapters/${no}/prose`, {
+      content,
+      ...(expectedRevision === undefined ? {} : { expected_revision: expectedRevision }),
+    }),
+  )
 
 // 快照正文回看（规格04 §2「版本列表可回看任意快照」——只读，不触发重写）。
 export const getSnapshot = (book: string, no: number, version: number): Promise<SnapshotDetail> =>
@@ -350,13 +361,34 @@ export const commitImport = (
   },
 ): Promise<Record<string, unknown>> =>
   unwrap(http.post(`/api/books/${enc(book)}/import/novel/commit`, body, { timeout: 0 }))
-/** 长期记忆派生视图 */
-export const getState = (book: string): Promise<{ content: string; path: string; rows: number }> =>
+/** 长期记忆状态卡：已确认内容与待确认提议（规格05 F-05 / C-05）。 */
+export const getState = (book: string): Promise<StateData> =>
   unwrap(http.get(`/api/books/${enc(book)}/state`))
+export const approveState = (
+  book: string,
+  fingerprint: string,
+  expectedFingerprint: string | null,
+): Promise<{ ok: true }> =>
+  unwrap(
+    http.post(`/api/books/${enc(book)}/state/approve`, {
+      fingerprint,
+      expected_fingerprint: expectedFingerprint,
+    }),
+  )
+export const discardState = (book: string, fingerprint: string): Promise<{ ok: true }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/state/discard`, { fingerprint }))
 export const getTimeline = (book: string): Promise<TimelineData> =>
   unwrap(http.get(`/api/books/${enc(book)}/timeline`))
 export const putTimeline = (
   book: string,
   truth: TimelineRow[],
+  released: TimelineRow[],
+  expectedFingerprint?: string,
 ): Promise<{ ok: boolean; issues: MechHit[] }> =>
-  unwrap(http.put(`/api/books/${enc(book)}/timeline`, { truth }))
+  unwrap(
+    http.put(`/api/books/${enc(book)}/timeline`, {
+      truth,
+      released,
+      ...(expectedFingerprint === undefined ? {} : { expected_fingerprint: expectedFingerprint }),
+    }),
+  )

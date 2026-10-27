@@ -13,13 +13,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
 from . import atomic, books, db
-from .paths import (ATTACHED_REGISTRY, attached_books, book_dir, books_dir,
-                    project_root, save_attached)
+from .paths import (attached_books, books_dir, project_root, save_attached,
+                    validate_book_name)
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,7 @@ def detect_layout(p: Path) -> dict[str, Any]:
     """结构探测：如实报告"没识别到什么"，缺失不能当成默认存在。"""
     has = lambda name: (p / name).exists()  # noqa: E731
     chapters_dir = p / "chapters"
-    chapter_files = sorted(chapters_dir.glob("*.md")) if chapters_dir.exists() else []
+    chapter_files = db._chapter_files(p)
     txt_files = sorted(p.glob("*.txt"))
     if has("config.json") and chapters_dir.exists():
         layout = "native"
@@ -123,40 +122,52 @@ def _backup_manifest(name: str, p: Path) -> Path:
     return out
 
 
-def _scaffold(p: Path, name: str) -> list[str]:
-    """只补缺失文件，已存在的一个字节都不动。"""
+def _scaffold(p: Path, name: str, original_layout: str) -> list[str]:
+    """只补符合规格01 §2 schema 的缺失文件，已存在的一个字节都不动。"""
     created: list[str] = []
     for sub in ("chapters", "characters"):
         d = p / sub
         if not d.exists():
             d.mkdir(parents=True, exist_ok=True)
             created.append(sub + "/")
-    from .frontmatter import dump
+    from . import frontmatter as FM
 
     if not (p / "meta.md").exists():
-        atomic.write_text(p / "meta.md", dump({
+        meta = {
             "title": name, "author": "", "genre": "", "tags": [],
             "target_words": 1_000_000, "chapter_word_range": [2200, 2800],
             "platform": "", "status": "drafting",
-        }, "（挂载的既有书稿：请补一句话故事核与卖点）\n"))
+        }
+        FM.validate(meta, books.META_SCHEMA)
+        atomic.write_text(p / "meta.md", FM.dump(
+            meta, "（挂载的既有书稿：请补一句话故事核与卖点）\n"))
         created.append("meta.md")
     if not (p / "config.json").exists():
         atomic.write_text(p / "config.json", json.dumps({
             "genre_template": "urban",
-            "model_stages": {"plan": "", "prose": "", "polish": "", "review": "", "longctx": ""},
+            "model_stages": dict(books.DEFAULT_MODEL_STAGES),
             "chapter_word_range": [2200, 2800],
             "review_fix_max_rounds": 2,
             "assembly_budget_overrides": {},
             "external": True,
+            "attached_at": db.now(),
+            "original_layout": original_layout,
         }, ensure_ascii=False, indent=2))
         created.append("config.json")
     if not (p / "STORY_BIBLE.md").exists():
-        atomic.write_text(p / "STORY_BIBLE.md", "# 世界观圣经\n\n## 基础设定\n\n（待填）\n")
+        sections = "\n".join(f"## {s}\n\n（待填）\n" for s in books.BIBLE_SECTIONS)
+        atomic.write_text(p / "STORY_BIBLE.md", f"# 世界观圣经\n\n{sections}\n")
         created.append("STORY_BIBLE.md")
     if not (p / "OUTLINE.md").exists():
-        atomic.write_text(p / "OUTLINE.md", "# 大纲\n\n## 章节总表\n\n"
+        from .outline import OUTLINE_SCHEMA
+
+        fm = {"logline": "", "ending_direction": "", "volumes": []}
+        FM.validate(fm, OUTLINE_SCHEMA)
+        atomic.write_text(p / "OUTLINE.md", FM.dump(fm,
+                          "## 章节总表\n\n"
                           "| 章 | 卷 | 本章目标 | 冲突来源 | 爽点/揭露 | 钩子类型 | 重要度★ |\n"
-                          "|----|----|---------|---------|----------|---------|--------|\n")
+                          "|----|----|---------|---------|----------|---------|--------|\n\n"
+                          "## 爽点节奏总谱\n\n（待规划）\n"))
         created.append("OUTLINE.md")
     if not (p / "PLOT_POINTS.md").exists():
         atomic.write_text(p / "PLOT_POINTS.md",
@@ -172,47 +183,39 @@ def _scaffold(p: Path, name: str) -> list[str]:
 
 
 def attach(name: str, path: str | Path, scaffold: bool = True) -> dict[str, Any]:
+    """原地挂载并同步索引（规格05 F-07）；同名历史只可由同一规范路径恢复。"""
     name = (name or "").strip()
+    validate_book_name(name)  # 任何目标检查、备份、建目录、写库之前先守住路径穿越。
     p = validate_target(path)
-    if name in attached_books():
+    reg = attached_books()
+    if name in reg:
         raise AttachError(f"该书已挂载: {name}")
     if (books_dir() / name).exists():
         raise AttachError(f"内置书架已存在同名书: {name}")
-    from .paths import validate_book_name
+    with db.tx() as conn:
+        row = conn.execute("SELECT path FROM books WHERE name=?", (name,)).fetchone()
+    if row and Path(row["path"]).resolve() != p:
+        raise AttachError(f"同名书保留着另一目录的运行历史，请使用其他书名: {name}")
 
-    validate_book_name(name)
-
+    detected = detect_layout(p)  # 先探测原稿，不能把补齐结果冒充原始结构。
     backup = _backup_manifest(name, p)
-    created = _scaffold(p, name) if scaffold else []
-    detected = detect_layout(p)
-
-    reg = attached_books()
+    created = _scaffold(p, name, detected["layout"]) if scaffold else []
     reg[name] = str(p)
     save_attached(reg)
-
-    cfg_path = p / "config.json"
-    if cfg_path.exists():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-            cfg.setdefault("external", True)
-            cfg.setdefault("attached_at", db.now())
-            cfg["original_layout"] = detected["layout"]
-            atomic.write_text(cfg_path, json.dumps(cfg, ensure_ascii=False, indent=2))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("挂载时写 config.json 失败（保留原文件）: %s", e)
-
-    with db.tx() as conn:
-        conn.execute(
-            "INSERT INTO books (name, path, created_at) VALUES (?,?,?) "
-            "ON CONFLICT(name) DO UPDATE SET path=excluded.path",
-            (name, str(p), db.now()))
+    try:
+        db.rebuild_book(name)
+    except Exception:
+        reg.pop(name)
+        save_attached(reg)
+        raise
 
     return {"ok": True, "name": name, "path": str(p), "detected": detected,
             "scaffolded": created, "backup": str(backup)}
 
 
 def detach(name: str, delete_files: bool = False) -> dict[str, Any]:
-    """摘除：默认只从书架移除记录，**不删任何文件**。"""
+    """摘除（规格05 F-07）：只从活动书架移除，不删文件或不可恢复的运行历史。"""
+    validate_book_name(name)
     reg = attached_books()
     if name not in reg:
         raise AttachError(f"该书不是外挂书: {name}")
@@ -220,18 +223,18 @@ def detach(name: str, delete_files: bool = False) -> dict[str, Any]:
     deleted = False
     if delete_files:
         # 硬规则：外挂目录永远不删。要清理由用户自己在资源管理器里做。
-        raise AttachError("外挂书不支持删除文件（避免误删用户资料）；"
-                           "已从书架移除，目录保留")
+        raise AttachError("外挂书不支持删除文件（避免误删用户资料）；请仅摘除，目录由用户自行清理")
     reg.pop(name, None)
     save_attached(reg)
+    # 摘除不是删除：保留主记录，避免级联丢掉不可恢复的运行历史。
     from . import fts
 
     with db.tx() as conn:
-        fts.ensure_table(conn)  # FTS 表懒创建：从没入过库时先确保存在
+        fts.ensure_table(conn)
         row = conn.execute("SELECT id FROM books WHERE name=?", (name,)).fetchone()
         if row:
             conn.execute("DELETE FROM chapters_fts WHERE book_id=?", (row["id"],))
-            conn.execute("DELETE FROM books WHERE id=?", (row["id"],))
+            conn.execute("UPDATE books SET detached=1 WHERE id=?", (row["id"],))
     return {"ok": True, "name": name, "path": str(p), "files_deleted": deleted}
 
 

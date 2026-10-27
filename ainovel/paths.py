@@ -48,24 +48,35 @@ def _registry_path() -> Path:
 
 
 def attached_books() -> dict[str, str]:
-    """读外挂书登记表。坏文件当空表但留日志（不能让书架整个打不开）。"""
+    """读活动外挂书登记表（规格05 F-07）；文件是可删库恢复的路径真相源。"""
     p = _registry_path()
     if not p.exists():
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
+        if not isinstance(data, dict):
+            raise ValueError("登记表必须是对象")
+        registry: dict[str, str] = {}
+        for name, raw in data.items():
+            if not isinstance(raw, str) or not raw or not Path(raw).is_absolute():
+                raise ValueError("外挂书路径必须是绝对路径")
+            validate_book_name(name)
+            registry[name] = raw
+        return registry
+    except (ValueError, OSError) as e:
         logging.getLogger(__name__).warning("外挂书登记表损坏，按空表处理: %s", e)
         return {}
-    return {str(k): str(v) for k, v in data.items() if k and v}
 
 
 def save_attached(registry: dict[str, str]) -> None:
-    p = _registry_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    """原子保存活动外挂路径（规格01 §5.1、规格05 F-07），不改书稿配置。"""
+    from . import atomic
+
+    for name, raw in registry.items():
+        validate_book_name(name)
+        if not isinstance(raw, str) or not raw or not Path(raw).is_absolute():
+            raise ValueError("外挂书路径必须是绝对路径")
+    atomic.write_text(_registry_path(), json.dumps(registry, ensure_ascii=False, indent=2))
 
 
 def validate_book_name(name: str) -> str:

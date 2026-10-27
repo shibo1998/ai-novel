@@ -16,7 +16,6 @@ def _try_trigram(conn: sqlite3.Connection) -> bool:
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS _fts_probe USING fts5(x, tokenize='trigram')")
         conn.execute("DROP TABLE _fts_probe")
-        conn.commit()
         _TRIGRAM_OK = True
     except sqlite3.OperationalError:
         _TRIGRAM_OK = False
@@ -34,7 +33,6 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             "CREATE VIRTUAL TABLE IF NOT EXISTS chapters_fts USING fts5"
             "(book_id UNINDEXED, chapter_no UNINDEXED, body)"
         )
-    conn.commit()
 
 
 def tokenize_mode() -> str:
@@ -127,34 +125,36 @@ def _extract_snippet(body: str, keywords: list[str], width: int = 150) -> str:
     return body[start:start + width]
 
 
-def rebuild_index() -> None:
-    """全量重建：从各书 chapters/ 正文文件重灌。"""
-    from .paths import book_dir, books_dir
+def rebuild_index(book_id: int | None = None) -> None:
+    """从活动内置/外挂正文重灌 FTS（规格01 §3/§5.4、规格05 F-07），摘除书不复活。"""
+    from .paths import book_dir
 
     with db.tx() as conn:
         ensure_table(conn)
-        conn.execute("DELETE FROM chapters_fts")
-        book_rows = conn.execute("SELECT id, name FROM books").fetchall()
-        name2id = {r["name"]: r["id"] for r in book_rows}
-    if not books_dir().exists():
-        return
-    for bdir in sorted(books_dir().glob("*")):
-        if not bdir.is_dir() or bdir.name not in name2id:
-            continue
-        book_id = name2id[bdir.name]
-        for f in sorted((bdir / "chapters").glob("*_正文.md")) if (bdir / "chapters").exists() else []:
-            try:
-                no = int(f.name.split("_", 1)[0])
-            except ValueError:
-                continue
-            try:
-                text = f.read_text(encoding="utf-8")
-                # 去掉 frontmatter，只索引正文
-                if text.startswith("---"):
-                    _, text = _split_fm(text)
-                index_chapter(book_id, no, text)
-            except Exception:
-                continue
+        if book_id is None:
+            conn.execute("DELETE FROM chapters_fts")
+        else:
+            conn.execute("DELETE FROM chapters_fts WHERE book_id=?", (book_id,))
+        sql = "SELECT id, name FROM books WHERE detached=0"
+        args: tuple[int, ...] = ()
+        if book_id is not None:
+            sql += " AND id=?"
+            args = (book_id,)
+        books = conn.execute(sql, args).fetchall()
+        for item in books:
+            bdir = book_dir(item["name"])
+            for no, paths in sorted(db._chapter_files(bdir).items()):
+                f = paths.get("正文")
+                if f is None:
+                    continue
+                try:
+                    _, text = _split_fm(f.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    continue
+                conn.execute(
+                    "INSERT INTO chapters_fts (book_id, chapter_no, body) VALUES (?,?,?)",
+                    (item["id"], no, _prepare(text)),
+                )
 
 
 def _split_fm(text: str) -> tuple[str, str]:

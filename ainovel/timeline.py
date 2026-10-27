@@ -12,6 +12,7 @@ from typing import Any
 from . import atomic, books, chapters, characters
 from .mdtable import dump_table, parse_table
 from .paths import book_dir
+from .operations import serialized
 
 TIMELINE_FILE = "TIMELINE.md"
 TRUTH_COLS = ["编号", "章", "事件", "涉及角色", "读者已知", "知情角色"]
@@ -40,16 +41,28 @@ def read(book: str) -> dict[str, Any]:
     return {"exists": True, "truth": truth, "released": released, "raw": raw}
 
 
+@serialized
 def write(book: str, truth: list[dict[str, str]],
           released: list[dict[str, str]] | None = None) -> None:
     if released is None:
         released = read(book)["released"]
+    for rows, columns in ((truth, TRUTH_COLS), (released, RELEASED_COLS)):
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("时间线行必须是对象")
+            for column in columns:
+                cell = row.get(column, "")
+                if not isinstance(cell, str) or any(char in cell for char in ("\r", "\n", "|")):
+                    raise ValueError(f"时间线 {column} 必须是单行文本且不得含竖线分隔符")
     text = (_HEADER
             + "## 一、作者真相（故事世界实际发生）\n\n"
             + dump_table(TRUTH_COLS, [[r.get(c, "") for c in TRUTH_COLS] for r in truth])
             + "\n\n## 二、读者已知（按章释放）\n\n"
             + dump_table(RELEASED_COLS, [[r.get(c, "") for c in RELEASED_COLS] for r in released])
             + "\n")
+    issues = validate(book, data={"exists": True, "truth": truth, "released": released, "raw": text})
+    if any(i["level"] == "block" for i in issues):
+        raise ValueError("时间线校验失败：" + "；".join(i["message"] for i in issues[:8]))
     atomic.write_text(timeline_path(book), text)
 
 
@@ -60,15 +73,20 @@ def _line_of(raw: str, needle: str) -> int:
     return 0
 
 
-def validate(book: str, body: str = "") -> list[dict[str, Any]]:
-    """M-16 格式 / M-17 悬空引用。返回可直接转成 mechcheck.Hit 的 dict。"""
-    data = read(book)
+def validate(book: str, body: str = "", *, data: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """（规格05 F-06）M-16/M-17 校验；候选表也可在写盘前验证。"""
+    data = read(book) if data is None else data
     if not data["exists"]:
         return []
     raw = data["raw"]
     known = set(characters.list_characters(book))
     hits: list[dict[str, Any]] = []
     seen: dict[str, int] = {}
+    for group, columns in (("truth", TRUTH_COLS), ("released", RELEASED_COLS)):
+        for row in data.get(group, []):
+            if not isinstance(row, dict) or any(not isinstance(row.get(col, ""), str) for col in columns):
+                return [{"rule": "M-16", "level": "block", "line": 0, "word": "",
+                         "message": f"{group} 每个单元格必须为文本"}]
 
     for row in data["truth"]:
         tid = (row.get("编号") or "").strip()
@@ -101,6 +119,16 @@ def validate(book: str, body: str = "") -> list[dict[str, Any]]:
                 hits.append({"rule": "M-16", "level": "block", "line": line, "word": name,
                              "message": f"{tid} 的知情角色 {name} 不在 characters/ 中"})
 
+    for row in data.get("released", []):
+        chapter = row.get("章", "").strip()
+        refs = [ref for ref in re.split(r"[,，、;；\s]+", row.get("本章向读者释放的真相", "")) if ref]
+        if not chapter.isdigit() or int(chapter) < 1 or not refs:
+            hits.append({"rule": "M-16", "level": "block", "line": 0, "word": chapter,
+                         "message": "读者已知表必须填写合法章号与真相编号"})
+        for ref in refs:
+            if ref not in seen:
+                hits.append({"rule": "M-16", "level": "block", "line": 0, "word": ref,
+                             "message": f"读者已知表引用不存在的编号：{ref}"})
     # M-17 悬空引用（正文 / 细纲提到 T-xxx 但表里没有）
     if body:
         for ref in set(REF_RE.findall(body)):

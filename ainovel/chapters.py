@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from . import atomic, books, frontmatter as FM
+from .operations import serialized
 
 OUTLINE_CONTRACT_SCHEMA: FM.Schema = {
     "required": ["chapter_no", "volume", "stage", "emotion_task", "core_event",
@@ -64,29 +65,34 @@ def chapters_dir(book: str) -> Path:
     return books.book_dir(book) / "chapters"
 
 
+def _chapter_path(book: str, no: int, kind: str) -> Path:
+    """（规格05 F-07）优先既有文件名，兼容外挂原稿的非补零章号，不改名。"""
+    directory = chapters_dir(book)
+    canonical = directory / f"{no:03d}_{kind}.md"
+    if canonical.exists():
+        return canonical
+    for path in sorted(directory.glob(f"*_{kind}.md")):
+        prefix = path.name.split("_", 1)[0]
+        if prefix.isascii() and prefix.isdigit() and int(prefix) == no:
+            return path
+    return canonical
+
+
 def outline_path(book: str, no: int) -> Path:
-    return chapters_dir(book) / f"{no:03d}_细纲.md"
+    return _chapter_path(book, no, "细纲")
 
 
 def prose_path(book: str, no: int) -> Path:
-    return chapters_dir(book) / f"{no:03d}_正文.md"
+    return _chapter_path(book, no, "正文")
 
 
 def memory_path(book: str, no: int) -> Path:
-    return chapters_dir(book) / f"{no:03d}_记忆卡.md"
+    return _chapter_path(book, no, "记忆卡")
 
 
 def list_chapters(book: str) -> list[int]:
-    d = chapters_dir(book)
-    if not d.exists():
-        return []
-    nos = set()
-    for f in d.glob("*.md"):
-        try:
-            nos.add(int(f.name.split("_", 1)[0]))
-        except ValueError:
-            continue
-    return sorted(nos)
+    return sorted({int(match.group(1)) for path in chapters_dir(book).glob("*.md")
+                   if (match := re.fullmatch(r"([0-9]+)_(细纲|正文|记忆卡)\.md", path.name))})
 
 
 # ---------------------------------------------------------------------------
@@ -124,15 +130,26 @@ def read_prose(book: str, no: int) -> dict[str, Any]:
     return fm | {"_body": body}
 
 
-def write_prose(book: str, no: int, fm: dict[str, Any], body: str) -> None:
+@serialized
+def write_prose(book: str, no: int, fm: dict[str, Any], body: str,
+                *, expected_revision: int | None = None, recheck: bool = True) -> None:
+    """（规格05 P-3、C-02）校验修订号后原子写回正文并使旧检查失效。"""
+    from . import statemachine
+
     if fm.get("chapter_no") != no:
         raise FM.FrontmatterError(f"正文 chapter_no={fm.get('chapter_no')} 与文件章号 {no} 不一致")
     FM.validate(fm, PROSE_SCHEMA)
+    statemachine.ensure_chapter_row(book, no)
+    row = statemachine.get_row(book, no)
+    revision = int(row["state_revision"])
+    if expected_revision is not None and expected_revision != revision:
+        raise statemachine.StateError("并发修改：本章已更新，请刷新后重试（未覆盖正文）")
     atomic.write_text(prose_path(book, no), FM.dump(fm, body))
-    _mark_check_stale(book, no, body)
+    statemachine.bump_revision(book, no, expected=revision)
+    _mark_check_stale(book, no, body, recheck=recheck)
 
 
-def _mark_check_stale(book: str, no: int, body: str) -> None:
+def _mark_check_stale(book: str, no: int, body: str, *, recheck: bool = True) -> None:
     """正文一变，旧机检结论即过期（规格05 P-3 / §2.6）。
 
     单点放在 write_prose 里：所有写正文的路径（生成、手改、定向修复、润色、
@@ -144,8 +161,13 @@ def _mark_check_stale(book: str, no: int, body: str) -> None:
     from . import db, mechcheck
 
     try:
-        db.mark_check_stale(book_id=books.book_id(book), chapter_no=no,
-                            current_fingerprint=mechcheck.fingerprint(body))
+        changed = db.mark_check_stale(book_id=books.book_id(book), chapter_no=no,
+                                     current_fingerprint=mechcheck.fingerprint(body))
+        if changed and recheck:
+            from . import statemachine
+
+            if statemachine.current_status(book, no) in ("llm_review", "human_review", "pending_finalize"):
+                statemachine.transition(book, no, "recheck")
     except Exception as e:  # 标记失败不能回滚已落盘的正文，但必须留痕
         logging.getLogger(__name__).warning("第%s章机检结论过期标记失败: %s", no, e)
 

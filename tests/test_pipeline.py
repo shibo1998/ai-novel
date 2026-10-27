@@ -87,7 +87,7 @@ def test_review_fix_loop(book_env):
     book, _ = book_env
     mock = MockLLM()
     mock.review_verdicts = [
-        {"scores": {"ai_flavor": 60}, "issues": [
+        {"scores": {"ai_flavor": 60, "plot": 85, "pacing": 85, "prose": 85, "hook": 85}, "issues": [
             {"category": "ai_flavor", "severity": "blocking", "location": "章末",
              "quote": "他停住脚。", "description": "模板句", "suggestion": "改具体动作"}],
          "verdict": "fix"},
@@ -104,7 +104,7 @@ def test_fix_overreach_discards(book_env):
     mock = MockLLM()
     mock.fix_overreach = True
     mock.review_verdicts = [
-        {"scores": {"plot": 60}, "issues": [
+        {"scores": {"ai_flavor": 85, "plot": 60, "pacing": 85, "prose": 85, "hook": 85}, "issues": [
             {"category": "plot", "severity": "blocking", "location": "章中",
              "quote": "令牌烫了一下。", "description": "与档案冲突", "suggestion": "改"}],
          "verdict": "fix"},
@@ -135,7 +135,7 @@ def test_exempt_requires_reason(book_env):
 
     # 豁免路径：另开一章推到 human_review
     mock2 = MockLLM()
-    mock2.review_verdicts = [{"scores": {"plot": 50}, "issues": [], "verdict": "fail"}]
+    mock2.review_verdicts = [{"scores": {"ai_flavor": 85, "plot": 50, "pacing": 85, "prose": 85, "hook": 85}, "issues": [], "verdict": "fail"}]
     _run_to_pending(book, 2, mock2)
     assert statemachine.current_status(book, 2) == "human_review"
     with pytest.raises(pipeline.PipelineError):

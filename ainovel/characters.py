@@ -132,6 +132,9 @@ def apply_status_updates(
             continue
         data = read(book, name)
         status: dict[str, Any] = dict(data.get("status") or {})
+        # 补做历史章只补该章快照，不倒写角色卡里的后续状态。
+        if int(status.get("updated_chapter") or 0) > chapter_no:
+            continue
         block: list[Conflict] = []
         for field, new_val in changes.items():
             old_val = status.get(field)

@@ -11,7 +11,7 @@ from typing import Any
 from . import atomic, bible, characters, db
 from .paths import data_dir
 
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()
 
 
 def _path() -> "Any":
