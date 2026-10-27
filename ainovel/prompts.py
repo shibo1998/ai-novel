@@ -91,9 +91,9 @@ def get(prompt_id: str, book: str | None = None) -> Prompt:
 
 
 def render(prompt_id: str, variables: dict[str, Any], book: str | None = None) -> tuple[Prompt, str]:
-    """填充 〖变量〗。渲染后仍有残留变量 → PromptError（不静默发给模型）。"""
+    """（规格06 §5.2）只渲染body；完整文件仍用于编辑和历史digest。"""
     p = get(prompt_id, book)
-    text = p.full_text()
+    text = p.body
     missing: set[str] = set()
 
     def repl(m: re.Match) -> str:
@@ -106,6 +106,8 @@ def render(prompt_id: str, variables: dict[str, Any], book: str | None = None) -
     rendered = _VAR_RE.sub(repl, text)
     if missing:
         raise PromptError(f"{prompt_id}: 未提供变量 {sorted(missing)}")
+    if _VAR_RE.search(rendered):
+        raise PromptError(f"{prompt_id}: 渲染后仍残留变量")
     return p, rendered
 
 

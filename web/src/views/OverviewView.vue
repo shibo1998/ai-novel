@@ -7,7 +7,6 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   adoptArchive,
   aiGenerate,
-  analyzeStyleF1,
   createCharacter,
   getBible,
   getCharacter,
@@ -15,15 +14,11 @@ import {
   getOverdueForeshadows,
   getOverview,
   getPlotPoints,
-  getStyle,
   listCharactersFull,
   putBible,
   putCharacter,
   putOutlineFull,
   putPlotPoints,
-  putStyleCard,
-  putStyleCorpus,
-  putStyleEnabled,
   runAudit,
   listAudits,
   listMemoryPending,
@@ -42,6 +37,7 @@ import type {
 import { useBookStore } from '@/stores/book'
 import { parseMdTable, toMdTable } from '@/utils/mdtable'
 import { tagType } from '@/utils/status'
+import StyleEditor from '@/components/StyleEditor.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -58,9 +54,6 @@ const overdue = ref<{ chapter: number; grace: number; overdue: string[] }>({
   overdue: [],
 })
 const outlineText = ref('')
-const styleCorpus = ref('')
-const styleCard = ref('')
-const styleEnabled = ref(false)
 const newChar = ref({ name: '', role: '龙套' })
 const charRoles = ['龙套', '重要配角', '反派', '女主', '主角']
 
@@ -163,11 +156,10 @@ async function load(): Promise<void> {
   store.setCurrentBook(name.value)
   void loadMemoryHealth()
   // 读请求并行（老版串行串成 4×RTT）
-  const [o, b, pp, st, od] = await Promise.all([
+  const [o, b, pp, od] = await Promise.all([
     getOverview(name.value),
     getBible(name.value),
     getPlotPoints(name.value),
-    getStyle(name.value),
     // 超期预警失败不该挡住整页 → 单独兜底成空列表
     getOverdueForeshadows(name.value).catch(() => ({ chapter: 0, grace: 30, overdue: [] })),
   ])
@@ -175,9 +167,6 @@ async function load(): Promise<void> {
   bible.value = b
   ppText.value = toMdTable(PP_COLS, pp)
   outlineText.value = toMdTable(OC_COLS, o.outline_rows)
-  styleCorpus.value = st.corpus
-  styleCard.value = st.card
-  styleEnabled.value = st.enabled
   overdue.value = od
   await loadAudits()
 }
@@ -382,49 +371,6 @@ async function saveChar(): Promise<void> {
   }
 }
 
-// —— 文风系统（M5） ——
-async function saveCorpus(): Promise<void> {
-  try {
-    await putStyleCorpus(name.value, styleCorpus.value)
-    ElMessage.success('语料已保存')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function analyzeStyle(): Promise<void> {
-  if (!styleCorpus.value.trim()) {
-    ElMessage.warning('先填语料')
-    return
-  }
-  try {
-    const r = await analyzeStyleF1(name.value)
-    styleCard.value = r.card
-    ElMessage.success('特征卡已生成，请人工改定后保存并启用')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function saveCard(): Promise<void> {
-  try {
-    await putStyleCard(name.value, styleCard.value)
-    ElMessage.success('特征卡已保存')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function toggleStyle(on: boolean | string | number | undefined): Promise<void> {
-  const enabled = Boolean(on)
-  try {
-    await putStyleEnabled(name.value, enabled)
-    ElMessage.success(enabled ? '文风注入已启用（下次生成生效）' : '已停用')
-  } catch {
-    styleEnabled.value = !enabled // 回滚开关
-  }
-}
-
 // —— 卷末审计（V6） ——
 const audits = ref<AuditReport[]>([])
 const auditView = ref<AuditReport | undefined>(undefined)
@@ -612,26 +558,7 @@ async function audit(): Promise<void> {
       <!-- 文风系统 -->
       <div class="panel">
         <h3 class="panel-title">文风系统（M5）</h3>
-        <div class="dim">
-          把你喜欢的书的正文段落（≥500字，建议 3000-10000 字）贴进语料 → 分析生成特征卡 → 人工改定 →
-          启用后每次生成都注入该文风
-        </div>
-        <div class="dim mt-2 mb-1">语料（你认可的目标文风）</div>
-        <el-input
-          v-model="styleCorpus"
-          type="textarea"
-          :rows="6"
-          placeholder="粘贴你喜欢的小说正文片段…"
-        />
-        <div class="mt-2 flex flex-wrap items-center gap-2">
-          <el-button @click="saveCorpus">保存语料</el-button>
-          <el-button type="primary" @click="analyzeStyle">分析生成特征卡（F1）</el-button>
-          <el-switch v-model="styleEnabled" @change="toggleStyle" />
-          <span class="dim">启用文风注入</span>
-        </div>
-        <div class="dim mt-2 mb-1">特征卡（可手改，改完保存）</div>
-        <el-input v-model="styleCard" type="textarea" :rows="8" />
-        <el-button class="mt-2" @click="saveCard">保存特征卡</el-button>
+        <StyleEditor :book="name" />
       </div>
 
       <!-- 伏笔台账 -->

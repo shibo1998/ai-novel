@@ -245,7 +245,8 @@ def test_polish_missing_sensitive_rules_keeps_original(home, book_env):
     (home / "lint" / "sensitive_words.txt").unlink()
     calls = len(mock.calls)
     result = pipeline.polish(book, 1, client=mock)
-    assert result["ok"] is False
+    assert result["status"] == "rejected" and not result["ready"] and not result["applied"]
+    assert result["reason_code"] == "NOT_EFFECTIVE"
     assert len(mock.calls) == calls
     assert chapters.prose_path(book, 1).read_bytes() == before
 

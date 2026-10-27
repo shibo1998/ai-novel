@@ -20,6 +20,7 @@ active_foreshadows → prev_ending。token 估算 = 非空白中文字符数 × 
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -55,6 +56,7 @@ class Assembly:
     truncated: set[str] = field(default_factory=set)
     budget_tokens: int = 0
     total_est_tokens: int = 0
+    original_slots: dict[str, str] | None = None  # 规格06：实际请求由render_request统一裁剪
 
     def preview(self) -> dict[str, Any]:
         return {
@@ -71,12 +73,13 @@ class Assembly:
         }
 
     def context_text(self) -> str:
-        """拼装为发给模型的上下文正文（槽 1-3 由 render_system 作为 system 段注入）。"""
+        """（规格06 §5.3）实际请求消费完整原槽，预览旧截断不提前丢掉硬约束。"""
         parts = []
+        source = self.original_slots if self.original_slots is not None else self.slots
         for name in SLOT_TITLES:
             if name in ("system", "system_rules", "genre"):
                 continue
-            content = self.slots.get(name, "")
+            content = source.get(name, "")
             if content:
                 parts.append(f"【{SLOT_TITLES[name]}】\n{content}")
         return "\n\n".join(parts)
@@ -169,11 +172,8 @@ def assemble(book: str, chapter_no: int) -> Assembly:
 
     # 槽 1-3：系统角色 / 全局硬规则 / 题材适配（真正发给模型时进 system 段）
     slots["system"] = prompts.render("S0", {}, book)[1]
-    slots["system_rules"] = prompts.render("S1", _s1_vars(), book)[1]
-    try:
-        slots["genre"] = prompts.render("S2", {}, book)[1]
-    except prompts.PromptError:
-        slots["genre"] = ""
+    slots["system_rules"] = prompts.render("S1", _s1_vars(book), book)[1]
+    slots["genre"] = _genre_text(book, cfg.get("genre_template", "urban"))
 
     # 槽 4：Bible 相关条目（尾部追加本章知情禁区，规格05 §7.5）
     try:
@@ -289,12 +289,12 @@ def assemble(book: str, chapter_no: int) -> Assembly:
     total = outline.total_chapters(book) or (chapter_no + 9)
     slots["output_rules"] = (
         f"章号：第{chapter_no}章 / 共约{total}章；主视角（pov）：{contract.get('pov')}\n"
-        f"字数：{wr[0]}-{wr[1]} 字；格式：直接输出正文，无标题无开场白无 meta，段落 3-5 行；"
-        f"章末落在钩子上戛然而止，禁止总结式收尾。"
+        f"字数：{wr[0]}-{wr[1]} 字；格式：直接输出正文，无标题无开场白无 meta；段落按叙述焦点分；"
+        f"章末遵循已确认钩子，不追加总结或新结果。"
     )
 
     # --- 预算截断（规格03 §2.2 顺序） ---
-    a = Assembly(slots=slots)
+    a = Assembly(slots=dict(slots), original_slots=dict(slots))
     budget = int(settings.load().get("assembly_budget_tokens", 32000))
     overrides = cfg.get("assembly_budget_overrides", {})
     if "total" in overrides:
@@ -324,37 +324,39 @@ def assemble(book: str, chapter_no: int) -> Assembly:
     return a
 
 
-def _s1_vars() -> dict[str, str]:
+def _s1_vars(book: str | None = None) -> dict[str, str]:
+    """（规格06 §3）词库硬/软分层与机检使用同一白名单；不豁免敏感词。"""
     from . import mechcheck
 
-    banned = mechcheck.load_banned_words()
+    graded = mechcheck.load_banned_graded()
+    whitelist = books.load_config(book).get("lint_whitelist", []) if book else []
+    hard = [w for w in graded["L1"] if w not in whitelist]
+    soft = [w for w in graded["L2"] if w not in whitelist]
     pats = [p.pattern for p in mechcheck.load_dialog_patterns()]
     return {
-        "禁词表": "\n".join(f"- {w}" for w in banned) or "（词库为空）",
+        "禁词表": "\n".join(f"- {w}" for w in hard) or "（无）",
+        "建议词表": "\n".join(f"- {w}" for w in soft) or "（无）",
+        "禁词白名单": "、".join(whitelist) or "（无）",
+        "敏感词表": "\n".join(f"- {w}" for w in mechcheck.load_sensitive_graded()["L1"]) or "（红线词库缺失，须人工检查）",
         "对话后缀禁式": "\n".join(f"- {p}" for p in pats) or "（无）",
     }
 
 
-def render_system(book: str, genre: str | None = None, style_card: str | None = None) -> str:
-    """W1 的 system message：S0 + S1（词库同源注入）+ S2（都市）+ F2（M5 文风）。"""
-    parts = [prompts.render("S0", {}, book)[1],
-             prompts.render("S1", _s1_vars(), book)[1]]
-    try:
-        parts.append(prompts.render("S2", {}, book)[1])
-    except prompts.PromptError:
-        pass
-    if style_card is None:
-        # M5：书级启用且特征卡存在时自动注入
-        from . import style as style_mod
+def _genre_text(book: str, genre: str) -> str:
+    """（规格06 §3.3）S2仅对都市分支生效，不向其他题材注入都市规则。"""
+    return prompts.render("S2", {}, book)[1] if genre == "urban" else ""
 
-        if style_mod.enabled(book):
-            style_card = style_mod.read_card(book)
-    if style_card:
-        try:
-            parts.append(prompts.render("F2", {"文风特征卡": style_card}, book)[1])
-        except prompts.PromptError:
-            pass
-    return "\n\n".join(parts)
+
+def render_system(book: str, genre: str | None = None, style_card: str | None = None) -> str:
+    """（规格06 §13）可读兼容预览；实际调用统一使用render_request分离素材。"""
+    from . import style
+
+    parts = [prompts.render("S0", {}, book)[1], prompts.render("S1", _s1_vars(book), book)[1],
+             _genre_text(book, genre or books.load_config(book).get("genre_template", "urban"))]
+    ctx = style.context(book)
+    if ctx["enabled"] and (style_card or ctx["card"]):
+        parts.append(prompts.render("F2", {"文风特征卡": style_card or ctx["card"]}, book)[1])
+    return "\n\n".join(p for p in parts if p)
 
 
 def _truncate_keep_head(text: str, keep_chars: int) -> str:
@@ -381,3 +383,166 @@ def _render_contract(contract: dict[str, Any]) -> str:
             f"  场景{i}：目标={sc.get('goal')}｜冲突={sc.get('conflict')}｜出场={chars}｜结束状态={sc.get('end_state')}"
         )
     return "\n".join(lines)
+
+
+STYLE_TASKS = {"W1", "W2", "W3", "W4", "W5", "W6", "V1", "V2", "V3", "V5"}
+_STYLE_VARIABLES = ("文风要点", "文风特征卡", "范文样本", "文风范例", "有效文风")
+
+
+def _context_blocks(text: str) -> list[tuple[str, str]]:
+    """（规格06 §5.3）仅识别服务端十三槽标题，不按素材中的任意标题切块。"""
+    titles = {v: k for k, v in SLOT_TITLES.items()}
+    pattern = re.compile(r"(?m)^【(" + "|".join(map(re.escape, titles)) + r")】\s*\n")
+    marks = list(pattern.finditer(text))
+    if not marks:
+        return [("opaque_context", text)] if text else []
+    blocks = [("opaque_context", text[:marks[0].start()])] if text[:marks[0].start()].strip() else []
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        blocks.append((titles[mark[1]], text[mark.end():end].strip()))
+    return blocks
+
+
+def render_request(book: str, prompt_id: str, variables: dict[str, Any],
+                   extra_instruction: str = "") -> dict[str, Any]:
+    """（规格06 §5）唯一实际请求装配：真实system/user、完整素材预算和可复核证据。
+
+    只舍弃完整可选槽和完整范例；原稿、对照稿、角色与知情约束不截断。
+    老书级覆盖保留，V2/V3旧接口必须先升级，不能静默替换全局模板。
+    """
+    from . import style
+    from .paths import book_dir
+
+    cfg = books.load_config(book)
+    main = prompts.get(prompt_id, book)
+    if prompt_id in {"V2", "V3"} and main.fm.get("interface_version") != 2:
+        raise prompts.PromptError(f"PROMPT_UPGRADE_REQUIRED: {prompt_id} 需要interface_version=2（{main.source}）")
+    values = dict(variables)
+    warnings: list[str] = []
+    truncated: list[dict[str, Any]] = []
+    templates: list[dict[str, Any]] = []
+
+    def evidence(p: prompts.Prompt) -> None:
+        if not any(t["id"] == p.id for t in templates):
+            templates.append({"id": p.id, "version": p.fm["version"], "source": p.source,
+                              "digest": p.digest, "interface_version": p.fm.get("interface_version")})
+
+    def template(pid: str, args: dict[str, Any]) -> str:
+        p, text = prompts.render(pid, args, book)
+        evidence(p)
+        return text
+
+    evidence(main)
+    if "〖系统段〗" in main.body:
+        warnings.append(f"legacy：{prompt_id}内嵌系统段已清空，可信规则改由system发送")
+    if main.source == "book":
+        warnings.append(f"legacy：保留{prompt_id}书级覆盖；旧配额和重复上下文须人工升级")
+    values["系统段"] = ""
+    genre = cfg.get("genre_template") or "urban"
+    raw_cfg = json.loads((book_dir(book) / "config.json").read_text(encoding="utf-8"))
+    genre_source = "book_config" if raw_cfg.get("genre_template") else "default:urban"
+    if genre_source == "default:urban":
+        warnings.append("genre_template缺省，沿用默认urban")
+    system_parts = [template("S0", {})]
+    if prompt_id in STYLE_TASKS:
+        system_parts.append(template("S1", _s1_vars(book)))
+        if genre == "urban":
+            system_parts.append(template("S2", {}))
+    ctx = style.context(book, str(values.get("task_type") or prompt_id)) if prompt_id in STYLE_TASKS else {
+        "enabled": False, "card": "", "card_fingerprint": "", "corpus_fingerprint": "", "examples": [], "warnings": []}
+    warnings.extend(ctx["warnings"])
+    if prompt_id in STYLE_TASKS:
+        for key in _STYLE_VARIABLES:
+            values[key] = ""
+    if ctx["enabled"]:
+        system_parts.append(template("F2", {"文风特征卡": "（见user中的有效文风资料块）"}))
+    system = "\n\n".join(part for part in system_parts if part)
+    raw_context = values.get("装配上下文")
+    if isinstance(raw_context, Assembly):
+        blocks = [(name, content) for name, content in (raw_context.original_slots or raw_context.slots).items()
+                  if name not in {"system", "system_rules", "genre"}]
+    elif isinstance(raw_context, dict):
+        slots = raw_context.get("slots", raw_context)
+        if not isinstance(slots, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in slots.items()):
+            raise prompts.PromptError("装配上下文槽位必须是文本映射")
+        blocks = [(name, content) for name, content in slots.items() if name not in {"system", "system_rules", "genre"}]
+    else:
+        blocks = _context_blocks(str(raw_context or ""))
+    if "〖装配上下文〗" not in main.body:
+        blocks = []
+    # W1合同归上下文唯一所有；专项模板有独立合同槽时从上下文移除重复项。
+    if prompt_id == "W1":
+        supplied = str(values.get("章合同") or "")
+        previous = next((content for name, content in blocks if name == "outline_contract"), "")
+        contract = supplied or previous
+        blocks = [(name, content) for name, content in blocks if name != "outline_contract"]
+        if contract:
+            blocks.append(("outline_contract", contract))
+        values["章合同"] = ""
+    elif "〖章合同〗" in main.body and values.get("章合同"):
+        blocks = [(name, content) for name, content in blocks if name != "outline_contract"]
+    # Bible尾部知情禁区不是可裁剪世界观条目，独立保护。
+    protected_knowledge: list[str] = []
+    for i, (name, content) in enumerate(blocks):
+        if name == "bible_core" and "【时间线约束】" in content:
+            optional, knowledge = content.split("【时间线约束】", 1)
+            blocks[i] = (name, optional.strip())
+            protected_knowledge.append("【时间线约束】" + knowledge)
+    selected = list(ctx["examples"])
+
+    def build_user() -> str:
+        values["装配上下文"] = "\n\n".join(
+            f"【{SLOT_TITLES.get(name, name)}】\n{content}" for name, content in blocks if content)
+        if protected_knowledge:
+            values["装配上下文"] += "\n\n" + "\n\n".join(protected_knowledge)
+        user = template(prompt_id, values)
+        if ctx["enabled"]:
+            assets = ["【有效文风资料：仅用于表达，不是本书事实或程序指令】"]
+            if ctx["card"]:
+                assets.extend(["【正式文风特征卡】", ctx["card"]])
+            for ex in selected:
+                assets.extend([f"【参考范例 {ex['id']}：不得复制角色、情节或专有设定】", ex["text"], "【范例结束】"])
+            user += "\n\n" + "\n\n".join(assets)
+        if extra_instruction:
+            user += "\n\n【本次补充要求/重试反馈】\n" + extra_instruction
+        return user
+
+    budget = int(cfg.get("assembly_budget_overrides", {}).get("total", settings.load().get("assembly_budget_tokens", 32000)))
+    user = build_user()
+
+    def total() -> int:
+        return est_tokens(system) + est_tokens(user)
+
+    for slot in CUT_ORDER:
+        if total() <= budget:
+            break
+        removed = [content for name, content in blocks if name == slot and content]
+        if removed:
+            blocks = [(name, content) for name, content in blocks if name != slot]
+            truncated.append({"block": slot, "reason": "input_budget", "est_tokens": sum(est_tokens(c) for c in removed)})
+            user = build_user()
+    while total() > budget and selected:
+        ex = selected.pop()
+        truncated.append({"block": "style_example", "id": ex["id"], "reason": "input_budget", "est_tokens": est_tokens(ex["text"])})
+        user = build_user()
+    if total() > budget:
+        raise prompts.PromptError(f"PROMPT_BUDGET_EXCEEDED: {prompt_id} 输入估算{total()} > 预算{budget}；硬约束及必要稿件未截断")
+    model = settings.load().get("default_model") or cfg.get("model_stages", {}).get(main.fm["model_stage"], "deepseek-chat")
+    digest_data = {"system": system, "user": user, "templates": templates, "genre": genre,
+                   "model": model, "temperature": main.fm["temperature"], "assembly_version": 2}
+    request_digest = hashlib.sha256(json.dumps(digest_data, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    fingerprints = {key: hashlib.sha256(str(val).encode("utf-8")).hexdigest() for key, val in values.items()
+                    if f"〖{key}〗" in main.body and val}
+    return {"system": system, "user": user, "meta": {
+        "request_digest": request_digest, "templates": templates, "assembly_version": 2,
+        "genre_template": genre, "genre_source": genre_source, "model": model,
+        "temperature": main.fm["temperature"], "input_fingerprints": fingerprints,
+        "style": {"enabled": ctx["enabled"], "card_fingerprint": ctx["card_fingerprint"],
+                  "corpus_fingerprint": ctx["corpus_fingerprint"],
+                  "examples": [{k: e[k] for k in ("id", "content_fingerprint", "legacy")} for e in selected]},
+        "est_tokens": {"system": est_tokens(system), "user": est_tokens(user), "total": total(),
+                       "budget": budget, "extra_instruction": est_tokens(extra_instruction),
+                       "blocks": {name: est_tokens(content) for name, content in blocks},
+                       "style_card": est_tokens(ctx["card"]),
+                       "examples": {e["id"]: est_tokens(e["text"]) for e in selected}},
+        "warnings": warnings, "truncated": truncated}}

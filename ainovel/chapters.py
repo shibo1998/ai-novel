@@ -133,9 +133,10 @@ def read_prose(book: str, no: int) -> dict[str, Any]:
 @serialized
 def write_prose(book: str, no: int, fm: dict[str, Any], body: str,
                 *, expected_revision: int | None = None, recheck: bool = True) -> None:
-    """（规格05 P-3、C-02）校验修订号后原子写回正文并使旧检查失效。"""
-    from . import statemachine
+    """（规格05 P-3/C-02、规格06 §9）恢复门禁后校验修订号、写正文并使旧检查失效。"""
+    from . import polish, statemachine
 
+    polish.guard_recovery(book, no)
     if fm.get("chapter_no") != no:
         raise FM.FrontmatterError(f"正文 chapter_no={fm.get('chapter_no')} 与文件章号 {no} 不一致")
     FM.validate(fm, PROSE_SCHEMA)

@@ -29,7 +29,6 @@ import {
   runExempt,
   runFix,
   runMechcheck,
-  runPolish,
   runReview,
   unlockChapter,
 } from '@/api'
@@ -44,6 +43,8 @@ import type {
 } from '@/api/types'
 import { useBookStore } from '@/stores/book'
 import { tagType } from '@/utils/status'
+import PolishPanel from '@/components/PolishPanel.vue'
+import AssemblyPreview from '@/components/AssemblyPreview.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -73,7 +74,14 @@ onUnmounted(() => abortCtrl?.abort())
 const rawDialog = ref(false)
 const rawText = ref('')
 const preview = ref<PreviewResult | null>(null)
-// 规格05：机检过期判定 / AI 味客观分 / 断线草稿
+const previewLoading = ref(false)
+const polishBusy = ref(false)
+let pageSession = 0
+let loadRequest = 0
+onUnmounted(() => {
+  pageSession++
+})
+// 规格05 / 06：机检过期判定 / 文风规则提示（非 AI 概率）/ 断线草稿。
 const checkStatus = ref<CheckStatus | null>(null)
 const deslopRes = ref<DeslopResult | null>(null)
 const draft = ref<DraftInfo | null>(null)
@@ -265,6 +273,11 @@ function autoNote(msg: string): void {
 const AUTO_TERMINAL = ['pending_finalize', 'human_review', 'finalized', 'error']
 
 async function runAuto(): Promise<void> {
+  if (autoRunning.value) return
+  const target = { book: book.value, no: no.value, session: pageSession }
+  const current = () =>
+    target.session === pageSession && target.book === book.value && target.no === no.value
+  const ownsRun = () => target.session === pageSession
   autoRunning.value = true
   autoLog.value = []
   let rounds = 0
@@ -277,15 +290,19 @@ async function runAuto(): Promise<void> {
     while (rounds < 3) {
       rounds++
       autoNote(`第 ${rounds} 轮 · 跑机械检查…`)
-      const m = await runMechcheck(book.value, no.value)
+      const m = await runMechcheck(target.book, target.no)
+      if (!current()) return
       await reload()
+      if (!current()) return
       status = m.status
       autoNote(`机检完成 → 状态 ${status}`)
       if (AUTO_TERMINAL.includes(status)) break
       if (status !== 'llm_review') break
       autoNote('跑 LLM 审校（P-V1 五维）…')
-      const r = await runReview(book.value, no.value)
+      const r = await runReview(target.book, target.no)
+      if (!current()) return
       await reload()
+      if (!current()) return
       status = r.status
       autoNote(`审校 verdict=${r.verdict} → 状态 ${status}`)
       if (AUTO_TERMINAL.includes(status)) break
@@ -302,7 +319,7 @@ async function runAuto(): Promise<void> {
   } catch {
     // 拦截器已提示
   } finally {
-    autoRunning.value = false
+    if (ownsRun()) autoRunning.value = false
   }
 }
 
@@ -311,7 +328,7 @@ const outlineEditable = computed(() =>
 )
 
 const REVIEW_DIMS: [string, string][] = [
-  ['ai_flavor', 'AI味'],
+  ['ai_flavor', '文风读感'],
   ['plot', '剧情一致性'],
   ['pacing', '节奏爽点'],
   ['prose', '文笔画面'],
@@ -319,9 +336,16 @@ const REVIEW_DIMS: [string, string][] = [
 ]
 
 async function load(): Promise<void> {
-  store.setCurrentBook(book.value)
-  data.value = await getWorkbench(book.value, no.value)
-  streamText.value = data.value.prose?._body ?? '（生成区）'
+  const b = book.value
+  const n = no.value
+  const session = pageSession
+  const request = ++loadRequest
+  store.setCurrentBook(b)
+  const result = await getWorkbench(b, n)
+  if (session !== pageSession || request !== loadRequest || b !== book.value || n !== no.value)
+    return
+  data.value = result
+  streamText.value = result.prose?._body ?? '（生成区）'
   // 三个只读状态并行拉；任一失败都不能挡住工作台（主数据已到手）
   void loadSideState()
   await loadVersions()
@@ -330,11 +354,13 @@ async function load(): Promise<void> {
 async function loadSideState(): Promise<void> {
   const b = book.value
   const n = no.value
+  const session = pageSession
   const [cs, dr, dl] = await Promise.all([
     getCheckStatus(b, n).catch(() => null),
     getDraft(b, n).catch(() => null),
     getDeslop(b, n).catch(() => null),
   ])
+  if (session !== pageSession || b !== book.value || n !== no.value) return
   checkStatus.value = cs
   draft.value = dr
   deslopRes.value = dl
@@ -406,6 +432,16 @@ async function rebuildMemory(): Promise<void> {
 watch(
   [book, no],
   () => {
+    pageSession++
+    autoRunning.value = false
+    data.value = null
+    checkStatus.value = null
+    draft.value = null
+    deslopRes.value = null
+    versions.value = []
+    preview.value = null
+    previewLoading.value = false
+    polishBusy.value = false
     abortCtrl?.abort() // 切章/切书时取消旧流，避免旧章内容写进新章视图
     void load().catch(() => {})
   },
@@ -609,10 +645,18 @@ async function generate(): Promise<void> {
 
 // —— 装配预览 ——
 async function loadPreview(): Promise<void> {
+  if (previewLoading.value) return
+  const b = book.value
+  const n = no.value
+  const session = pageSession
+  previewLoading.value = true
   try {
-    preview.value = await getAssemblyPreview(book.value, no.value)
+    const result = await getAssemblyPreview(b, n)
+    if (session === pageSession && b === book.value && n === no.value) preview.value = result
   } catch {
-    // 拦截器已提示
+    // 拦截器已提示。
+  } finally {
+    if (session === pageSession) previewLoading.value = false
   }
 }
 
@@ -643,32 +687,6 @@ async function fix(): Promise<void> {
   try {
     const r = await runFix(book.value, no.value)
     ElMessage.success(`修复完成 ${r.word_count} 字；原检查结论已失效，请重新跑机械检查`)
-    await reload()
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function polish(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      '整章润色（V2 去AI味 + V3 复核）：不改剧情人设，字数浮动>10%或机检阻断会自动丢弃；采纳后必须重新机检。继续？',
-      '整章润色',
-      { type: 'warning' },
-    )
-  } catch {
-    return
-  }
-  try {
-    const r = await runPolish(book.value, no.value)
-    if (r.ok) {
-      ElMessage.success({
-        message: `润色完成：${r.word_count?.before}→${r.word_count?.after} 字，V3=${r.v3?.verdict}，改动 ${r.changes?.length ?? 0} 处；原检查结论已失效，请重新机检`,
-        duration: 8000,
-      })
-    } else {
-      ElMessage.warning(`润色被丢弃：${r.reason}`)
-    }
     await reload()
   } catch {
     // 拦截器已提示
@@ -769,8 +787,13 @@ async function unlock(): Promise<void> {
 }
 
 async function loadVersions(): Promise<void> {
+  const b = book.value
+  const n = no.value
+  const session = pageSession
   try {
-    versions.value = await listVersions(book.value, no.value)
+    const result = await listVersions(b, n)
+    if (session !== pageSession || b !== book.value || n !== no.value) return
+    versions.value = result
     rewriteVer.value = versions.value.length
       ? versions.value[versions.value.length - 1]!.version
       : null
@@ -910,7 +933,7 @@ async function rewrite(): Promise<void> {
       <div class="panel">
         <h3 class="panel-title">② 正文生成</h3>
         <div class="flex flex-wrap items-center gap-2">
-          <el-button type="primary" :disabled="generating" @click="generate">
+          <el-button type="primary" :disabled="generating || polishBusy" @click="generate">
             {{ generating ? '生成中…' : '开始生成（流式）' }}
           </el-button>
           <el-select v-model="promptId" style="width: 230px">
@@ -922,7 +945,7 @@ async function rewrite(): Promise<void> {
             />
           </el-select>
           <!-- 人工手改正文（规格03 §2.5 三选项之一）：finalized 由后端 400 拒绝，这里同步禁用 -->
-          <el-button :disabled="!canEditProse" @click="openProseEdit">
+          <el-button :disabled="!canEditProse || polishBusy" @click="openProseEdit">
             {{ data?.status === 'finalized' ? '编辑正文（已定稿，请先解锁）' : '编辑正文' }}
           </el-button>
           <!-- 定稿章专用：逐条替换、唯一命中、≤5%、强制理由；不必解锁重跑全链路 -->
@@ -950,23 +973,11 @@ async function rewrite(): Promise<void> {
 
       <!-- 装配预览 -->
       <div class="panel">
-        <h3 class="panel-title">装配预览（13 槽位 · 排查跑偏第一入口）</h3>
-        <el-button @click="loadPreview">生成装配预览</el-button>
-        <template v-if="preview">
-          <div class="dim mt-2">
-            总估算 {{ preview.total_est_tokens }} tokens / 预算 {{ preview.budget_tokens }} · 已存
-            {{ preview.saved_to || '' }}
-          </div>
-          <el-collapse class="mt-1">
-            <el-collapse-item
-              v-for="(s, idx) in preview.slots"
-              :key="idx"
-              :title="`${s.title} · ${s.est_tokens}t${s.truncated ? ' · 已截断' : ''}`"
-            >
-              <pre class="stream-box">{{ s.content || '（空）' }}</pre>
-            </el-collapse-item>
-          </el-collapse>
-        </template>
+        <h3 class="panel-title">装配预览（实际请求 / 上下文槽位）</h3>
+        <el-button :loading="previewLoading" :disabled="previewLoading" @click="loadPreview"
+          >生成装配预览</el-button
+        >
+        <AssemblyPreview v-if="preview" :preview="preview" />
       </div>
     </div>
 
@@ -975,11 +986,15 @@ async function rewrite(): Promise<void> {
       <div class="panel">
         <h3 class="panel-title">③ 机械检查（零 token）</h3>
         <div class="mb-2 flex flex-wrap items-center gap-2">
-          <el-button type="primary" :disabled="data?.status === 'finalized'" @click="mech">
+          <el-button
+            type="primary"
+            :disabled="data?.status === 'finalized' || polishBusy"
+            @click="mech"
+          >
             跑机械检查（含自动修复1轮）
           </el-button>
           <!-- 章内自动编排（规格01 §4）：机检 → 审校 → 再机检，上限 3 轮，到人工关/待定稿即停 -->
-          <el-button :loading="autoRunning" :disabled="autoRunning" @click="runAuto">
+          <el-button :loading="autoRunning" :disabled="autoRunning || polishBusy" @click="runAuto">
             一键跑完本章（机检→审校→再机检）
           </el-button>
           <span class="dim">阻断→自动 P-V5 修复一轮→重查；敏感词直接转人工</span>
@@ -1027,12 +1042,22 @@ async function rewrite(): Promise<void> {
             v-for="(i, idx) in data.mech.issues"
             :key="idx"
             class="issue clickable"
-            :class="{ blocking: i.level === 'block' }"
+            :class="{
+              blocking: i.level === 'block' && i.rule !== 'M-12' && !i.rule.startsWith('D-'),
+            }"
             :title="`点击跳转到正文第 ${i.line} 行`"
             @click="jumpToLine(i.line)"
           >
             <b>{{ i.rule }}</b>
-            <el-tag :type="tagType(i.level)" size="small">{{ i.level }}</el-tag>
+            <el-tag
+              :type="i.rule === 'M-12' || i.rule.startsWith('D-') ? 'info' : tagType(i.level)"
+              size="small"
+              >{{
+                i.rule === 'M-12' || i.rule.startsWith('D-')
+                  ? `历史/配置 ${i.level} · 有效 advisory（建议）`
+                  : i.level
+              }}</el-tag
+            >
             行{{ i.line }} · {{ i.word }}<br />
             <span class="dim">{{ i.message }}</span>
           </div>
@@ -1040,24 +1065,18 @@ async function rewrite(): Promise<void> {
         <span v-else class="dim">（未跑）</span>
       </div>
 
-      <!-- ③b AI 味确定性检测（零 token，只报不改） -->
+      <!-- 规格06 §11.3：M-12/D 系列只作建议，不单独阻断或自动改写。 -->
       <div class="panel">
-        <h3 class="panel-title">③b AI 味检测（规则集，零 token）</h3>
+        <h3 class="panel-title">③b 文风规则提示（非 AI 生成概率，零 token）</h3>
         <div class="mb-2 flex flex-wrap items-center gap-2">
           <el-button @click="loadSideState">重跑检测</el-button>
           <template v-if="deslopRes && deslopRes.score >= 0">
-            <span>干净度</span>
-            <el-tag
-              :type="
-                deslopRes.score >= 80 ? 'success' : deslopRes.score >= 60 ? 'warning' : 'danger'
-              "
-              size="small"
-            >
-              {{ deslopRes.score }} / 100
-            </el-tag>
+            <span>兼容规则分（非发布结论）</span>
+            <el-tag type="info" size="small"> {{ deslopRes.score }} / 100 </el-tag>
             <span class="dim">
-              结构性硬伤 {{ deslopRes.hits_count.blocking }} 条 · 提示
-              {{ deslopRes.hits_count.advisory }} 条 · {{ deslopRes.word_count }} 字
+              历史/配置 blocking 标签 {{ deslopRes.hits_count.blocking }} 条 · advisory 标签
+              {{ deslopRes.hits_count.advisory }} 条 · 当前有效处理均为建议 ·
+              {{ deslopRes.word_count }} 字
             </span>
           </template>
           <span v-else-if="deslopRes" class="dim">正文过短，未评分</span>
@@ -1067,27 +1086,26 @@ async function rewrite(): Promise<void> {
           v-for="(h, i) in (deslopRes?.hits ?? []).slice(0, 12)"
           :key="i"
           class="issue clickable"
-          :class="{ blocking: h.level === 'blocking' }"
           :title="`点击跳转到正文第 ${h.line} 行`"
           @click="jumpToLine(h.line)"
         >
           <b>{{ h.rule }}</b>
-          <el-tag :type="h.level === 'blocking' ? 'danger' : 'warning'" size="small">
-            {{ h.level }}
+          <el-tag type="info" size="small">
+            历史/配置 {{ h.level }} · 有效 advisory（建议）
           </el-tag>
           行{{ h.line }} · {{ h.quote }}<br />
           <span class="dim">{{ h.message }}</span>
         </div>
         <div class="dim mt-2">
-          检测器只给客观证据（哪条规则、第几行），改写仍由「整章润色 /
-          定向修复」做，改完重新跑机检。
+          M-12 / D 系列仅给文风证据，不是 AI 概率，不单独阻断或触发自动修复，也不代表可以发布。
+          如需调整，可人工编辑或生成只读润色候选；M-04 敏感词等硬门禁不变。
         </div>
       </div>
 
       <!-- ④ LLM 审校 -->
       <div class="panel">
         <h3 class="panel-title">④ LLM 审校（P-V1 五维）</h3>
-        <el-button type="primary" @click="review">跑审校</el-button>
+        <el-button type="primary" :disabled="polishBusy" @click="review">跑审校</el-button>
         <template v-if="data?.review">
           <div class="mb-1 mt-2">
             verdict：
@@ -1142,17 +1160,31 @@ async function rewrite(): Promise<void> {
         <span v-else class="dim">（未跑）</span>
       </div>
 
+      <PolishPanel
+        :key="`${book}:${no}`"
+        :book="book"
+        :no="no"
+        :revision="data?.row?.state_revision"
+        :status="data?.status ?? ''"
+        :disabled="
+          generating || autoRunning || proseDialog || proseSaving || correctDialog || !data
+        "
+        @busy="polishBusy = $event"
+        @applied="reload"
+      />
+
       <!-- ⑤ 人工关口 / 定稿 -->
       <div class="panel">
         <h3 class="panel-title">⑤ 人工关口 / 定稿</h3>
         <div class="mb-2 flex flex-wrap gap-2">
-          <el-button @click="fix">定向修复（P-V5）</el-button>
-          <el-button @click="polish">整章润色（P-V2+V3）</el-button>
-          <el-button @click="exempt">豁免（必填理由）</el-button>
-          <el-button @click="backOutline">改细纲重写</el-button>
+          <el-button :disabled="polishBusy" @click="fix">定向修复（P-V5）</el-button>
+          <el-button :disabled="polishBusy" @click="exempt">豁免（必填理由）</el-button>
+          <el-button :disabled="polishBusy" @click="backOutline">改细纲重写</el-button>
         </div>
         <div class="flex flex-wrap items-center gap-2">
-          <el-button type="primary" @click="finalize">定稿（二次确认→快照+回写）</el-button>
+          <el-button type="primary" :disabled="polishBusy" @click="finalize"
+            >定稿（二次确认→快照+回写）</el-button
+          >
           <!-- 记忆卡回写失败时定稿仍然成立（不该因回写丢稿），但事实没进长期记忆；
                没有这个入口，那一章的状态/伏笔就永久缺席，下游毫无提示 -->
           <el-button
@@ -1163,7 +1195,9 @@ async function rewrite(): Promise<void> {
           >
             补做记忆卡
           </el-button>
-          <el-button type="danger" plain @click="rewrite">从版本重写</el-button>
+          <el-button type="danger" plain :disabled="polishBusy" @click="rewrite"
+            >从版本重写</el-button
+          >
           <el-select v-model="rewriteVer" placeholder="选择快照版本" clearable style="width: 260px">
             <el-option
               v-for="v in versions"
@@ -1173,12 +1207,18 @@ async function rewrite(): Promise<void> {
             />
           </el-select>
           <!-- 定稿返工：解锁后才能手改/修复（定稿后正文受快照保护） -->
-          <el-button v-if="data?.status === 'finalized'" type="warning" plain @click="unlock">
+          <el-button
+            v-if="data?.status === 'finalized'"
+            type="warning"
+            plain
+            :disabled="polishBusy"
+            @click="unlock"
+          >
             解锁返工（退回待定稿）
           </el-button>
         </div>
         <div v-if="data?.status === 'finalized'" class="dim mt-1">
-          本章已定稿，正文受快照保护——「定向修复」「整章润色」「编辑正文」都会被拒绝。
+          本章已定稿，正文受快照保护——「定向修复」「生成润色候选」「编辑正文」需先解锁。
           要返工请先「解锁返工」：状态退回待定稿，快照与版本历史都保留，改完重新定稿即可。
         </div>
         <div class="mt-2 flex flex-wrap items-center gap-2">

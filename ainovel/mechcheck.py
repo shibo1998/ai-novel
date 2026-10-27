@@ -1,4 +1,6 @@
-"""机械检查（规格03 §2.4，规格05 §2）：零 token 规则表 M-01 ~ M-11。
+"""机械检查（规格03 §2.4，规格05 §2，规格06 §3）：零 token 规则表。
+
+M-12/D保留历史level但有效级别仅提醒，不阻断或触发自动修复。
 
 阻断（block）：M-01/02/03/04；提醒（warn）：M-05..M-11。
 M-04 敏感词 = 阻断 + 禁止自动改写（红线必须人审，规格03 §3）。
@@ -47,8 +49,13 @@ class Hit:
     word: str
     message: str
 
+    @property
+    def effective_level(self) -> str:
+        """（规格06 §3）历史level留作来源，M-12/D系列始终仅提醒。"""
+        return "warn" if self.rule == "M-12" or self.rule.startswith("D-") else self.level
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), "effective_level": self.effective_level}
 
 
 @dataclass
@@ -89,11 +96,11 @@ class CheckResult:
 
     @property
     def blocks(self) -> list[Hit]:
-        return [h for h in self.hits if h.level == "block"]
+        return [h for h in self.hits if h.effective_level == "block"]
 
     @property
     def warns(self) -> list[Hit]:
-        return [h for h in self.hits if h.level == "warn"]
+        return [h for h in self.hits if h.effective_level == "warn"]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -366,13 +373,14 @@ def check_full(body: str, *, word_range: list[int] | None = None,
         else:
             block_th = float(th.get("ai_flavor_block", 45))
             warn_th = float(th.get("ai_flavor_warn", 60))
-            top = "、".join(f"{h.rule}×1" for h in dres.blocking[:3]) or "密度超限"
-            if dres.score < block_th and dres.blocking:
+            historical_blocks = [h for h in dres.hits if h.level == "blocking"]
+            top = "、".join(f"{h.rule}×1" for h in historical_blocks[:3]) or "密度超限"
+            if dres.score < block_th and historical_blocks:
                 hits.append(Hit("M-12", "block", 0, str(dres.score),
-                                f"AI 味干净度 {dres.score}（<{block_th:.0f}），结构性硬伤：{top}"))
+                                f"文风规则提示 {dres.score}（历史阈值<{block_th:.0f}）：{top}；仅建议，非AI生成概率"))
             elif dres.score < warn_th:
                 hits.append(Hit("M-12", "warn", 0, str(dres.score),
-                                f"AI 味干净度 {dres.score}（<{warn_th:.0f}），建议润色"))
+                                f"文风规则提示 {dres.score}（<{warn_th:.0f}）；仅建议，非AI生成概率"))
     except deslop.ConfigError as e:  # 参数写坏：不崩，但必须留痕
         ineffective.append(Ineffective("M-12", REASON_CRASH, str(e)))
     except Exception as e:  # 规则崩溃不能让整章机检失败，但必须可见
@@ -697,7 +705,7 @@ def _run_checks(body: str, *, word_range: list[int] | None, th: dict[str, Any],
 
 
 def has_block(hits: list[Hit]) -> bool:
-    return any(h.level == "block" for h in hits)
+    return any(h.effective_level == "block" for h in hits)
 
 
 def has_sensitive(hits: list[Hit]) -> bool:

@@ -19,7 +19,8 @@ from . import (assembler, bible, books, chapters, characters, conflicts, db,
                fts, llm, mechcheck, outline, pipeline, prompts, settings,
                statemachine)
 from .paths import book_dir, project_root
-from .operations import BusyError, serialized
+from .operations import BusyError, chapter_serialized, serialized
+from .polish import PolishError
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,13 @@ async def _busy_handler(request: Request, exc: BusyError) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
+@app.exception_handler(PolishError)
+async def _polish_error_handler(request: Request, exc: PolishError) -> JSONResponse:
+    """（规格06 §10）操作前恢复门禁与候选业务错误返回稳定状态码。"""
+    return JSONResponse(status_code=exc.http_status,
+                        content={"detail": {"code": exc.code, "message": str(exc)}})
+
+
 @app.exception_handler(ValueError)
 async def _input_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     """（规格05 C-02）互斥入口的路径/参数校验失败同样返回 400。"""
@@ -64,6 +72,13 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 
 def _err(e: Exception, code: int = 400) -> HTTPException:
     logger.warning("请求处理失败: %s", e)
+    from .polish import PolishError
+    from .style import StyleConflict
+
+    if isinstance(e, PolishError):
+        return HTTPException(status_code=e.http_status, detail={"code": e.code, "message": str(e)})
+    if isinstance(e, StyleConflict):
+        return HTTPException(status_code=409, detail=str(e))
     if isinstance(e, BusyError) or (isinstance(e, statemachine.StateError) and "并发" in str(e)):
         code = 409
     return HTTPException(status_code=code, detail=str(e))
@@ -779,7 +794,7 @@ class OutlineEditPayload(BaseModel):
 
 
 @app.put("/api/books/{book}/chapters/{no}/outline")
-@serialized
+@chapter_serialized
 def edit_outline_file(book: str, no: int, payload: OutlineEditPayload):
     st = statemachine.current_status(book, no)
     if st not in ("awaiting_outline", "outline_draft", "error"):
@@ -863,6 +878,22 @@ def generate_stream(book: str, no: int, payload: dict | None = None):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.get("/api/books/{book}/chapters/{no}/prose")
+@serialized
+def get_prose(book: str, no: int):
+    """（规格06 §10）正文只读视图附服务端段落标识和修订号。"""
+    from . import polish as editor
+
+    try:
+        prose = chapters.read_prose(book, no)
+        row = statemachine.get_row(book, no)
+        return prose | {"state_revision": int(row["state_revision"]) if row else 0,
+                        "blocks": [{"id": item["id"], "text": item["text"]}
+                                   for item in editor.blocks(prose["_body"])]}
+    except Exception as error:
+        raise _err(error)
+
+
 @app.get("/api/books/{book}/chapters/{no}/draft")
 def get_draft(book: str, no: int):
     try:
@@ -898,7 +929,7 @@ def discard_draft(book: str, no: int):
 
 
 @app.post("/api/books/{book}/chapters/{no}/mechcheck")
-@serialized
+@chapter_serialized
 def mech_check(book: str, no: int):
     try:
         # 人工复核后重新验：human_review 因机检阻断而落点，用户定点修复/手改正文
@@ -1231,7 +1262,7 @@ PROSE_EDITABLE_STATES = ("mech_check", "llm_review", "human_review",
 
 
 @app.put("/api/books/{book}/chapters/{no}/prose")
-@serialized
+@chapter_serialized
 def edit_prose(book: str, no: int, payload: ProseEditPayload):
     """人工手改正文（规格03 §2.5 人工关三选项之一）。
 
@@ -1288,7 +1319,7 @@ def correct_prose_endpoint(book: str, no: int, payload: ProseCorrectPayload):
 
 
 @app.post("/api/books/{book}/chapters/{no}/unlock")
-@serialized
+@chapter_serialized
 def unlock_chapter(book: str, no: int):
     """定稿返工：finalized → pending_finalize（规格01 §4）。
 
@@ -1349,7 +1380,7 @@ def rewrite(book: str, no: int, payload: RewritePayload | None = None):
 
 
 @app.post("/api/books/{book}/chapters/{no}/retry")
-@serialized
+@chapter_serialized
 def retry(book: str, no: int):
     try:
         st = statemachine.transition(book, no, "retry")
@@ -1358,13 +1389,90 @@ def retry(book: str, no: int):
     return {"ok": True, "status": st}
 
 
+class PolishCreatePayload(BaseModel):
+    """（规格06 §10.2）候选请求不表示授权写回正文。"""
+    model_config = {"extra": "forbid"}
+    expected_revision: int | None = None
+    client_request_id: str | None = None
+    mode: str = "auto"
+    selected_blocks: list[str] = []
+
+
+class PolishApprovePayload(BaseModel):
+    """（规格06 §10.3）源稿与候选双端校验，禁止强制覆盖。"""
+    model_config = {"extra": "forbid"}
+    expected_revision: int
+    source_fingerprint: str
+    candidate_fingerprint: str
+
+
 @app.post("/api/books/{book}/chapters/{no}/polish")
-def polish(book: str, no: int):
-    """V2 整章润色去AI味 + V3 复核（M3）。"""
+def polish(book: str, no: int, payload: PolishCreatePayload | None = None):
+    """（规格06 §7）仅生成候选；旧无请求体调用也不得自动写稿。"""
     try:
-        return pipeline.polish(book, no)
-    except Exception as e:
-        raise _err(e)
+        values = payload.model_dump() if payload else {}
+        result = pipeline.polish(book, no, **values)
+        if payload is None:
+            result.setdefault("warnings", []).append("旧客户端未提供请求标识，请升级；本次只生成预览")
+        return result
+    except Exception as error:
+        raise _err(error)
+
+
+@app.get("/api/books/{book}/chapters/{no}/polish/blocks")
+@serialized
+def polish_blocks(book: str, no: int):
+    from . import polish as editor
+
+    try:
+        prose = chapters.read_prose(book, no)
+        row = statemachine.get_row(book, no)
+        return {"blocks": [{"id": block["id"], "text": block["text"]}
+                           for block in editor.blocks(prose["_body"])],
+                "source_revision": int(row["state_revision"]) if row else 0,
+                "source_fingerprint": mechcheck.fingerprint(prose["_body"])}
+    except Exception as error:
+        raise _err(error)
+
+
+@app.get("/api/books/{book}/chapters/{no}/polish/candidates")
+def polish_candidates(book: str, no: int):
+    from . import polish as editor
+
+    try:
+        return editor.list_candidates(book, no)
+    except Exception as error:
+        raise _err(error)
+
+
+@app.get("/api/books/{book}/chapters/{no}/polish/candidates/{candidate_id}")
+def polish_candidate(book: str, no: int, candidate_id: str):
+    from . import polish as editor
+
+    try:
+        return editor.get_candidate(book, no, candidate_id)
+    except Exception as error:
+        raise _err(error)
+
+
+@app.post("/api/books/{book}/chapters/{no}/polish/candidates/{candidate_id}/approve")
+def approve_polish(book: str, no: int, candidate_id: str, payload: PolishApprovePayload):
+    from . import polish as editor
+
+    try:
+        return editor.approve(book, no, candidate_id, **payload.model_dump())
+    except Exception as error:
+        raise _err(error)
+
+
+@app.post("/api/books/{book}/chapters/{no}/polish/candidates/{candidate_id}/discard")
+def discard_polish(book: str, no: int, candidate_id: str):
+    from . import polish as editor
+
+    try:
+        return editor.discard(book, no, candidate_id)
+    except Exception as error:
+        raise _err(error)
 
 
 @app.post("/api/books/{book}/audit/{last_chapter}")
@@ -1407,12 +1515,15 @@ def list_audits(book: str):
 def get_style(book: str):
     from . import style as st
 
-    return {"corpus": st.read_corpus(book), "card": st.read_card(book),
-            "enabled": st.enabled(book)}
+    try:
+        return st.describe(book)
+    except Exception as error:
+        raise _err(error)
 
 
 class TextPayload(BaseModel):
     text: str
+    expected_fingerprint: str | None = None
 
 
 @app.put("/api/books/{book}/style/corpus")
@@ -1420,8 +1531,12 @@ class TextPayload(BaseModel):
 def put_corpus(book: str, payload: TextPayload):
     from . import style as st
 
-    st.write_corpus(book, payload.text)
-    return {"ok": True, "chars": len(payload.text)}
+    try:
+        fingerprint = st.write_corpus(book, payload.text, payload.expected_fingerprint)
+        return {"ok": True, "chars": len(payload.text), "fingerprint": fingerprint,
+                "concurrency_protected": payload.expected_fingerprint is not None}
+    except Exception as error:
+        raise _err(error)
 
 
 @app.put("/api/books/{book}/style/card")
@@ -1429,24 +1544,50 @@ def put_corpus(book: str, payload: TextPayload):
 def put_card(book: str, payload: TextPayload):
     from . import style as st
 
-    st.write_card(book, payload.text)
-    return {"ok": True}
+    try:
+        fingerprint = st.write_card(book, payload.text, payload.expected_fingerprint)
+        return {"ok": True, "fingerprint": fingerprint,
+                "concurrency_protected": payload.expected_fingerprint is not None}
+    except Exception as error:
+        raise _err(error)
+
+
+class StyleExamplesPayload(BaseModel):
+    model_config = {"extra": "forbid"}
+    corpus_fingerprint: str
+    examples: list[dict[str, Any]]
+
+
+@app.put("/api/books/{book}/style/examples")
+@serialized
+def put_style_examples(book: str, payload: StyleExamplesPayload):
+    from . import style as st
+
+    try:
+        return st.save_examples(book, payload.corpus_fingerprint, payload.examples)
+    except Exception as error:
+        raise _err(error, 422)
 
 
 @app.post("/api/books/{book}/style/analyze")
+@serialized
 def analyze_style(book: str):
-    """F1：语料 → 特征卡（写盘但不自动启用，人改定后手动开启）。"""
+    """（规格06 §4.2）返回未保存草案，绝不覆盖正式文风卡。"""
     from . import style as st
 
-    corpus = st.read_corpus(book)
+    baseline = st.describe(book)
+    corpus = baseline["corpus"]
     if len(corpus.strip()) < 500:
         raise _err(ValueError(f"语料太短（{len(corpus.strip())} 字），至少 500 字"))
     try:
-        res, p, _t = pipeline._call(book, None, "style", "F1", {"语料样本": corpus[:60000]})
-    except Exception as e:
-        raise _err(e, 502)
-    st.write_card(book, res.text)
-    return {"ok": True, "card": res.text, "digest": p.digest}
+        res, prompt, _text = pipeline._call(book, None, "style", "F1", {"语料样本": corpus[:60000]})
+        if res.finish_reason == "length" or not res.text.strip():
+            raise pipeline.PipelineError("文风草案为空或被截断，未保存")
+        return {"ok": True, "card": res.text, "digest": prompt.digest, "applied": False,
+                "corpus_fingerprint": baseline["corpus_fingerprint"],
+                "card_fingerprint": baseline["card_fingerprint"]}
+    except Exception as error:
+        raise _err(error, 502)
 
 
 class StyleToggle(BaseModel):

@@ -71,6 +71,8 @@ export interface Prose {
   _body: string
   status?: string
   [k: string]: unknown
+  state_revision?: number
+  blocks?: ProseBlock[]
 }
 
 export interface MechHit {
@@ -79,6 +81,7 @@ export interface MechHit {
   line: number
   word: string
   message: string
+  effective_level?: string
 }
 
 export interface ReviewIssue {
@@ -133,6 +136,7 @@ export interface DeslopHit {
   quote: string
   weight: number
   message: string
+  effective_level?: string
 }
 
 export interface DeslopResult {
@@ -142,6 +146,7 @@ export interface DeslopResult {
   word_count: number
   hits_count: { blocking: number; advisory: number }
   density_penalty: number
+  effective_level?: string
 }
 
 /** 半成品草稿状态（生成为中断时仍在） */
@@ -246,6 +251,9 @@ export interface PreviewResult {
   budget_tokens: number
   saved_to?: string
   slots: PreviewSlot[]
+  actual_requests?: ActualRequest[]
+  latest_request?: ActualRequest | null
+  warnings?: unknown[]
 }
 
 export interface VersionInfo {
@@ -255,12 +263,165 @@ export interface VersionInfo {
   [k: string]: unknown
 }
 
-export interface PolishResult {
+/** 规格06 §7—10：候选只读，ready 与 applied 分开，ok 不表示已写回。 */
+export interface ProseBlock {
+  id: string
+  text: string
+}
+
+export interface PolishBlocks {
+  source_revision: number
+  source_fingerprint: string
+  blocks: ProseBlock[]
+}
+
+export type PolishStatus =
+  | 'generating'
+  | 'ready'
+  | 'rejected'
+  | 'no_change'
+  | 'error'
+  | 'interrupted'
+  | 'applying'
+  | 'applied'
+  | 'discarded'
+  | 'stale'
+  | 'recovery_required'
+
+export interface PolishPayload {
+  expected_revision: number
+  client_request_id: string
+  mode: 'auto' | 'selected'
+  selected_blocks: string[]
+}
+
+export interface PolishEdit {
+  start_block: string
+  end_block: string
+  original: string
+  replacement: string
+  category: string
+  reason: string
+}
+
+export interface PolishV3 {
+  verdict?: string
+  clean?: boolean
+  style_verdict?: 'improved' | 'unchanged' | 'worse' | 'unknown'
+  fidelity_verdict?: string
+  [k: string]: unknown
+}
+
+export interface PolishSummary {
+  candidate_id: string
+  status: PolishStatus
+  ready?: boolean
+  source_revision?: number
+  reason_code?: string | null
+  reason?: string | null
+  created_at?: string
+}
+
+export interface PolishResult extends PolishSummary {
   ok: boolean
+  ready: boolean
+  applied: boolean
+  source_fingerprint: string
+  candidate_fingerprint: string
+  source_revision: number
   word_count?: { before: number; after: number }
-  v3?: { verdict: string }
-  changes?: unknown[]
-  reason?: string
+  edits: PolishEdit[]
+  checks?: Record<string, unknown> | unknown[]
+  v3?: PolishV3 | null
+  source?: string
+  candidate?: string
+  cost?: { calls: number; cost_millicents: number }
+  warnings?: unknown[]
+  receipt?: unknown
+}
+
+export interface PolishApproval {
+  expected_revision: number
+  source_fingerprint: string
+  candidate_fingerprint: string
+}
+
+export interface PolishApplyResult {
+  ok: boolean
+  applied: boolean
+  receipt: unknown
+  state_revision: number
+  status: string
+}
+
+/** 规格06 §5：实际请求证据；旧日志没有快照时不伪造 system/user。 */
+export interface ActualRequest {
+  request_id: string
+  system: string
+  user: string
+  meta: {
+    tokens?: unknown
+    est_tokens?: unknown
+    token_estimates?: unknown
+    templates?: unknown
+    style?: unknown
+    warnings?: unknown[]
+    [k: string]: unknown
+  }
+}
+
+export type StyleScene =
+  | 'opening'
+  | 'dialogue'
+  | 'action'
+  | 'reasoning'
+  | 'transition'
+  | 'breakthrough'
+  | 'climax'
+  | 'general'
+
+export interface StyleExampleInput {
+  id?: string
+  start_paragraph: number
+  end_paragraph: number
+  scene_types: StyleScene[]
+}
+
+export interface StyleExample extends StyleExampleInput {
+  id: string
+  content_fingerprint: string
+}
+
+export interface StyleExamples {
+  schema_version: number
+  corpus_fingerprint: string
+  examples: StyleExample[]
+}
+
+export interface StyleData {
+  corpus: string
+  card: string
+  enabled: boolean
+  corpus_fingerprint: string
+  card_fingerprint: string
+  examples: StyleExamples | null
+  examples_stale: boolean
+  paragraphs: { id: string; no: number; text: string }[]
+  warnings: unknown[]
+}
+
+export interface StyleSaveResult {
+  fingerprint: string
+  concurrency_protected: boolean
+}
+
+export interface StyleAnalysis {
+  ok: boolean
+  card: string
+  corpus_fingerprint: string
+  card_fingerprint: string
+  applied: false
+  digest: string
 }
 
 export interface FinalizeResult {

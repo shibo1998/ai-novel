@@ -13,7 +13,16 @@ http.interceptors.response.use(
     let detail = '请求失败'
     if (axios.isAxiosError(err)) {
       const d = err.response?.data as { detail?: unknown } | undefined
-      detail = typeof d?.detail === 'string' ? d.detail : err.message
+      const value = d?.detail
+      if (typeof value === 'string') detail = value
+      else if (value && typeof value === 'object' && 'message' in value) {
+        const message = value.message
+        const code = 'code' in value ? value.code : undefined
+        detail =
+          typeof message === 'string'
+            ? `${typeof code === 'string' ? `${code}：` : ''}${message}`
+            : err.message
+      } else detail = err.message
     } else if (err instanceof Error) {
       detail = err.message
     }

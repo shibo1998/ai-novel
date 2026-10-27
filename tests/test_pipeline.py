@@ -224,52 +224,46 @@ def test_scene_special_prompt_override(book_env):
     pipeline.confirm_outline(book, 1)
     pipeline.generate_prose(book, 1, client=mock, prompt_id="W4")
     w4_call = next(c for c in mock.calls if "突破场景" in c["user"])
-    assert "力量体系相关行" in w4_call["user"] or "突破代价设定" in w4_call["user"]
+    assert "体系规则" in w4_call["user"] and "资源、契机、局限与代价" in w4_call["user"]
     assert 2200 <= mechcheck.count_words(chapters.read_prose(book, 1)["_body"]) <= 2800
 
 
-def test_polish_ok_and_reject(book_env):
-    """V2+V3 润色链：通过时落盘并记 polish 审阅；字数漂移>10% 时丢弃。"""
-    from ainovel import db as _db
+def test_polish_ok_and_reject(book_env, monkeypatch):
+    """（规格06 §7）空编辑不改稿；漂移补丁拒收，原检查与正文保留。"""
+    from ainovel import polish as editor
 
     book, _ = book_env
     mock = MockLLM()
     _run_to_pending(book, 1, mock)
-
-    r = pipeline.polish(book, 1, client=mock)
-    assert r["ok"] and r["v3"]["verdict"] == "pass", r
-    assert r["changes"] and r["changes"][0].startswith("|")
-    with _db.tx() as conn:
-        row = conn.execute(
-            "SELECT verdict FROM review_records WHERE kind='polish' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-    assert row["verdict"] == "pass"
-
-    # 漂移超限：V2 mock 输出正文 + 一大段新文字 → 丢弃且文件不变
     before = chapters.read_prose(book, 1)["_body"]
-    orig = MockLLM._route
+    row = statemachine.get_row(book, 1)
+    result = pipeline.polish(book, 1, client=mock)
+    assert result["status"] == "no_change" and not result["applied"]
+    assert chapters.read_prose(book, 1)["_body"] == before
+    assert statemachine.get_row(book, 1) == row
+    original_route = MockLLM._route
 
     def bloated(self, system, user):
-        if "===润色全文===" in user:
-            m = re.search(r"【正文】\n(.*?)\n\n", user, re.DOTALL)
-            body = m.group(1) if m else user
-            return "===润色全文===\n" + body + "\n新增的水字" * 400 + "\n\n===改动清单===\n| x | y | z |"
-        return orig(self, system, user)
+        if "服务端原稿分块JSON" in user:
+            block = editor.blocks(before)[0]
+            return json.dumps({"edits": [{"start_block": block["id"], "end_block": block["id"],
+                                         "original": block["text"],
+                                         "replacement": block["text"] + "新增的水字。" * 400,
+                                         "category": "措辞", "reason": "测试漂移拒收"}]}, ensure_ascii=False)
+        return original_route(self, system, user)
 
-    MockLLM._route = bloated
-    try:
-        r2 = pipeline.polish(book, 1, client=mock)
-    finally:
-        MockLLM._route = orig
-    assert not r2["ok"] and "字数浮动" in r2["reason"]
+    monkeypatch.setattr(MockLLM, "_route", bloated)
+    rejected = pipeline.polish(book, 1, client=mock)
+    assert not rejected["ready"] and rejected["status"] == "rejected"
+    assert rejected["checks"]["word_delta"]["pass"] is False
     assert chapters.read_prose(book, 1)["_body"] == before
+    assert statemachine.get_row(book, 1) == row
 
 
 def test_rubber_stamp_guard(book_env):
-    """防橡皮章：pass+零问题+全维≥90 → 强制复审一次，采用第二轮结果。"""
+    """（规格06 §3）合法的高分空问题不诱导凑问题或额外复审。"""
     book, _ = book_env
     mock = MockLLM()
-    _run_to_pending(book, 3, mock) if False else None
     # 手动推进到 llm_review
     pipeline.generate_outline(book, 1, client=mock)
     pipeline.confirm_outline(book, 1)
@@ -289,11 +283,11 @@ def test_rubber_stamp_guard(book_env):
          "verdict": "pass"},  # 复审后：pass 但分数真实、带问题清单
     ]
     r = pipeline.run_llm_review(book, 1, client=mock)
-    assert r.get("re_reviewed") is True
-    assert r["verdict"] == "pass" and r["scores"]["ai_flavor"] == 82
-    assert len(r["issues"]) == 3
+    assert not r.get("re_reviewed")
+    assert r["verdict"] == "pass" and r["scores"]["ai_flavor"] == 95
+    assert r["issues"] == []
     v1_calls = [c for c in mock.calls if "五维审校" in c["user"] or "评分锚点" in c["user"]]
-    assert len(v1_calls) == 2  # 复审确实发生且未被再次触发
+    assert len(v1_calls) == 1
 
 
 def test_scene_mode_generation(book_env):
@@ -329,6 +323,8 @@ def test_style_excerpt_and_points(book_env):
     assert P._style_excerpt(book) == ""
     assert "未启用" in P._style_points(book)
     style.write_corpus(book, "他推开门。\n\n屋子很冷。\n\n" * 200)
-    assert len(P._style_excerpt(book)) > 100
+    assert P._style_excerpt(book) == ""
     style.write_card(book, "## 句法特征\n短句为主。\n\n## 禁忌清单\n禁四字成语。\n")
+    style.set_enabled(book, True)
+    assert P._style_excerpt(book) and P._style_excerpt(book) == P._style_excerpt(book)
     assert "短句为主" in P._style_points(book) and "四字成语" in P._style_points(book)

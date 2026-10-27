@@ -8,6 +8,7 @@
     "build": "vite build",
     "typecheck": "vue-tsc --noEmit",
     "preview": "vite preview",
+    "test:spec06": "node --test scripts/test-spec06-ui.mjs",
     "lint": "eslint . --fix",
     "lint:check": "eslint .",
     "format": "prettier --write .",

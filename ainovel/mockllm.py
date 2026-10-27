@@ -50,7 +50,24 @@ class MockLLM:
             if self.prose_factory:
                 return self.prose_factory(no, rng)
             return make_prose(rng)
-        if "===润色全文===" in user:  # V2
+        if "服务端原稿分块JSON" in user:  # 规格06 V2：默认没有必要改动
+            return _to_json({"edits": []})
+        if "【保真六维】" in user:  # 规格06 V3：只有真实新旧片段才可给证据
+            before_match = re.search(r"【原稿全文】\n(.*?)\n【润色后全文】", user, re.S)
+            after_match = re.search(r"【润色后全文】\n(.*?)\n【服务端真实编辑清单】", user, re.S)
+            before = before_match.group(1).strip() if before_match else ""
+            after = after_match.group(1).strip() if after_match else ""
+            keys = ("events", "character_decisions", "knowledge", "settings_numbers_costs",
+                    "time_space_relations", "foreshadow_ending")
+            return _to_json({"clean": True, "verdict": "pass", "new_issues": [],
+                             "style_verdict": "improved" if before != after else "unchanged",
+                             "style_evidence": [{"before": before[:50], "after": after[:50],
+                                                 "reason": "离线测试候选对照"}],
+                             "fidelity": {key: {"verdict": "pass", "reason": "离线保真测试"}
+                                          for key in keys}})
+        if "只修复问题清单中" in user or "只修复问题清单涉及" in user:
+            return self._default_fix(user)
+        if "===润色全文===" in user:  # 兼容旧书级V2测试，产品入口会提前检查版本
             m = re.search(r"【待润色正文】\n(.*?)\n\n", user, re.DOTALL)
             body = m.group(1) if m else user
             return ("===润色全文===\n" + body + "\n\n===改动清单===\n"
@@ -125,7 +142,7 @@ confirmed: false
 """
 
     def _default_fix(self, user: str) -> str:
-        m = re.search(r"【正文】\n(.*?)\n\n【问题清单", user, re.DOTALL)
+        m = re.search(r"【正文】\n(.*?)\n(?:\n)?【问题清单", user, re.DOTALL)
         body = m.group(1) if m else user
         if self.fix_overreach:
             # 越权重写：未涉及问题的句段大改（用于触发管线的 10% 护栏）

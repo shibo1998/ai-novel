@@ -21,7 +21,7 @@ from . import (assembler, bible, books, chapters, characters, conflicts, db,
                fts, frontmatter as FM, llm, mechcheck, outline, prompts,
                settings, statemachine, summaries)
 from .memory_commit import memory_commit
-from .operations import serialized
+from .operations import chapter_serialized as serialized
 
 logger = logging.getLogger(__name__)
 
@@ -54,36 +54,47 @@ def _call(
     book: str, no: int | None, stage: str, prompt_id: str,
     variables: dict[str, Any], client=None, stream_cb: Callable[[str], None] | None = None,
     extra_instruction: str = "",
-) -> tuple[Any, str, str]:
-    """返回 (LLMResult, prompt文件元数据, 完整渲染文本)。"""
+) -> tuple[Any, Any, str]:
+    """（规格06 §5）实际请求先落证据，再调用；模板摘要与组合摘要分别记录。"""
+    from uuid import uuid4
+
+    from . import atomic
+    from .paths import data_dir
+
     cfg = books.load_config(book)
-    p, rendered = prompts.render(prompt_id, variables, book)
-    model_stage = p.fm.get("model_stage")
-    # settings.default_model 一键覆盖全部档位；留空则用书 config 的 model_stages
+    p = prompts.get(prompt_id, book)
+    request = assembler.render_request(book, prompt_id, variables, extra_instruction)
     model = (settings.load().get("default_model") or ""
-             or cfg.get("model_stages", {}).get(model_stage, "deepseek-chat"))
+             or cfg.get("model_stages", {}).get(p.fm.get("model_stage"), "deepseek-chat"))
     temperature = float(p.fm.get("temperature", 0.7))
-    full_text = rendered + (f"\n\n{extra_instruction}" if extra_instruction else "")
+    request_id = str(uuid4())
+    meta = dict(request["meta"], request_id=request_id, model=model, temperature=temperature,
+                book=book, chapter_no=no, stage=stage)
+    record = {"request_id": request_id, "system": request["system"], "user": request["user"], "meta": meta}
+    atomic.write_text(data_dir() / "assembly_previews" / book / "requests" / f"{request_id}.json",
+                      json.dumps(record, ensure_ascii=False, indent=2))
+    # 先记未完成记录：日志失败时不发送；中断后也不会伪装成未产生请求。
+    log_id = db.log_generation(
+        book_id=books.book_id(book), chapter_no=no, stage=stage, prompt_id=prompt_id,
+        prompt_version=str(p.fm.get("version")), prompt_digest=p.digest, model=model,
+        request_id=request_id, request_meta=meta, status="error", error="请求已准备，结果尚未确认")
     cli = client or llm.client()
     try:
-        res = cli.chat(model=model, system="", user=full_text,
+        res = cli.chat(model=model, system=request["system"], user=request["user"],
                        temperature=temperature, stream_cb=stream_cb)
         cost_mc = settings.cost_millicents(model, res.input_tokens, res.output_tokens)
-        db.log_generation(
-            book_id=books.book_id(book), chapter_no=no, stage=stage,
-            prompt_id=prompt_id, prompt_version=str(p.fm.get("version")),
-            prompt_digest=p.digest, model=model,
-            input_tokens=res.input_tokens, output_tokens=res.output_tokens,
-            cost_millicents=cost_mc, status="ok",
-        )
-        return res, p, full_text
-    except Exception as e:
-        db.log_generation(
-            book_id=books.book_id(book), chapter_no=no, stage=stage,
-            prompt_id=prompt_id, prompt_version=str(p.fm.get("version")),
-            prompt_digest=p.digest, model=model,
-            status="error", error=str(e)[:500],
-        )
+        with db.tx() as conn:
+            conn.execute("UPDATE generation_log SET input_tokens=?, output_tokens=?, cost_cents=?, "
+                         "cost_millicents=?, status='ok', error=NULL WHERE id=?",
+                         (res.input_tokens, res.output_tokens, round(cost_mc / 1000), cost_mc, log_id))
+        res.request_id = request_id
+        res.request_meta = meta
+        return res, p, request["user"]
+    except Exception as error:
+        # 不把供应商回显的连接配置、认证信息或正文放进错误日志。
+        with db.tx() as conn:
+            conn.execute("UPDATE generation_log SET status='error', error=? WHERE id=?",
+                         (f"请求未完成：{type(error).__name__}", log_id))
         raise
 
 
@@ -178,6 +189,17 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
         "字数区间": f"{wr[0]}-{wr[1]}",
     }
 
+    recent_rhythm: list[dict[str, Any]] = []
+    for previous_no in range(max(1, no - 3), no):
+        if not chapters.outline_path(book, previous_no).exists():
+            continue
+        previous_contract = chapters.read_outline_contract(book, previous_no)
+        recent_rhythm.append({"chapter_no": previous_no,
+                              "core_event": previous_contract.get("core_event"),
+                              "scenes": previous_contract.get("scenes"),
+                              "hook": previous_contract.get("hook"),
+                              "emotion_task": previous_contract.get("emotion_task")})
+    variables["最近三章节奏"] = json.dumps(recent_rhythm, ensure_ascii=False)
     feedback = ""
     fm2: dict[str, Any] | None = None
     body2 = ""
@@ -355,6 +377,22 @@ def confirm_outline(book: str, no: int) -> None:
 def build_preview(book: str, no: int) -> dict[str, Any]:
     a = assembler.assemble(book, no)
     preview = a.preview()
+    from .paths import data_dir
+    from uuid import UUID
+
+    actual: list[dict[str, Any]] = []
+    with db.tx() as conn:
+        rows = conn.execute("SELECT request_id FROM generation_log WHERE book_id=? AND chapter_no=? "
+                            "AND request_id IS NOT NULL ORDER BY id DESC LIMIT 12",
+                            (books.book_id(book), no)).fetchall()
+    for row in reversed(rows):
+        try:
+            request_id = str(UUID(row["request_id"]))
+            path = data_dir() / "assembly_previews" / book / "requests" / f"{request_id}.json"
+            actual.append(json.loads(path.read_text(encoding="utf-8")))
+        except (ValueError, OSError) as error:
+            preview.setdefault("warnings", []).append(f"实际请求证据不可读：{type(error).__name__}")
+    preview["actual_requests"] = actual
     path = _save_preview(book, no, preview)
     preview["saved_to"] = str(path)
     return preview
@@ -372,45 +410,19 @@ def _save_preview(book: str, no: int, preview: dict[str, Any]):
     return path
 
 
-def _style_excerpt(book: str, chars: int = 600) -> str:
-    """从书级语料随机取一段真实原文做 few-shot 范文（模仿笔触，禁复制内容）。"""
-    import random
-
+def _style_excerpt(book: str, chars: int = 1200) -> str:
+    """（规格06 §4）兼容旧调用，使用确定性完整范例而非随机切片。"""
     from . import style as style_mod
 
-    try:
-        corpus = style_mod.read_corpus(book).replace("\u3000", "")
-        corpus = re.sub(r"\n{3,}", "\n\n", corpus).strip()
-    except Exception:
-        return ""
-    if len(corpus) < chars * 2:
-        return corpus
-    start = random.randrange(0, len(corpus) - chars)
-    excerpt = corpus[start:start + chars]
-    nl = excerpt.find("\n\n")
-    if 0 < nl < chars // 2:
-        excerpt = excerpt[nl + 2:]
-    return excerpt.strip()
+    return "\n\n".join(item["text"] for item in style_mod.context(book)["examples"])
 
 
 def _style_points(book: str) -> str:
-    """特征卡浓缩（句法特征+禁忌清单）供 V1 审校参照目标文风。"""
+    """（规格06 §4）所有阶段遵守同一个文风开关，不从关闭的卡片评分。"""
     from . import style as style_mod
 
-    try:
-        card = style_mod.read_card(book)
-        if not card:
-            return "（未启用文风系统）"
-        m1 = re.search(r"(?ms)^##\s*句法特征\s*\n(.*?)(?=^##|\Z)", card)
-        m2 = re.search(r"(?ms)^##\s*禁忌清单\s*\n(.*?)(?=^##|\Z)", card)
-        parts = []
-        if m1:
-            parts.append("句法特征：" + re.sub(r"\s+", " ", m1.group(1))[:400])
-        if m2:
-            parts.append("禁忌清单：" + re.sub(r"\s+", " ", m2.group(1))[:300])
-        return "\n".join(parts) or "（特征卡为空）"
-    except Exception:
-        return "（未启用文风系统）"
+    ctx = style_mod.context(book)
+    return ctx["card"] if ctx["enabled"] else "（未启用书级文风）"
 
 
 def _deslop_brief(body: str, limit: int = 8) -> str:
@@ -423,7 +435,7 @@ def _deslop_brief(body: str, limit: int = 8) -> str:
         return f"（检测器未执行：{e}）"
     if res.score < 0:
         return "（正文过短，检测器未评分）"
-    head = f"干净度 {res.score}/100（越高越干净；<60 建议润色，<45 且有结构性硬伤则阻断）"
+    head = f"文风规则参考分 {res.score}/100（非AI生成概率；仅建议，不能单独阻断或自动改稿）"
     if not res.hits:
         return head + "\n（无规则命中）"
     return head + "\n" + res.top_hits(limit)
@@ -648,6 +660,8 @@ def _generate_prose_inner(book: str, no: int, client=None,
                 body, fr = res2.text.strip(), res2.finish_reason
 
     body = body.strip()
+    if fr in ("length", "max_tokens", "max_output_tokens") or not body.strip():
+        raise PipelineError("正文仍被截断或为空，保留草稿，未写正式正文")
     # 生成/重跑都越界时，用 W6 做确定性收敛（最多 2 轮，方向不对就停）
     fit_log: list[dict[str, Any]] = []
     if not _in_range(body, wr):
@@ -703,8 +717,8 @@ def _generate_by_scenes(book: str, no: int, base_vars: dict[str, Any], wr: list[
         v.setdefault("黄金三章附加要求", "")
         res, _p, _t = _call(book, no, "prose", "W1", v, client=client,
                             stream_cb=stream_cb if i == n else None)
-        if res.finish_reason == "length":
-            fr = "length"
+        if res.finish_reason in ("length", "max_tokens", "max_output_tokens") or not res.text.strip():
+            raise PipelineError(f"场景{i}被截断或为空，未拼接为正式正文")
         part = res.text.strip()
         parts.append(part)
         used += mechcheck.count_words(part)
@@ -733,7 +747,7 @@ def _scene_special_vars(book: str, no: int, contract: dict[str, Any], prompt_id:
         return {
             "本场景人物状态": "\n".join(states) or "（无）",
             "本场景潜台词要求": f"情绪弧线：{arc.get('from','')}→{arc.get('via','')}→{arc.get('to','')}；"
-                              "关键冲突处至少一次答非所问式回避。",
+                              "按人物目标与语境处理潜台词，允许直接表达，不强制回避或打断。",
         }
     rows = "\n".join(
         " | ".join(f"{c}:{r.get(c, '')}" for c in ("大境界", "子境界", "突破条件", "能力边界(不能做什么)"))
@@ -792,6 +806,9 @@ def fit_length(book: str, no: int, body: str, wr: list[int],
             }, client=client)
         except Exception as e:
             logger.warning("第%s章 长度收敛调用失败，保留原稿: %s", no, e)
+            break
+        if res.finish_reason in ("length", "max_tokens", "max_output_tokens") or not res.text.strip():
+            log.append({"reason": "output_truncated_or_empty", "from": n})
             break
         cand = _clean_draft_text(res.text)
         cw = mechcheck.count_words(cand)
@@ -1426,22 +1443,6 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
         statemachine.mark_error(book, no, "V1 JSON 解析失败")
         raise PipelineError("V1 审校 JSON 3 次解析失败")
 
-    # 防橡皮章守门：pass + 零问题 + 全维 ≥90 视为放水嫌疑 → 复审一次（规格02 P-V1 举证要求）
-    if (result["verdict"] == "pass" and not result["issues"]
-            and all((result["scores"].get(k) or 0) >= 90
-                    for k in ("ai_flavor", "plot", "pacing", "prose", "hook"))):
-        res2, _p2, _t2 = _call(
-            book, no, "review", "V1", variables, client=client,
-            extra_instruction=(
-                "【复审指令】上一轮审校给出了全维≥90且零问题，被系统判定为放水嫌疑。\n"
-                "重新逐段排查：副词堆叠、重复句式、无信息量对话、概括式描写、情绪直白说出。\n"
-                "至少给出 3 条带原文引用的问题，并按真实水平重新打分。"))
-        try:
-            second = _validate_review(llm.extract_json(res2.text))
-            result = second
-            result["re_reviewed"] = True
-        except llm.LLMError:
-            pass  # 复审解析失败则保留首轮结果
 
     verdict = _enforce_rubric(result)
     result["verdict"] = verdict
@@ -1482,72 +1483,15 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
 # 5.5 整章润色（P-V2 去AI味 + P-V3 复核，M3；规格02 P-V2 改造点）
 # ---------------------------------------------------------------------------
 
-@serialized
-def polish(book: str, no: int, client=None) -> dict[str, Any]:
-    """V2 整章润色：不改剧情人设；程序校验字数浮动≤10% + 机检全绿，否则丢弃。"""
-    st = statemachine.current_status(book, no)
-    if st not in ("pending_finalize", "human_review"):
-        raise statemachine.StateError(f"第{no}章状态 {st} 不能润色（需 pending_finalize/human_review）")
-    cfg = books.load_config(book)
-    wr = cfg["chapter_word_range"]
-    prose = chapters.read_prose(book, no)
-    old_body = prose["_body"]
-    old_wc = mechcheck.count_words(old_body)
-    _assert_not_finalized(book, no, "润色")
-    baseline = _check(book, no, wr)
-    if baseline.verdict == "not_effective":
-        return {"ok": False, "reason": "机检未完整执行，先修复规则配置再润色",
-                "ineffective": [i.to_dict() for i in baseline.ineffective]}
-    if mechcheck.has_sensitive(baseline.hits):
-        return {"ok": False, "reason": "命中敏感词红线，禁止自动改写，请人工处理"}
-    banned = "\n".join(f"- {w}" for w in mechcheck.load_banned_words()
-                       if w not in _lint_whitelist(book)) or "（词库为空）"
-    variables = {
-        "系统段": assembler.render_system(book),
-        "正文": old_body,
-        "禁词表": banned,
-        "对话后缀禁式": "\n".join(f"- {p.pattern}" for p in mechcheck.load_dialog_patterns()) or "（无）",
-        "检测器命中": _deslop_brief(old_body),
-    }
-    res, _p, _t = _call(book, no, "polish", "V2", variables, client=client)
-    new_body, change_list = _parse_polish(res.text)
-    new_wc = mechcheck.count_words(new_body)
-    result: dict[str, Any] = {"word_count": {"before": old_wc, "after": new_wc},
-                              "changes": change_list}
-    if old_wc and abs(new_wc - old_wc) / old_wc > 0.10:
-        result.update(ok=False, reason=f"字数浮动 {abs(new_wc - old_wc) / old_wc:.0%} 超 ±10%，输出已丢弃")
-        return result
-    fidelity = _fidelity_error(old_body, new_body)
-    if fidelity:
-        result.update(ok=False, reason=f"保真校验失败：{fidelity}，输出已丢弃")
-        return result
-    checked = mechcheck.check_full(new_body, word_range=wr, whitelist=_lint_whitelist(book),
-                                   context={"has_state": False, "timeline_hits": timeline_validate(book, new_body)})
-    if checked.verdict != "pass":
-        result.update(ok=False, reason="完整机械检查未通过，输出已丢弃",
-                      blocks=[h.to_dict() for h in checked.blocks],
-                      ineffective=[i.to_dict() for i in checked.ineffective])
-        return result
+def polish(book: str, no: int, client=None, *, expected_revision: int | None = None,
+           client_request_id: str | None = None, mode: str = "auto",
+           selected_blocks: list[str] | None = None) -> dict[str, Any]:
+    """（规格06 §7—§9）只生成候选；写回必须另经人工采纳。"""
+    from .polish import create_candidate
 
-    # V3 AI味自检复核
-    res3, _p3, _t3 = _call(book, no, "polish", "V3",
-                           {"润色后全文": new_body, "改动清单": "\n".join(change_list),
-                            "禁词表": banned}, client=client)
-    try:
-        v3 = llm.extract_json(res3.text)
-    except llm.LLMError:
-        v3 = {"clean": None, "verdict": "unknown", "new_issues": []}
-    if not isinstance(v3, dict) or v3.get("clean") is not True or v3.get("verdict") != "pass":
-        result.update(ok=False, reason="V3 未明确复核通过，保留原文", v3=v3)
-        return result
-
-    fm = {k: v for k, v in prose.items() if not k.startswith("_")}
-    fm["word_count"] = new_wc
-    chapters.write_prose(book, no, fm, new_body)
-    db.add_review(book_id=books.book_id(book), chapter_no=no, version=fm["version"],
-                  kind="polish", issues=change_list, verdict=v3.get("verdict"))
-    result.update(ok=True, v3=v3)
-    return result
+    return create_candidate(book, no, expected_revision=expected_revision,
+                            client_request_id=client_request_id, mode=mode,
+                            selected_blocks=selected_blocks, client=client)
 
 
 def _fidelity_error(old: str, new: str) -> str | None:
@@ -1566,14 +1510,6 @@ def _fidelity_error(old: str, new: str) -> str | None:
     return None
 
 
-def _parse_polish(text: str) -> tuple[str, list[str]]:
-    m = re.search(r"===润色全文===\s*\n(.*?)\n\s*===改动清单===", text, re.DOTALL)
-    if not m:
-        return text.strip() + "\n", []
-    body = m.group(1).strip()
-    tail = text[m.end():].strip()
-    changes = [ln for ln in tail.splitlines() if ln.strip().startswith("|")]
-    return body + "\n", changes
 
 
 # ---------------------------------------------------------------------------
@@ -1832,6 +1768,9 @@ def foreshadow_drift(book: str, no: int) -> list[str]:
 @serialized
 def finalize(book: str, no: int, client=None) -> dict[str, Any]:
     """定稿 = 二次确认（API 层）→ 快照 + status:final → 记忆卡回写。"""
+    from .polish import guard_recovery
+
+    guard_recovery(book, no)
     st = statemachine.current_status(book, no)
     if st != "pending_finalize":
         raise statemachine.StateError(f"第{no}章状态 {st} 不能定稿")

@@ -1,4 +1,4 @@
-"""AI 味确定性检测器（规格05 F-02 / §3）：纯规则、零 token、可解释、只报不改。
+"""文风确定性规则提示（规格05 F-02；规格06 §3覆盖处理级别）：纯规则、零 token、只报不改。
 
 为什么要有它：
 - V1 审校的 `ai_flavor` 是 LLM 主观分——不可解释（说不出哪句像 AI）、不可回归
@@ -40,10 +40,11 @@ class DeslopHit:
     quote: str
     weight: int
     message: str
+    effective_level: str = field(default="advisory", init=False)  # 规格06 §3：仅建议
 
     def to_dict(self) -> dict[str, Any]:
-        return {"rule": self.rule, "level": self.level, "line": self.line,
-                "quote": self.quote, "weight": self.weight, "message": self.message}
+        return {"rule": self.rule, "level": self.level, "effective_level": self.effective_level,
+                "line": self.line, "quote": self.quote, "weight": self.weight, "message": self.message}
 
 
 @dataclass
@@ -57,7 +58,7 @@ class DeslopResult:
 
     @property
     def blocking(self) -> list[DeslopHit]:
-        return [h for h in self.hits if h.level == "blocking"]
+        return [h for h in self.hits if h.effective_level == "blocking"]
 
     def to_dict(self) -> dict[str, Any]:
         return {

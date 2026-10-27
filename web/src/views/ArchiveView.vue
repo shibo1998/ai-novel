@@ -8,9 +8,9 @@ import { useRoute, useRouter } from 'vue-router'
 
 import MdTableEditor from '@/components/MdTableEditor.vue'
 import DiffViewer from '@/components/DiffViewer.vue'
+import StyleEditor from '@/components/StyleEditor.vue'
 import {
   adoptArchive,
-  analyzeStyleF1,
   createCharacter,
   getBible,
   getBookConfig,
@@ -19,7 +19,6 @@ import {
   getMeta,
   getOutlineFull,
   getPlotPoints,
-  getStyle,
   listCharactersFull,
   putBible,
   putBookConfig,
@@ -28,9 +27,6 @@ import {
   putMeta,
   putOutlineFull,
   putPlotPoints,
-  putStyleCard,
-  putStyleCorpus,
-  putStyleEnabled,
 } from '@/api'
 import type {
   BookConfig,
@@ -85,9 +81,6 @@ const chars = ref<CharacterData[]>([])
 const locations = ref<Record<string, string>[]>([])
 const plotPoints = ref<Record<string, string>[]>([])
 const outline = ref<OutlineFull>({})
-const styleCorpus = ref('')
-const styleCard = ref('')
-const styleEnabled = ref(false)
 
 // —— 列定义（必须与后端列名逐字一致）——
 // 力量体系 8 列（规格01 §2.2）
@@ -253,7 +246,7 @@ function rowsToText(cols: TableColumn[], rows: Record<string, string>[]): string
 
 async function load(): Promise<void> {
   store.setCurrentBook(book.value)
-  const [m, c, b, cs, loc, pp, od, st] = await Promise.all([
+  const [m, c, b, cs, loc, pp, od] = await Promise.all([
     getMeta(book.value),
     getBookConfig(book.value),
     getBible(book.value),
@@ -261,7 +254,6 @@ async function load(): Promise<void> {
     getLocations(book.value),
     getPlotPoints(book.value),
     getOutlineFull(book.value),
-    getStyle(book.value),
   ])
   meta.value = m
   cfg.value = c
@@ -275,9 +267,6 @@ async function load(): Promise<void> {
   outlineRows.value = (od.chapter_rows ?? []).map((r) => ({ ...r }))
   rhythmText.value = String(od._rhythm ?? '')
   volRows.value = volumesToRows(od.volumes ?? [])
-  styleCorpus.value = st.corpus
-  styleCard.value = st.card
-  styleEnabled.value = st.enabled
   await loadSelected()
 }
 
@@ -484,49 +473,6 @@ async function saveRhythm(): Promise<void> {
     await load()
   } catch {
     // 拦截器已提示
-  }
-}
-
-// —— 文风（M5）——
-async function saveCorpus(): Promise<void> {
-  try {
-    await putStyleCorpus(book.value, styleCorpus.value)
-    ElMessage.success('语料已保存')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function analyzeStyle(): Promise<void> {
-  if (!styleCorpus.value.trim()) {
-    ElMessage.warning('先填语料')
-    return
-  }
-  try {
-    const r = await analyzeStyleF1(book.value)
-    styleCard.value = r.card
-    ElMessage.success('特征卡已生成，请人工改定后保存并启用')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function saveCard(): Promise<void> {
-  try {
-    await putStyleCard(book.value, styleCard.value)
-    ElMessage.success('特征卡已保存')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function toggleStyle(on: boolean | string | number | undefined): Promise<void> {
-  const enabled = Boolean(on)
-  try {
-    await putStyleEnabled(book.value, enabled)
-    ElMessage.success(enabled ? '文风注入已启用（下次生成生效）' : '已停用')
-  } catch {
-    styleEnabled.value = !enabled
   }
 }
 
@@ -909,21 +855,7 @@ async function adopt(): Promise<void> {
 
       <!-- 文风 M5 -->
       <template v-else-if="currentKind === 'style'">
-        <div class="dim">
-          贴入你认可的目标文风正文（≥500 字，建议 3000-10000 字）→ 分析生成特征卡 → 人工改定 →
-          启用后每次生成注入。
-        </div>
-        <div class="dim mt-2 mb-1">语料</div>
-        <el-input v-model="styleCorpus" type="textarea" :rows="6" />
-        <div class="mt-2 flex flex-wrap items-center gap-2">
-          <el-button @click="saveCorpus">保存语料</el-button>
-          <el-button type="primary" @click="analyzeStyle">分析生成特征卡（F1）</el-button>
-          <el-switch v-model="styleEnabled" @change="toggleStyle" />
-          <span class="dim">启用文风注入</span>
-        </div>
-        <div class="dim mt-2 mb-1">特征卡（可手改）</div>
-        <el-input v-model="styleCard" type="textarea" :rows="8" />
-        <el-button class="mt-2" @click="saveCard">保存特征卡</el-button>
+        <StyleEditor :book="book" />
       </template>
     </div>
   </div>

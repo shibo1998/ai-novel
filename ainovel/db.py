@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS generation_log (
     cost_millicents INTEGER,         -- 千分之一分（毫分）；分记账会把单章成本抹成 0
     status TEXT NOT NULL CHECK(status IN ('ok','error')),
     error TEXT,
+    request_id TEXT,                 -- 规格06 §5.4：历史记录保持NULL
+    request_meta_json TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS review_records (
@@ -145,6 +147,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA)
         _ensure_column(conn, "books", "detached", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(conn, "generation_log", "cost_millicents", "INTEGER")
+        _ensure_column(conn, "generation_log", "request_id", "TEXT")
+        _ensure_column(conn, "generation_log", "request_meta_json", "TEXT")
         # 规格05 §11.1：老库轻量迁移（CREATE TABLE IF NOT EXISTS 不会改已有表）
         _ensure_column(conn, "chapters", "checked_fingerprint", "TEXT")
         _ensure_column(conn, "chapters", "checked_status", "TEXT")
@@ -180,18 +184,22 @@ def log_generation(
     cost_millicents: int = 0,
     status: str = "ok",
     error: str | None = None,
+    request_id: str | None = None,
+    request_meta: dict[str, Any] | None = None,
 ) -> int:
+    """（规格06 §5.4）保留主模板digest，另存组合请求证据；写入失败向上传播。"""
+    meta_json = json.dumps(request_meta, ensure_ascii=False, allow_nan=False) if request_meta is not None else None
     with tx() as conn:
         cur = conn.execute(
             """INSERT INTO generation_log
                (book_id, chapter_no, stage, prompt_id, prompt_version, prompt_digest,
                 model, input_tokens, output_tokens, cost_cents, cost_millicents,
-                status, error, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                status, error, created_at, request_id, request_meta_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (book_id, chapter_no, stage, prompt_id, prompt_version, prompt_digest,
              model, input_tokens, output_tokens,
              round(cost_millicents / 1000), cost_millicents,
-             status, error, now()),
+             status, error, now(), request_id, meta_json),
         )
         return cur.lastrowid
 

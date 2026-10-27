@@ -20,6 +20,16 @@ import type {
   OutlineFull,
   Overview,
   PolishResult,
+  PolishPayload,
+  PolishSummary,
+  PolishApproval,
+  PolishApplyResult,
+  PolishBlocks,
+  StyleData,
+  StyleAnalysis,
+  StyleSaveResult,
+  StyleExamples,
+  StyleExampleInput,
   PreviewResult,
   ProseEditResult,
   ReviewResult,
@@ -116,22 +126,29 @@ export const getLocations = (book: string): Promise<Record<string, string>[]> =>
 export const putLocations = (book: string, rows: Record<string, string>[]): Promise<unknown> =>
   unwrap(http.put(`/api/books/${enc(book)}/locations`, { rows }))
 
-export interface StyleData {
-  corpus: string
-  card: string
-  enabled: boolean
-}
 export const getStyle = (book: string): Promise<StyleData> =>
   unwrap(http.get(`/api/books/${enc(book)}/style`))
-export const putStyleCorpus = (book: string, text: string): Promise<unknown> =>
-  unwrap(http.put(`/api/books/${enc(book)}/style/corpus`, { text }))
-export const putStyleCard = (book: string, text: string): Promise<unknown> =>
-  unwrap(http.put(`/api/books/${enc(book)}/style/card`, { text }))
+export const putStyleCorpus = (
+  book: string,
+  text: string,
+  expected_fingerprint: string,
+): Promise<StyleSaveResult> =>
+  unwrap(http.put(`/api/books/${enc(book)}/style/corpus`, { text, expected_fingerprint }))
+export const putStyleCard = (
+  book: string,
+  text: string,
+  expected_fingerprint: string,
+): Promise<StyleSaveResult> =>
+  unwrap(http.put(`/api/books/${enc(book)}/style/card`, { text, expected_fingerprint }))
+export const putStyleExamples = (
+  book: string,
+  corpus_fingerprint: string,
+  examples: StyleExampleInput[],
+): Promise<StyleExamples> =>
+  unwrap(http.put(`/api/books/${enc(book)}/style/examples`, { corpus_fingerprint, examples }))
 export const putStyleEnabled = (book: string, enabled: boolean): Promise<unknown> =>
   unwrap(http.put(`/api/books/${enc(book)}/style/enabled`, { enabled }))
-export const analyzeStyleF1 = (
-  book: string,
-): Promise<{ ok: boolean; card: string; digest: string }> =>
+export const analyzeStyleF1 = (book: string): Promise<StyleAnalysis> =>
   unwrap(http.post(`/api/books/${enc(book)}/style/analyze`, null, { timeout: 0 }))
 
 // —— G 链：AI 生成档案 → 人工改定 → 采纳落盘 ——
@@ -189,8 +206,29 @@ export const runReview = (book: string, no: number): Promise<ReviewResult & { st
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/review`, null, { timeout: 0 }))
 export const runFix = (book: string, no: number): Promise<{ ok: boolean; word_count: number }> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/fix`, {}, { timeout: 0 }))
-export const runPolish = (book: string, no: number): Promise<PolishResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish`, null, { timeout: 0 }))
+export const getPolishBlocks = (book: string, no: number): Promise<PolishBlocks> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/polish/blocks`))
+export const runPolish = (book: string, no: number, body: PolishPayload): Promise<PolishResult> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish`, body, { timeout: 0 }))
+export const listPolishCandidates = (book: string, no: number): Promise<PolishSummary[]> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/polish/candidates`))
+export const getPolishCandidate = (book: string, no: number, id: string): Promise<PolishResult> =>
+  unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/polish/candidates/${enc(id)}`))
+export const approvePolishCandidate = (
+  book: string,
+  no: number,
+  id: string,
+  body: PolishApproval,
+): Promise<PolishApplyResult> =>
+  unwrap(
+    http.post(`/api/books/${enc(book)}/chapters/${no}/polish/candidates/${enc(id)}/approve`, body),
+  )
+export const discardPolishCandidate = (
+  book: string,
+  no: number,
+  id: string,
+): Promise<PolishResult> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish/candidates/${enc(id)}/discard`))
 export const runExempt = (book: string, no: number, reason: string): Promise<unknown> =>
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/exempt`, { reason }))
 export const backToOutline = (book: string, no: number): Promise<unknown> =>
@@ -302,7 +340,7 @@ export const exportZip = (book: string): Promise<void> =>
 /** 机检结论 + 过期判定（正文改过 → stale） */
 export const getCheckStatus = (book: string, no: number): Promise<CheckStatus> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/checkstatus`))
-/** AI 味确定性检测（零 token，只报不改） */
+/** 文风规则提示，非 AI 生成概率（规格06 §3、§11；零 token，只报不改）。 */
 export const getDeslop = (book: string, no: number): Promise<DeslopResult> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/deslop`))
 /** 半成品草稿：生成中断后仍在，可采纳/丢弃 */

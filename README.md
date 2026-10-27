@@ -1,6 +1,6 @@
 # AI 网文创作工作台
 
-依据 `docs/specs/` 五份规格实现的本地单机工具：文件档案 + SQLite 索引/状态机 + 24 条提示词体系 + 单章生成闭环管线 + Web UI。
+依据 `docs/specs/` 六份规格实现的本地单机工具：文件档案 + SQLite 索引/状态机 + 24 条提示词体系 + 单章生成闭环管线 + Web UI。
 
 ## 快速开始
 
@@ -34,10 +34,11 @@ python run.py            # 打开 http://127.0.0.1:8765
 ## 测试
 
 ```bash
-python -m pytest tests/          # 403 项全绿（管线全链路用 MockLLM，不耗 token）
+python -m pytest tests/          # 553 项全绿（管线全链路用 MockLLM，不耗 token）
 python scripts/smoke.py          # 端到端冒烟（跑在临时目录，不污染仓库）
 cd web && npm run typecheck      # 前端严格类型检查（vue-tsc）
 cd web && npm run lint:check     # 前端 ESLint 检查
+cd web && npm run test:spec06    # 4项候选/跨页面异步行为回归（不启动服务）
 ```
 
 > ⚠️ **`scripts/e2e_test.py` 与 `scripts/e2e_stage2.py` 不是测试，别随手跑**：
@@ -81,7 +82,7 @@ lint/               禁词/敏感词/对话后缀禁式（每行一个，# 注�
 web/                前端 UI（Vue3 + Vite 源码；构建产物 web/dist/ 由 FastAPI 静态挂载）
 books/<书名>/       数据：档案 + 章节 + config.json（单一真相源）
 data/               SQLite、设置、裁决队列、装配预览（可随时重建）
-tests/              pytest（403 项）
+tests/              pytest（553 项）
 ```
 
 ## 与规格的对应与偏差（重要）
@@ -113,6 +114,7 @@ tests/              pytest（403 项）
 16. **定稿返工链路补齐（2026-10-26，文档撰写时发现）**：`statemachine` 早有 `finalized --unlock--> pending_finalize` 边、`/fix` 与 `/prose` 的拒绝文案也让用户"先解锁"，但**既没有 unlock 路由也没有 UI 按钮**——用户被指向一个不存在的地方，定稿返工实际是死路。现补 `POST /chapters/{no}/unlock`（状态回退 + 同步把正文文件 `status` 从 `final` 改回 `draft`，否则文件自带的 final 标记仍会让下游认定它已定稿）+ 工作台「解锁返工」按钮；同时 meta 表单的「单章字数区间」保存时同步写入 `config.json`（管线只读 config，原先在 meta 改这一项完全不生效）。回归用例见 `tests/test_p1_archive_api.py::TestProseEdit`。
 17. **续修三处（2026-10-26 下午）**：① `finalize` 前端改传 `timeout: 0`（原先 30s 默认超时，而该接口含 V4 记忆卡回写 + 末章 V6 审计两次 LLM，真实模型必超时 → 前端假报错、后端已定稿）；② 新增只读端点 `GET /books/{book}/plot_points/overdue` + 书总览「伏笔台账」常驻预警条（`planted` 超 30 章未推进；原先只有 G6 落盘那一刻一次性回 warns，刷新即消失）；③ **Bible 表头校验改为归一化比对**——真实书 `隐藏规则` 写作 `隐藏等级(低/中/高)`，原严格全等判定会误报"缺列"，导致该书**任何一节的圣经保存都被拦死**（校验本意是拦列名漂移到别的语义，不是拦写法差异）。归一化只忽略括号补充／markdown 强调／空白与全半角括号差异，`隐藏级别` 这类真漂移仍报错。回归用例见 `tests/test_p1_archive_api.py::TestOverdueForeshadows` 与 `tests/test_p2_stability.py::TestBibleHeaderValidation`。
 18. **全项目审查修复（2026-10-27，详见 `docs/审查修复批次.md`）**：审校输出强校验、审校与定稿绑定当前机检指纹，正文/润色/修复后旧结论失效；人工豁免绑定正文且不放行未生效检查。同书写入使用进程内互斥和正文修订号（不支持多进程协同写库）。记忆卡先抽取再应用、异常回滚原档案与索引；定稿回写失败保留 finalized 并提供补做入口。C-01 润色保真检查、C-05 状态卡提议/人工确认已落地；未确认提议不覆盖 `STATE.md`。双时间线两张表可维护且非法输入拒绝写盘。外挂摘除保留历史，rebuild 扫内置/外挂并清孤儿章节、恢复记忆卡状态；导入保留原章号且拒绝覆盖已有稿件。上传校验书名与路径边界。前端旧页面保存冲突保留编辑内容。
+19. **生成文风与安全去 AI 味（规格06，2026-10-27）**：去除固定文体配额，正文与运行元数据分离，实际 system/user、组合请求摘要与预算可回看；书级文风开关贯穿写作/长度调整/审校/润色，范例按完整段落确定性选择。F1只生成未保存草案。M-12/D系列保留历史标签但仅作建议，不单独阻断或触发自动修复。`POST /polish` 明确改为只生成候选：V2定点补丁、程序保真和V3原稿/候选对照均通过后，仍须人工差异预览采纳；过期双指纹、并发修订与恢复标记保护正式稿。旧V2/V3覆盖必须显式升级接口，不静默替换。现有保真阈值、敏感词人工处理、V5护栏和人工定稿关保持；实现与离线验收见 `docs/规格06实施验收.md`，真实模型读感效果另行试验。
 
 ## M0 检查单（规格04 §4）状态
 

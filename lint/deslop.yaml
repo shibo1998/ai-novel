@@ -1,9 +1,9 @@
-# AI 味确定性检测器参数（规格05 F-02 / §3.3-§3.5）
+# 文风规则提示，非AI生成概率（规格06 §3）。不阻断、不自动改写。
 # 改这里不用改代码；YAML 写坏会抛 ConfigError（禁止静默用默认值兜底，P-4）
-version: 1
+version: 2
 
-# 每条规则可单独开关、改级别。level: blocking | advisory
-# blocking 只给结构性硬伤（否定对举/破折号/系统腔/句号断续等），语义类一律 advisory。
+# level保留历史/配置来源；所有D系列effective_level固定为advisory。
+# 即使旧配置为blocking，也仅作有上下文举证的建议。
 rules:
   D-01: {enabled: true, level: blocking}   # 否定对举 不是…而是
   D-02: {enabled: true, level: advisory}   # 不但…反而
