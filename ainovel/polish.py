@@ -516,7 +516,8 @@ def _model_call(manifest: dict[str, Any], prompt_id: str, variables: dict[str, A
     _save(manifest)
     result, prompt, _ = pipeline._call(manifest["book"], manifest["chapter_no"], "polish", prompt_id, variables, client=client)
     manifest["cost"]["cost_millicents"] += settings.cost_millicents(
-        getattr(result, "model", ""), getattr(result, "input_tokens", 0), getattr(result, "output_tokens", 0))
+        getattr(result, "model", ""), getattr(result, "input_tokens", 0),
+        getattr(result, "output_tokens", 0), provider=getattr(result, "provider", ""))
     meta = getattr(result, "request_meta", None) or {}
     safe_meta = {key: meta[key] for key in ("request_digest", "templates", "style", "token_estimates",
                                            "assembly_version", "warnings", "truncations", "fingerprints") if key in meta}

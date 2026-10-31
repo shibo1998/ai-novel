@@ -1,32 +1,36 @@
-// axios 实例：统一错误提示（FastAPI {detail} 结构）。
-// 默认 30s 超时兜底（后端挂死时 UI 不至于永久 pending）；
-// LLM 长调用（审校/审计/AI 生成等）在各请求上单独传 timeout: 0 覆盖。
-// 约定：拦截器负责弹错误 toast，调用方 catch 只做流程控制，不再重复提示。
+// Axios 统一入口（规格07 UI-24）：错误进入会话记录并保留永久通知；主动取消不记错误。
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { recordError } from '@/utils/errors'
+import type { ErrorContext } from '@/utils/errors'
+
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    errorContext?: ErrorContext
+  }
+}
 
 export const http = axios.create({ timeout: 30_000 })
 
 http.interceptors.response.use(
   (res) => res,
   (err: unknown) => {
-    let detail = '请求失败'
-    if (axios.isAxiosError(err)) {
-      const d = err.response?.data as { detail?: unknown } | undefined
-      const value = d?.detail
-      if (typeof value === 'string') detail = value
-      else if (value && typeof value === 'object' && 'message' in value) {
-        const message = value.message
-        const code = 'code' in value ? value.code : undefined
-        detail =
-          typeof message === 'string'
-            ? `${typeof code === 'string' ? `${code}：` : ''}${message}`
-            : err.message
-      } else detail = err.message
-    } else if (err instanceof Error) {
-      detail = err.message
+    if (axios.isCancel(err) || (axios.isAxiosError(err) && err.code === 'ERR_CANCELED')) {
+      return Promise.reject(err)
     }
-    ElMessage.error({ message: String(detail), duration: 8000 })
+    const config = axios.isAxiosError(err)
+      ? (err.config as
+          | {
+              errorContext?: {
+                operation?: string
+                book?: string
+                chapter?: number
+                background?: boolean
+                write?: boolean
+              }
+            }
+          | undefined)
+      : undefined
+    recordError(err, config?.errorContext)
     return Promise.reject(err)
   },
 )

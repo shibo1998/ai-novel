@@ -266,7 +266,10 @@ class TestG5VariableContract:
     def test_g5_renders_with_all_required_vars(self, home):
         from ainovel import prompts
 
+        # 规格08 §2.4：G5 v3 新增 规划作用域/规划上下文 两个必填变量
         _, text = prompts.render("G5", {
+            "规划作用域": "legacy：全书大纲（卷规划 + 章节总表 + 伏笔总表 + 节奏总谱四部分）",
+            "规划上下文": "旧模式：无滚动规划上下文",
             "世界观摘要": "都市异能", "角色卡摘要": "林寒（主角）",
             "logline": "主角为了X必须做Y但障碍是Z",
             "目标总章数": "120", "单章字数区间": "2200-2800",

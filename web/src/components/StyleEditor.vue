@@ -195,7 +195,7 @@ async function reloadDiscarding(): Promise<void> {
         type="warning"
         :closable="false"
         class="mb-2"
-        title="旧范例索引已过期（stale），不会套用到新语料位置。请清空待选列表后按当前段落重新选择并保存。"
+        title="旧范例索引已过期，不会套用到新语料位置。请清空待选列表后按当前段落重新选择并保存。"
       />
       <div v-if="!s.data.examples" class="dim mb-2">
         尚无人工范例索引。兼容选例不等于人工确认，具体 legacy / 缺失原因以装配预览为准。
@@ -211,7 +211,7 @@ async function reloadDiscarding(): Promise<void> {
         <el-tag v-for="t in e.scene_types" :key="t" size="small"
           >{{ sceneLabels[t] }} / {{ t }}</el-tag
         >
-        <el-tag v-if="stale" type="warning" size="small">stale</el-tag>
+        <el-tag v-if="stale" type="warning" size="small">已过期</el-tag>
         <el-button size="small" :disabled="!!s.busy" @click="removeExample(i)">移除</el-button>
       </div>
       <el-button :disabled="!!s.busy || corpusDirty" @click="reselectExamples"

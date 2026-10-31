@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from typing import Any
 
@@ -17,15 +18,21 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
 DEFAULTS: dict[str, Any] = {
-    # 只支持 OpenAI 兼容协议（官方 API / 第三方中转站通用）
+    # 只支持 OpenAI 兼容协议（官方 API / 第三方中转站通用）。
+    # 可以有多个接口（规格13）：键是端点名，档位值写 "端点名:模型名" 即可走不同 URL/密钥。
+    # 默认端点固定叫 openai：旧配置、旧的无前缀模型值都落到它身上，不需要迁移。
     "providers": {
         "openai": {
+            "label": "默认接口",
             "api_key": "",
             "base_url": "https://api.deepseek.com/v1",
         },
     },
-    # 一键指定所有档位的模型名；留空则用各书 config.json 的 model_stages
-    "default_model": "",
+    # 全局兜底模型：只在书级档位与全局档位都没配时才用（规格12 §2.2）。
+    # 原 default_model 语义是"覆盖一切"，与书级 model_stages 冲突，已降级改名。
+    "fallback_model": "",
+    # 全局五档默认；留空则该档继续向下探到 fallback_model
+    "model_defaults": {"plan": "", "prose": "", "polish": "", "review": "", "longctx": ""},
     # 单价：每百万 token 的"分"（cost_cents 全程用整数分，避免浮点误差）
     "prices": {
         "deepseek-chat": {"input_per_mtok_cents": 27, "output_per_mtok_cents": 110},
@@ -68,15 +75,47 @@ def _validate_structure(s: dict[str, Any]) -> None:
     if provs is not None:
         if not isinstance(provs, dict):
             raise ValueError("providers 必须是对象")
+        if not provs:
+            raise ValueError("providers 至少要有一个接口")
         for name, p in provs.items():
+            if not PROVIDER_NAME_RE.match(str(name)):
+                raise ValueError(f"接口名 {name!r} 非法：只用小写字母开头，后接小写字母/数字/_/-，最长 24 字符")
             if not isinstance(p, dict):
                 raise ValueError(f"providers.{name} 必须是对象")
+            base = p.get("base_url")
+            if not isinstance(base, str) or not base.strip():
+                raise ValueError(f"providers.{name}.base_url 必须是非空字符串")
+            if p.get("label") is not None and not isinstance(p.get("label"), str):
+                raise ValueError(f"providers.{name}.label 必须是字符串")
     prices = s.get("prices")
     if prices is not None and not isinstance(prices, dict):
         raise ValueError("prices 必须是对象")
     mech = s.get("mechcheck")
     if mech is not None and not isinstance(mech, dict):
         raise ValueError("mechcheck 必须是对象")
+    defaults = s.get("model_defaults")
+    if defaults is not None:
+        if not isinstance(defaults, dict):
+            raise ValueError("model_defaults 必须是对象")
+        for stage, value in defaults.items():
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"model_defaults.{stage} 必须是字符串")
+    fallback = s.get("fallback_model")
+    if fallback is not None and not isinstance(fallback, str):
+        raise ValueError("fallback_model 必须是字符串")
+
+
+def _absorb_legacy(merged: dict[str, Any]) -> None:
+    """把旧键 default_model 降级搬进 fallback_model（规格12 §2.2 / §4）。
+
+    旧语义是"覆盖一切"，新语义是"最后兜底"，所以只在新键未填时搬值；
+    随后丢弃旧键，避免 masked() 把它回显给 UI、让人以为还有两个兜底模型。
+    幂等：对同一份数据重复执行结果一致。
+    """
+    legacy = merged.pop("default_model", None)
+    if isinstance(legacy, str) and legacy.strip() and not str(merged.get("fallback_model") or "").strip():
+        merged["fallback_model"] = legacy.strip()
+        logger.info("settings.json: default_model 已迁移为 fallback_model（语义降为兜底）")
 
 
 def load() -> dict[str, Any]:
@@ -98,6 +137,7 @@ def load() -> dict[str, Any]:
             atomic.write_text(path, json.dumps(merged, ensure_ascii=False, indent=2))
         except OSError:
             pass  # 只读环境（如打包内资源目录）下允许不落盘，用内存默认值
+    _absorb_legacy(merged)  # 规格12 §2.2：旧 default_model → fallback_model
     return merged
 
 
@@ -107,6 +147,30 @@ def _deep_merge(base: dict, override: dict) -> None:
             _deep_merge(base[k], v)
         else:
             base[k] = v
+
+
+# 端点名规则（规格13 §2.1）：小写字母开头，后接小写字母/数字/_/-，最长 24 字符。
+PROVIDER_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,23}$")
+DEFAULT_PROVIDER = "openai"
+
+
+def providers() -> dict[str, dict[str, Any]]:
+    """全部接口配置（含密钥，仅供后端使用；给 UI 一律走 masked()）。"""
+    raw = load().get("providers")
+    return raw if isinstance(raw, dict) else {}
+
+
+def provider(name: str = "") -> dict[str, Any]:
+    """取指定接口；name 为空取默认接口。不存在直接报错，不静默回落。"""
+    key = (name or DEFAULT_PROVIDER).strip().lower()
+    found = providers().get(key)
+    if not isinstance(found, dict):
+        raise KeyError(f"接口 {key} 不存在，请先在设置页添加")
+    return found
+
+
+def provider_names() -> list[str]:
+    return sorted(providers())
 
 
 MASK_PLACEHOLDER = "已配置（留空保持不变…）"
@@ -138,10 +202,30 @@ def save(settings: dict[str, Any]) -> None:
 
 
 def update(partial: dict[str, Any]) -> dict[str, Any]:
-    """部分更新（PUT 语义：给什么覆盖什么），校验后落盘并返回完整设置。"""
+    """部分更新（PUT 语义：给什么覆盖什么），校验后落盘并返回完整设置。
+
+    （规格12 §2.2）旧客户端仍可能提交 default_model：映射为 fallback_model 后丢弃旧键，
+    保证落盘文件里只有一套兜底语义。
+    """
     current = load()
+    partial = dict(partial)
+    if "default_model" in partial and "fallback_model" not in partial:
+        partial["fallback_model"] = partial["default_model"]
+    partial.pop("default_model", None)
+    # 深合并只能加/改，删不掉接口；删除必须显式列出来（规格13 §3）。
+    removals = partial.pop("remove_providers", None)
     _guard_masked_keys(partial, current)  # 掩码占位串不得覆盖真 key
     _deep_merge(current, partial)
+    if removals is not None:
+        if not isinstance(removals, list):
+            raise ValueError("remove_providers 必须是数组")
+        provs = current.get("providers")
+        if isinstance(provs, dict):
+            for name in removals:
+                if str(name) == DEFAULT_PROVIDER:
+                    raise ValueError(f"默认接口 {DEFAULT_PROVIDER} 不能删除")
+                provs.pop(str(name), None)
+    current.pop("default_model", None)
     _validate_structure(current)  # 非法结构直接拒绝，绝不落盘
     save(current)
     return current
@@ -162,7 +246,8 @@ def masked() -> dict[str, Any]:
 _WARNED_MODELS: set[str] = set()
 
 
-def cost_millicents(model: str, input_tokens: int, output_tokens: int) -> int:
+def cost_millicents(model: str, input_tokens: int, output_tokens: int,
+                    provider: str = "") -> int:
     """按单价折算成本，单位是**千分之一分**（毫分）。
 
     原来按整数分记账，且是**每次调用各自四舍五入**：gemini-flash 单价 3/15 分
@@ -174,13 +259,17 @@ def cost_millicents(model: str, input_tokens: int, output_tokens: int) -> int:
     未配置单价的模型不静默返回 0：首次遇到记一条告警，便于在设置页补单价。
     """
     prices = load().get("prices", {})
-    p = prices.get(model)
+    # 先按 "端点@模型" 精确匹配（不同中转站同名模型单价可能不同），再回落裸模型名。
+    p = prices.get(f"{provider}@{model}") if provider else None
     if not p:
-        if model not in _WARNED_MODELS:
-            _WARNED_MODELS.add(model)
+        p = prices.get(model)
+    if not p:
+        key = f"{provider}@{model}" if provider else model
+        if key not in _WARNED_MODELS:
+            _WARNED_MODELS.add(key)
             logger.warning(
-                "模型 %r 未配置单价，本次成本按 0 计（请在设置页「单价」补上，否则"
-                "成本汇总与 >1 元标黄验收线不生效）", model)
+                "模型 %r 未配置单价，本次成本按 0 计（请在设置页「单价」补一行 "
+                "\"端点@模型\" 或 \"模型\"，否则成本汇总与 >1 元标黄验收线不生效）", key)
         return 0
     return round(
         (input_tokens * p.get("input_per_mtok_cents", 0)

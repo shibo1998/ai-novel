@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "scope": "规格10隔离Mock浏览器工程验收；非文学质量验收",
+  "date": "2026-10-30",
+  "all_passed": true,
+  "total": 16,
+  "primary_job": "14d7f8b9-8fa8-493a-98b5-1be2911f30cc",
+  "primary_prose_sha256": "f68c5b3adb470768f62a55ea0074aea6e2453d820258fc64f5c4831dd3c7269c",
+  "screenshot": "spec10-redline.jpg",
+  "viewport": {"method": "same_origin_iframe_real_app_viewport", "width": 1280, "height": 800, "scroll_width": 1265},
+  "tests": [
+    {"case": "actual_ui_refresh", "passed": true, "model_calls_unchanged": true},
+    {"case": "actual_ui_line_numbers", "passed": true, "displayed_lines": 27},
+    {"case": "actual_ui_manual_finalize", "passed": true, "requests": 1, "applied": [1, 2, 3], "file_status": "final", "pipeline_status": "finalized"},
+    {"case": "browser_api_append_prepare_pause_resume", "passed": true, "numbers": [4, 5, 6], "result": "awaiting_outline_confirmation"},
+    {"case": "browser_api_generation_pause_resume", "passed": true, "first_chapter_calls": 1, "paused_completed": [4]},
+    {"case": "append_canonical_generation_isolation", "passed": true, "canonical_unchanged": true},
+    {"case": "browser_api_external_edit_stale", "passed": true, "result": "stale", "resume_status": 409, "finalize_status": 409},
+    {"case": "browser_api_network_unknown_no_auto_retry", "passed": true, "result": "paused", "model_calls_unchanged_on_read": true},
+    {"case": "browser_api_new_volume_explicit_resume", "passed": true, "volume_no": 2, "numbers": [7, 8, 9]},
+    {"case": "browser_api_confirmation_write_fault_rollback", "passed": true, "response_status": 500, "result": "awaiting_outline_confirmation", "canonical_unchanged": true, "model_calls_unchanged": true},
+    {"case": "new_volume_unfinalized_boundary_guard", "passed": true, "result": "paused", "completed": [], "reason": "DraftContextError"},
+    {"case": "browser_api_append_conflict", "passed": true, "response_status": 409, "code": "PRODUCTION_VOLUME_OVERLAP", "old_prose_unchanged": true},
+    {"case": "browser_api_M04_redline", "passed": true, "book": "规格10红线序号假书", "result": "paused", "completed": [1], "chapter2_status": "human_review", "body_has_sensitive": true, "v5_calls": 0, "chapter3_calls": 0},
+    {"case": "actual_page_reload_no_calls", "passed": true, "model_calls_unchanged": true},
+    {"case": "actual_1280x800_layout", "passed": true},
+    {"case": "actual_ui_single_volume_confirmation", "passed": true, "confirm_requests": 1, "automatic_finalize_requests": 0, "completed_before_final": [1, 2, 3], "applied_before_final": []}
+  ],
+  "boundaries": ["仅scratch隔离AINOVEL_HOME和MockLLM", "主路径和阅读确认通过实际UI；故障通过同源fetch真实API与临时注入", "早期注入定位失败未计入通过项", "fullPage截图超时；当前视口截图成功，不冒充顶层Emulation", "真实书副本、真模型对照、作者文学质量判读未授权未执行"]
+}

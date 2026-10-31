@@ -26,7 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import bible, books, chapters, characters, fts, outline, prompts, settings, summaries
+from . import (bible, books, chapters, characters, fts, models, outline, prompts,
+               settings, summaries)
 
 NEVER_TRUNCATE = {"system", "system_rules", "genre", "power_rows", "char_cards",
                   "outline_contract"}
@@ -157,6 +158,9 @@ def _char_card_text(data: dict[str, Any], state_row: dict[str, Any] | None = Non
 
 def assemble(book: str, chapter_no: int) -> Assembly:
     """装配本章上下文（13 槽位）。要求细纲已存在（未确认也可预览）。"""
+    from . import draftcontext
+
+    batch = draftcontext.current(book, chapter_no)
     cfg = books.load_config(book)
     contract = chapters.read_outline_contract(book, chapter_no)
     char_names = _extract_characters(contract)
@@ -212,6 +216,11 @@ def assemble(book: str, chapter_no: int) -> Assembly:
         state_rows = state_mod.confirmed_map(book, chapter_no - 1)
     except Exception:
         state_rows = {}
+    if batch is not None:
+        state_rows.update(batch["state_map"])
+        for name, data in chars_data.items():
+            if data is not None and name in batch["statuses"]:
+                chars_data[name] = dict(data, status=batch["statuses"][name])
     cards = []
     for name, data in chars_data.items():
         if data is None:
@@ -241,7 +250,8 @@ def assemble(book: str, chapter_no: int) -> Assembly:
     )
 
     # 槽 8：活跃伏笔线程
-    act = outline.active_foreshadows(book)
+    act = ([r for r in batch["plot_rows"] if r.get("状态") in ("planted", "building")]
+           if batch is not None else outline.active_foreshadows(book))
     slots["active_foreshadows"] = "\n".join(
         f"{r.get('编号')}[{r.get('状态')}] {r.get('内容', '')}（埋设{r.get('埋设章', '')}章，"
         f"推进{r.get('推进章', '') or '—'}，预计回收{r.get('预计回收章', '') or '未定'}）"
@@ -250,6 +260,12 @@ def assemble(book: str, chapter_no: int) -> Assembly:
 
     # 槽 9：前情摘要（结构化近三章速记优先 + 全局摘要兜底）
     s = summaries.load(book)
+    if batch is not None:
+        s = dict(s)
+        s["recent"] = [r for r in s.get("recent") or [] if type(r.get("no")) is int and r["no"] < chapter_no]
+        s["cumulative"] = "\n".join(match[0].strip() for match in re.finditer(
+            r"(?ms)第([0-9]+)章：.*?(?=第[0-9]+章：|\Z)", str(s.get("cumulative") or ""))
+            if int(match[1]) < chapter_no)
     parts = []
     try:
         from . import state as state_mod
@@ -265,10 +281,13 @@ def assemble(book: str, chapter_no: int) -> Assembly:
     if recent:
         parts.append(f"【最近章节】{recent}")
     slots["recaps"] = "\n\n".join(parts) or "（首章，无前情摘要）"
+    if batch is not None and batch["items"]:
+        slots["recaps"] += "\n\n" + draftcontext.evidence(batch)
 
     # 槽 10：前文检索片段（FTS 召回）
     kws = _keywords(book, contract, char_names)
-    pieces = fts.search(books.book_id(book), " ".join(kws), top_k=MAX_FTS_PIECES)
+    pieces = [(no, snip) for no, snip in fts.search(books.book_id(book), " ".join(kws), top_k=MAX_FTS_PIECES)
+              if batch is None or no < chapter_no]
     slots["fts_recall"] = "\n".join(f"（第{no}章）{snip}" for no, snip in pieces) or "（无相关前文片段）"
 
     # 槽 11：上一章末尾原文
@@ -280,6 +299,9 @@ def assemble(book: str, chapter_no: int) -> Assembly:
             slots["prev_ending"] = "（上一章正文缺失）"
     else:
         slots["prev_ending"] = "（本章为第一章）"
+    if batch is not None and batch["previous_body"]:
+        slots["prev_ending"] = (batch["previous_body"].strip()[-PREV_ENDING_CHARS:]
+                                + "\n【来源：本批前章真实正文，指纹见批次待审事实】")
 
     # 槽 12：本章细纲合同（全量）
     slots["outline_contract"] = _render_contract(contract)
@@ -410,6 +432,8 @@ def render_request(book: str, prompt_id: str, variables: dict[str, Any],
     只舍弃完整可选槽和完整范例；原稿、对照稿、角色与知情约束不截断。
     老书级覆盖保留，V2/V3旧接口必须先升级，不能静默替换全局模板。
     """
+    from . import draftcontext
+
     from . import style
     from .paths import book_dir
 
@@ -503,6 +527,10 @@ def render_request(book: str, prompt_id: str, variables: dict[str, Any],
             for ex in selected:
                 assets.extend([f"【参考范例 {ex['id']}：不得复制角色、情节或专有设定】", ex["text"], "【范例结束】"])
             user += "\n\n" + "\n\n".join(assets)
+        batch = draftcontext.current(book) if prompt_id in STYLE_TASKS else None
+        proof = draftcontext.evidence(batch)
+        if proof:
+            user += "\n\n" + proof
         if extra_instruction:
             user += "\n\n【本次补充要求/重试反馈】\n" + extra_instruction
         return user
@@ -527,7 +555,9 @@ def render_request(book: str, prompt_id: str, variables: dict[str, Any],
         user = build_user()
     if total() > budget:
         raise prompts.PromptError(f"PROMPT_BUDGET_EXCEEDED: {prompt_id} 输入估算{total()} > 预算{budget}；硬约束及必要稿件未截断")
-    model = settings.load().get("default_model") or cfg.get("model_stages", {}).get(main.fm["model_stage"], "deepseek-chat")
+    # （规格12 §2.3）与 pipeline._call 共用同一解析函数：装配摘要里记的模型名
+    # 必须等于真实请求的模型名，否则 request_digest 与审计链会和实际调用分叉。
+    model = models.resolve(book, main.fm["model_stage"], cfg).model
     digest_data = {"system": system, "user": user, "templates": templates, "genre": genre,
                    "model": model, "temperature": main.fm["temperature"], "assembly_version": 2}
     request_digest = hashlib.sha256(json.dumps(digest_data, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
@@ -535,6 +565,7 @@ def render_request(book: str, prompt_id: str, variables: dict[str, Any],
                     if f"〖{key}〗" in main.body and val}
     return {"system": system, "user": user, "meta": {
         "request_digest": request_digest, "templates": templates, "assembly_version": 2,
+        "draft_context_sources": (draftcontext.current(book) or {}).get("sources", []),
         "genre_template": genre, "genre_source": genre_source, "model": model,
         "temperature": main.fm["temperature"], "input_fingerprints": fingerprints,
         "style": {"enabled": ctx["enabled"], "card_fingerprint": ctx["card_fingerprint"],

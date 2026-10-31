@@ -1,12 +1,103 @@
-// 全局样式：element-plus 暗色变量微调（沿用旧 UI 配色）+ 高密度面板工具类（规格04：信息密度优先）。
+// 规格10 §0/2.1：墨韵视觉契约。任务控件为暖墨、主动作朱砂、检查进度暖金、正文米白。
+// 沿用 Vue/Element Plus；控制字 14px、正文 18px，4/8px 间距，4/8px 圆角。
+// 只用颜色/位移表达反馈；不堆装饰卡片、不改正文、不把未知状态染绿，保留危险色。
+@use './volume.scss';
 html.dark {
-  --el-bg-color-page: #14161a;
-  --el-bg-color: #1d2026;
-  --el-bg-color-overlay: #24282f;
-  --el-border-color: #32363e;
-  --el-border-color-light: #32363e;
-  --el-border-color-lighter: #2a2e35;
-  --el-fill-color-blank: #1d2026;
+  --ink-page: #141210;
+  --ink-surface: #211c18;
+  --paper: #f1e8d8;
+  --paper-ink: #30251d;
+  --warm-gold: #d4b355;
+  --el-bg-color-page: var(--ink-page);
+  --el-bg-color: #1d1916;
+  --el-bg-color-overlay: #2b2520;
+  --el-border-color: #51453b;
+  --el-border-color-light: #44392f;
+  --el-border-color-lighter: #362e27;
+  --el-fill-color-blank: #1d1916;
+  --el-fill-color: #2b2520;
+  --el-fill-color-light: #302820;
+  --el-fill-color-lighter: #29221d;
+  --el-fill-color-dark: #141210;
+  --el-fill-color-darker: #110f0d;
+  --el-text-color-primary: #f1e8d8;
+  --el-text-color-regular: #e4d7c5;
+  --el-text-color-secondary: #beae98;
+  --el-text-color-placeholder: #a79681;
+  --el-color-primary: #e87963;
+  --el-color-primary-light-3: #ec9b8a;
+  --el-color-primary-light-5: #925345;
+  --el-color-primary-light-7: #613a30;
+  --el-color-primary-light-8: #442921;
+  --el-color-primary-light-9: #30211b;
+  --el-color-primary-dark-2: #c43d2a;
+  --el-color-warning: var(--warm-gold);
+  --el-color-warning-light-9: #30281b;
+  --el-color-success: #8fb49a;
+  --el-color-success-light-9: #202a20;
+  --el-color-danger: #ef9287;
+  --el-color-danger-light-9: #3a211e;
+  --el-color-info: #b9ac99;
+  --el-color-info-light-9: #29241f;
+  --el-font-size-base: 14px;
+  --el-font-size-small: 13px;
+  --el-font-size-extra-small: 12px;
+}
+html.dark .el-button--primary:not(.is-plain, .is-text, .is-link) {
+  --el-button-bg-color: #c43d2a;
+  --el-button-border-color: #c43d2a;
+  --el-button-text-color: #fff7ed;
+  --el-button-hover-bg-color: #d14934;
+  --el-button-hover-border-color: #d14934;
+  --el-button-hover-text-color: #ffffff;
+  --el-button-active-bg-color: #a93323;
+  --el-button-disabled-bg-color: #4d3930;
+  --el-button-disabled-border-color: #4d3930;
+  --el-button-disabled-text-color: #bc9e8f;
+}
+button:focus-visible,
+a:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--warm-gold);
+  outline-offset: 3px;
+}
+.el-button {
+  transition:
+    background-color 100ms ease-out,
+    border-color 100ms ease-out,
+    transform 100ms ease-out;
+}
+.el-button:not(:disabled):active {
+  transform: translateY(1px);
+}
+.prose-scroll.prose-body {
+  background: var(--paper);
+  color: var(--paper-ink);
+  font-size: 18px;
+  padding: 24px;
+}
+.prose-scroll.prose-body .original-line-no {
+  color: #806b56;
+}
+.prose-scroll.prose-body .hit-line {
+  color: #8a4818;
+}
+@media (prefers-reduced-motion: reduce) {
+  .el-button {
+    transition: none;
+  }
+  .el-skeleton.is-animated .el-skeleton__item {
+    animation: none;
+  }
+  .el-overlay,
+  .el-message-box {
+    transition-duration: 0ms;
+    animation: none;
+  }
 }
 
 body {
@@ -45,7 +136,7 @@ body {
   font-weight: 700;
 }
 
-// 正文流式预览框
+// 正文流式预览框（原始日志/快照仍可等宽；小说阅读使用 .prose-body）
 .stream-box {
   background: var(--el-bg-color-page);
   border: 1px solid var(--el-border-color-lighter);
@@ -55,10 +146,55 @@ body {
   max-height: 480px;
   overflow: auto;
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12.5px;
   line-height: 1.6;
+}
+
+.prose-body {
+  font-family: 'Songti SC', SimSun, 'Noto Serif CJK SC', 'Source Han Serif SC', serif;
+  font-size: 16px;
+  line-height: 1.9;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+.prose-paragraph {
+  position: relative;
+  margin: 0 0 0.9em;
+  padding: 2px 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-left: 3px solid transparent;
+}
+.prose-paragraph.indent {
+  text-indent: 2em;
+}
+.prose-paragraph.hit-active {
+  background: rgba(230, 162, 60, 0.28);
+  border-left-color: var(--el-color-warning);
+}
+.prose-paragraph .hit-line {
+  float: right;
+  color: var(--el-color-warning);
+  font:
+    11px Consolas,
+    monospace;
+  text-indent: 0;
+  user-select: none;
+}
+.prose-paragraph .all-lines {
+  display: block;
+  text-indent: 0;
+}
+.prose-paragraph .original-line-no {
+  display: inline-block;
+  min-width: 42px;
+  color: var(--el-text-color-secondary);
+  font:
+    11px Consolas,
+    monospace;
+  user-select: none;
 }
 
 // 审校/机检问题条目
@@ -134,9 +270,6 @@ body {
   min-height: 160px;
   max-height: 520px;
   overflow: auto;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12.5px;
-  line-height: 1.65;
 }
 .prose-line {
   display: flex;

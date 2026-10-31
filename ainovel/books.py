@@ -130,7 +130,19 @@ def list_books() -> list[dict[str, Any]]:
             item = {"name": name, "title": name, "genre": "", "target_words": 0,
                     "status": "unknown", "_error": str(e)}
         item["external"] = name in external
+        try:
+            from . import progress
+
+            item.update(progress.derive(name))
+        except Exception as error:
+            item.update({"chapters_done": None, "chapters_total": None, "words_done": None,
+                         "last_edited_at": None,
+                         "progress_warnings": [{"code": "PROGRESS_UNKNOWN",
+                                                "message": f"进度统计失败：{error}"}]})
         out.append(item)
+    # 时间降序、同时间书名稳定升序；None 始终置后。
+    out.sort(key=lambda item: item["name"])
+    out.sort(key=lambda item: item.get("last_edited_at") or "", reverse=True)
     return out
 
 

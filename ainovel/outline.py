@@ -48,13 +48,17 @@ def read_rhythm(book: str) -> str:
         return ""
 
 
-def write_outline(book: str, fm: dict[str, Any], rows: list[dict[str, str]], rhythm: str = "") -> None:
+def render_outline(fm: dict[str, Any], rows: list[dict[str, str]], rhythm: str = "") -> str:
+    """把大纲字段渲染成 OUTLINE.md 全文（**纯计算，不落盘**）。
+
+    规格08 A-T04 要求预览能看到"将写入的真实内容"，因此写入与预览共用这一处渲染，
+    避免前后端各自拼一份导致 diff 与实际写入不一致。
+    """
     # 剥离读接口专用的下划线字段（_body/_rhythm 等），绝不让它们进 frontmatter
     fm = {k: v for k, v in fm.items() if not k.startswith("_")}
     FM.validate(fm, OUTLINE_SCHEMA)
-    vols = fm.get("volumes") or []
     vol_lines = []
-    for v in vols:
+    for v in fm.get("volumes") or []:
         ch = v.get("chapters") or [1, 1]
         vol_lines.append(
             f"- 卷{v.get('no','')}`{v.get('name','')}` 章{ch[0]}-{ch[1]}："
@@ -66,7 +70,12 @@ def write_outline(book: str, fm: dict[str, Any], rows: list[dict[str, str]], rhy
         "## 章节总表\n\n" + table + "\n\n## 爽点节奏总谱\n\n" + (rhythm or "（待规划）") + "\n"
         + ("\n".join(vol_lines) + "\n" if vol_lines else "")
     )
-    atomic.write_text(books.book_dir(book) / "OUTLINE.md", FM.dump(fm, body))
+    return FM.dump(fm, body)
+
+
+def write_outline(book: str, fm: dict[str, Any], rows: list[dict[str, str]], rhythm: str = "") -> None:
+    atomic.write_text(books.book_dir(book) / "OUTLINE.md",
+                      render_outline(fm, rows, rhythm))
 
 
 def _row_no(val: Any) -> int | None:
@@ -102,10 +111,14 @@ def read_plot_points(book: str) -> list[dict[str, str]]:
     return rows
 
 
-def write_plot_points(book: str, rows: list[dict[str, str]]) -> None:
+def render_plot_points(rows: list[dict[str, str]]) -> str:
+    """把台账行渲染成 PLOT_POINTS.md 全文（**纯计算，不落盘**，规格08 A-T04 同一渲染）。"""
     table = dump_table(PP_COLS, [[r.get(c, "") for c in PP_COLS] for r in rows])
-    atomic.write_text(books.book_dir(book) / "PLOT_POINTS.md",
-                      "# 伏笔台账\n\n" + table + "\n")
+    return "# 伏笔台账\n\n" + table + "\n"
+
+
+def write_plot_points(book: str, rows: list[dict[str, str]]) -> None:
+    atomic.write_text(books.book_dir(book) / "PLOT_POINTS.md", render_plot_points(rows))
 
 
 def validate_transitions(old: list[dict[str, str]], new: list[dict[str, str]]) -> list[str]:

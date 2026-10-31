@@ -1,729 +1,466 @@
 <script setup lang="ts">
-// 书总览（规格04 §1）：档案导航 AI 生成、圣经/文风/台账/角色、章节列表与卷末审计。
-import { ElMessage, ElMessageBox } from 'element-plus'
+// 规格07 UI-20/21/25/27：总览只读摘要与唯一导航；手工编辑统一在档案页。
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  adoptArchive,
-  aiGenerate,
-  createCharacter,
   getBible,
-  getCharacter,
-  getOutlineFull,
-  getOverdueForeshadows,
   getOverview,
+  getOverdueForeshadows,
   getPlotPoints,
-  listCharactersFull,
-  putBible,
-  putCharacter,
-  putOutlineFull,
-  putPlotPoints,
-  runAudit,
+  getState,
+  getTimeline,
   listAudits,
   listMemoryPending,
   rebuildMemoryBatch,
-  getTimeline,
-  getState,
+  runAudit,
 } from '@/api'
-import type {
-  AuditReport,
-  CharacterData,
-  MemoryPendingItem,
-  Overview,
-  StateData,
-  TimelineData,
-} from '@/api/types'
+import type { AuditReport, MemoryPendingItem, Overview, StateData, TimelineData } from '@/api/types'
 import { useBookStore } from '@/stores/book'
-import { parseMdTable, toMdTable } from '@/utils/mdtable'
-import { tagType } from '@/utils/status'
-import StyleEditor from '@/components/StyleEditor.vue'
+import { statusLabel, tagType } from '@/utils/status'
+import { withTask } from '@/utils/tasks'
+import ArchiveAI from '@/components/ArchiveAI.vue'
+import ChapterSelect from '@/components/ChapterSelect.vue'
 
 const route = useRoute()
 const router = useRouter()
 const store = useBookStore()
-
 const name = computed(() => String(route.params.name ?? ''))
 const ov = ref<Overview | null>(null)
 const bible = ref<Record<string, string>>({})
-const ppText = ref('')
-// 伏笔超期预警（规格01：planted 超 30 章未进 building）。只读回看，不改台账。
-const overdue = ref<{ chapter: number; grace: number; overdue: string[] }>({
-  chapter: 0,
-  grace: 30,
-  overdue: [],
-})
-const outlineText = ref('')
-const newChar = ref({ name: '', role: '龙套' })
-const charRoles = ['龙套', '重要配角', '反派', '女主', '主角']
-
-const PP_COLS = ['编号', '内容', '埋设章', '推进章', '预计回收章', '状态', '备注']
-const OC_COLS = ['章', '卷', '本章目标', '冲突来源', '爽点/揭露', '钩子类型', '重要度★']
-const G_TARGETS: Record<string, 'bible' | 'characters' | 'outline'> = {
-  G1: 'bible',
-  G2: 'bible',
-  G3: 'characters',
-  G4: 'characters',
-  G5: 'outline',
-}
-const G_LABELS: Record<string, string> = {
-  G1: 'G1 世界观',
-  G2: 'G2 力量体系',
-  G3: 'G3 角色卡',
-  G4: 'G4 关系网',
-  G5: 'G5 全书大纲',
-}
-
-// AI 生成预览（生成 → 人工改定 → 采纳落盘，AI 永不静默覆盖）
-const aiDialog = ref(false)
-const aiText = ref('')
-const aiTarget = ref<'bible' | 'characters' | 'outline'>('bible')
-const aiPid = ref('')
-const aiDigest = ref('')
-
-// 角色编辑
-const charDialog = ref(false)
-const charEditName = ref('')
-const charEditFm = ref('')
-const charEditBody = ref('')
-
-const gotoNo = ref(1)
-const auditNo = ref<number | undefined>(undefined)
-
-// —— 长期记忆健康度（规格05 §11.3）——
+const plotPoints = ref<Record<string, string>[]>([])
+const loading = ref(false)
+const failed = ref(false)
+const auxiliaryFailed = ref(false)
+let loadRequest = 0
+const selectedChapter = ref<number | null>(null)
+const overdue = ref({ chapter: 0, grace: 30, overdue: [] as string[] })
 const memPending = ref<MemoryPendingItem[]>([])
 const timelineData = ref<TimelineData | null>(null)
 const stateData = ref<StateData | null>(null)
-const memLoading = ref(true)
-const memHealthError = ref(false)
-let memoryRequest = 0
+const memLoading = ref(false)
+const memFailed = ref(false)
 const memBusy = ref(false)
+const audits = ref<AuditReport[]>([])
+const auditFailed = ref(false)
+const auditNo = ref<number | null>(null)
+const auditView = ref<AuditReport>()
+const auditDialog = ref(false)
 
-const REASON_LABEL: Record<string, string> = {
-  missing: '缺卡（回写失败/导入待补）',
-  fingerprint_mismatch: '卡记的是旧版正文',
-  legacy_no_state: '老格式卡（无结构化状态）',
-  unreadable: '卡无法解析',
+const progressText = computed(() => {
+  const o = ov.value
+  if (!o) return ''
+  const done =
+    o.chapters_done === null || o.chapters_done === undefined ? '未知' : `${o.chapters_done} 章`
+  const total =
+    o.chapters_total === 0
+      ? '尚未规划总章数'
+      : o.chapters_total === null || o.chapters_total === undefined
+        ? '规划章数未知'
+        : `已规划 ${o.chapters_total} 章`
+  const words =
+    o.words_done === null || o.words_done === undefined
+      ? '未知'
+      : `${(o.words_done / 10000).toFixed(2)} 万字`
+  const targetWords = o.meta.target_words ?? 0
+  const target = targetWords > 0 ? `${(targetWords / 10000).toFixed(1)} 万字` : '目标字数未知'
+  return `已定稿 ${done} / ${total} · 定稿字数 ${words} / 目标 ${target}`
+})
+const chapterPercent = computed(() => {
+  const o = ov.value
+  if (!o || !o.chapters_total || o.chapters_done === null || o.chapters_done === undefined)
+    return null
+  return Math.max(0, Math.min(100, Math.round((o.chapters_done / o.chapters_total) * 100)))
+})
+const wordPercent = computed(() => {
+  const o = ov.value
+  const target = o?.meta.target_words ?? 0
+  if (!o || !target || o.words_done === null || o.words_done === undefined) return null
+  return Math.max(0, Math.min(100, Math.round((o.words_done / target) * 100)))
+})
+const unfinishedPlanned = computed(() => {
+  const o = ov.value
+  if (!o) return null
+  return o.chapter_numbers.filter((no) => {
+    const row = o.chapters.find((r) => r.no === no)
+    return row?.status !== 'finalized'
+  }).length
+})
+
+function archive(node: string): void {
+  void router.push(
+    `/book/${encodeURIComponent(name.value)}/archive?node=${encodeURIComponent(node)}`,
+  )
 }
-
-async function loadMemoryHealth(): Promise<void> {
-  const b = name.value
-  const request = ++memoryRequest
+function workbench(no: number): void {
+  void router.push(`/book/${encodeURIComponent(name.value)}/chapter/${no}`)
+}
+async function loadMemory(): Promise<void> {
+  const book = name.value
   memLoading.value = true
-  memHealthError.value = false
-  memPending.value = []
-  timelineData.value = null
-  stateData.value = null
+  memFailed.value = false
   try {
-    const [mp, tl, st] = await Promise.all([listMemoryPending(b), getTimeline(b), getState(b)])
-    if (request !== memoryRequest || b !== name.value) return
-    memPending.value = mp.chapters
-    timelineData.value = tl
-    stateData.value = st
+    const [pending, timeline, state] = await Promise.all([
+      listMemoryPending(book),
+      getTimeline(book),
+      getState(book),
+    ])
+    if (book !== name.value) return
+    memPending.value = pending.chapters
+    timelineData.value = timeline
+    stateData.value = state
   } catch {
-    if (request === memoryRequest && b === name.value) memHealthError.value = true
+    if (book === name.value) memFailed.value = true
   } finally {
-    if (request === memoryRequest) memLoading.value = false
+    if (book === name.value) memLoading.value = false
   }
 }
+async function loadAudits(): Promise<void> {
+  try {
+    audits.value = await listAudits(name.value)
+    auditFailed.value = false
+  } catch {
+    auditFailed.value = true
+  }
+}
+async function load(): Promise<void> {
+  const book = name.value
+  const request = ++loadRequest
+  loading.value = true
+  failed.value = false
+  auxiliaryFailed.value = false
+  ov.value = null
+  store.setCurrentBook(book)
+  try {
+    const overview = await getOverview(book)
+    if (request !== loadRequest || book !== name.value) return
+    if (!Array.isArray(overview.chapter_numbers))
+      throw new Error('服务版本不匹配：总览缺少 chapter_numbers，已禁用章节写入导航')
+    ov.value = overview
+    selectedChapter.value = overview.chapter_numbers.at(-1) ?? null
+    void loadMemory()
+    void loadAudits()
+    try {
+      const [b, pp, od] = await Promise.all([
+        getBible(book),
+        getPlotPoints(book),
+        getOverdueForeshadows(book),
+      ])
+      if (request !== loadRequest || book !== name.value) return
+      bible.value = b
+      plotPoints.value = pp
+      overdue.value = od
+    } catch {
+      if (request === loadRequest) auxiliaryFailed.value = true
+    }
+  } catch {
+    if (request === loadRequest && book === name.value) failed.value = true
+  } finally {
+    if (request === loadRequest) loading.value = false
+  }
+}
+watch(name, () => void load(), { immediate: true })
 
 async function rebuildAllMemory(): Promise<void> {
-  const n = memPending.value.length
-  if (!n) return
+  if (!memPending.value.length) return
   try {
     await ElMessageBox.confirm(
-      `将逐章重跑 V4 补做记忆卡，共 ${n} 章（每章一次模型调用，耗时较长）。继续？`,
+      `将逐章重跑 V4 补做 ${memPending.value.length} 章记忆卡，每章调用模型。继续？`,
       '批量补做记忆卡',
       { type: 'warning' },
     )
   } catch {
     return
   }
+  const book = name.value
   memBusy.value = true
   try {
-    const r = await rebuildMemoryBatch(name.value)
-    const failed = r.failed?.length ?? 0
-    ElMessage.success(`补做完成：成功 ${r.done?.length ?? 0} 章，失败 ${failed} 章`)
+    const result = await withTask(
+      {
+        operation: '批量补做记忆卡',
+        book,
+        write: true,
+        returnPath: `/book/${encodeURIComponent(book)}`,
+      },
+      (signal) => rebuildMemoryBatch(book, undefined, signal),
+    )
+    ElMessage.success(
+      `补做完成：成功 ${result.done.length} 章，明确失败 ${result.failed.length} 章`,
+    )
     await load()
-  } catch {
-    // 拦截器已提示
   } finally {
     memBusy.value = false
   }
 }
-
-async function load(): Promise<void> {
-  store.setCurrentBook(name.value)
-  void loadMemoryHealth()
-  // 读请求并行（老版串行串成 4×RTT）
-  const [o, b, pp, od] = await Promise.all([
-    getOverview(name.value),
-    getBible(name.value),
-    getPlotPoints(name.value),
-    // 超期预警失败不该挡住整页 → 单独兜底成空列表
-    getOverdueForeshadows(name.value).catch(() => ({ chapter: 0, grace: 30, overdue: [] })),
-  ])
-  ov.value = o
-  bible.value = b
-  ppText.value = toMdTable(PP_COLS, pp)
-  outlineText.value = toMdTable(OC_COLS, o.outline_rows)
-  overdue.value = od
-  await loadAudits()
-}
-watch(name, () => void load().catch(() => {}), { immediate: true })
-
-function gotoWorkbench(no: number): void {
-  router.push(`/book/${encodeURIComponent(name.value)}/chapter/${no}`)
-}
-
-// —— G 链：AI 生成档案 → 预览改定 → 采纳 ——
-async function ask(label: string, value = ''): Promise<string> {
-  try {
-    const r = await ElMessageBox.prompt(label, 'AI 生成档案', { inputValue: value })
-    return r.value ?? ''
-  } catch {
-    return ''
-  }
-}
-
-/** 世界观摘要：圣经各节压成"【节名】内容"单行段，供 G3/G4/G5 当上下文（跳过空节与自检节）。 */
-function bibleSummary(b: Record<string, string>): string {
-  const lines = Object.entries(b)
-    .filter(([title, content]) => content.trim() && !title.includes('自检'))
-    .map(([title, content]) => `【${title}】${content.trim().replace(/\s+/g, ' ').slice(0, 600)}`)
-  return lines.length ? lines.join('\n') : '（世界观圣经暂为空：请按题材常识构建）'
-}
-
-/** 角色卡摘要：每角色一行「名字（role）：境界/位置/情绪/存亡」关键动态状态。 */
-function charSummary(cs: CharacterData[]): string {
-  const lines = cs.map((c) => {
-    const st = (c.status ?? {}) as Record<string, unknown>
-    const brief = [
-      st.realm ? `境界 ${String(st.realm)}` : '',
-      st.location ? `位置 ${String(st.location)}` : '',
-      st.emotion ? `情绪 ${String(st.emotion)}` : '',
-      st.alive === false ? '已死亡' : '',
-    ].filter(Boolean)
-    return `- ${String(c.name ?? '')}（${String(c.role ?? '')}）${brief.length ? '：' + brief.join(' / ') : ''}`
-  })
-  return lines.length ? lines.join('\n') : '（暂无角色卡）'
-}
-
-/** 读圣经摘要：读失败也返回占位串，保证提示词变量齐全（缺失会被后端严格渲染拒绝）。 */
-async function bibleDigest(): Promise<string> {
-  try {
-    return bibleSummary(await getBible(name.value))
-  } catch {
-    return '（世界观圣经读取失败）'
-  }
-}
-
-/** 读角色卡摘要：同上，失败不阻断 G5。 */
-async function charDigest(): Promise<string> {
-  try {
-    return charSummary(await listCharactersFull(name.value))
-  } catch {
-    return '（角色卡读取失败）'
-  }
-}
-
-async function aiArchive(pid: string): Promise<void> {
-  const vars: Record<string, string> = {}
-  // G3/G4/G5 的提示词都要真实世界观摘要。G3/G4 早前硬编码 "见圣经"——模型收到的
-  // 就是这三个字，等于没给世界观；G5 则因漏传该变量被后端严格渲染直接拒绝（404）。
-  if (pid === 'G3' || pid === 'G4' || pid === 'G5') {
-    vars['世界观摘要'] = await bibleDigest()
-  }
-  if (pid === 'G5') {
-    // G5 必需 5 个变量：世界观摘要 / 角色卡摘要 / logline / 目标总章数 / 单章字数区间
-    vars['角色卡摘要'] = await charDigest()
-    vars['目标总章数'] = (await ask('目标总章数', '120')) || '120'
-    vars['单章字数区间'] = '2200-2800'
-    vars['logline'] = await ask('一句话故事（主角为了X必须做Y但障碍是Z）')
-  }
-  if (pid === 'G1' || pid === 'G2') {
-    try {
-      const b = await getBible(name.value)
-      vars['既有设定摘要'] = b['基础设定'] ?? ''
-      vars['基础设定'] = b['基础设定'] ?? ''
-      vars['既有力量体系'] = b['力量体系'] ?? ''
-    } catch {
-      // 无圣经时留空
-    }
-    vars['题材'] = '都市'
-    vars['故事核'] = await ask('故事核（一句话）')
-    vars['对标书'] = ''
-  }
-  if (pid === 'G3' || pid === 'G4') {
-    try {
-      const cs = await listCharactersFull(name.value)
-      vars['角色卡合集'] = cs.map((c) => c._body ?? '').join('\n\n')
-    } catch {
-      // 无角色时留空
-    }
-    vars['角色需求清单'] =
-      (await ask('角色需求清单（每行：名字+定位+要求）', '林寒+主角+底层逆袭')) || ''
-  }
-  try {
-    const r = await aiGenerate(name.value, pid, vars)
-    aiTarget.value = G_TARGETS[pid] ?? 'bible'
-    aiPid.value = pid
-    aiDigest.value = r.digest
-    aiText.value = r.text
-    aiDialog.value = true
-    ElMessage.success('已生成，请检查修改后再采纳')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function adopt(): Promise<void> {
-  try {
-    const r = await adoptArchive(name.value, aiTarget.value, aiText.value)
-    ElMessage.success({ message: `已采纳落盘：${JSON.stringify(r)}`, duration: 8000 })
-    aiDialog.value = false
-    await load()
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-// —— Bible / 台账 / 大纲 ——
-async function saveBible(): Promise<void> {
-  try {
-    await putBible(name.value, bible.value)
-    ElMessage.success('圣经已保存')
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function savePP(): Promise<void> {
-  try {
-    await putPlotPoints(name.value, parseMdTable(ppText.value))
-    ElMessage.success('台账已保存')
-  } catch (e) {
-    if (e instanceof Error && e.message === '表格格式错误') ElMessage.error('表格格式错误')
-    // 其余（后端状态迁移校验）由拦截器提示
-  }
-}
-
-async function saveOutlineRows(): Promise<void> {
-  try {
-    const rows = parseMdTable(outlineText.value)
-    const od = await getOutlineFull(name.value)
-    od.chapter_rows = rows
-    await putOutlineFull(name.value, od)
-    ElMessage.success('大纲已保存')
-    await load()
-  } catch (e) {
-    if (e instanceof Error && e.message === '表格格式错误') ElMessage.error('表格格式错误')
-    // 其余由拦截器提示
-  }
-}
-
-// —— 角色 ——
-async function createChar(): Promise<void> {
-  const n = newChar.value.name.trim()
-  if (!n) {
-    ElMessage.warning('填新角色名')
-    return
-  }
-  try {
-    await createCharacter(name.value, n, newChar.value.role)
-    ElMessage.success('已建档')
-    newChar.value.name = ''
-    await load()
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function editChar(n: string): Promise<void> {
-  try {
-    const c = await getCharacter(name.value, n)
-    charEditName.value = n
-    const fm = { ...c }
-    delete fm._body
-    charEditFm.value = JSON.stringify(fm, null, 2)
-    charEditBody.value = c._body ?? ''
-    charDialog.value = true
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function saveChar(): Promise<void> {
-  let fm: Record<string, unknown>
-  try {
-    fm = JSON.parse(charEditFm.value) as Record<string, unknown>
-  } catch {
-    ElMessage.error('frontmatter 不是合法 JSON')
-    return
-  }
-  fm._body = charEditBody.value
-  try {
-    await putCharacter(name.value, charEditName.value, fm)
-    ElMessage.success('角色卡已保存')
-    charDialog.value = false
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-// —— 卷末审计（V6） ——
-const audits = ref<AuditReport[]>([])
-const auditView = ref<AuditReport | undefined>(undefined)
-const auditDialogOpen = ref(false)
-
-function openAudit(a: AuditReport): void {
-  auditView.value = a
-  auditDialogOpen.value = true
-}
-
-async function loadAudits(): Promise<void> {
-  try {
-    audits.value = await listAudits(name.value)
-  } catch {
-    audits.value = []
-  }
-}
-
 async function audit(): Promise<void> {
-  const n = auditNo.value
-  if (!n) {
-    ElMessage.warning('填审计截止章号')
+  const no = auditNo.value
+  const book = name.value
+  if (!no || !ov.value?.chapter_numbers.includes(no)) {
+    ElMessage.warning('审计截止章号必须来自章节集合')
     return
   }
   try {
-    const r = await runAudit(name.value, n)
-    ElMessage.success({
-      message: `审计完成：伏笔回收率 ${r.foreshadow_pay_rate}，报告已存 ${r.report_path}`,
-      duration: 10000,
-    })
-    await loadAudits() // 审计完立刻能看到新报告
+    const result = await withTask(
+      { operation: '卷末审计', book, chapter: no, write: true },
+      (signal) => runAudit(book, no, signal),
+    )
+    ElMessage.success(`审计完成：伏笔回收率 ${String(result.foreshadow_pay_rate)}`)
+    await loadAudits()
   } catch {
-    // 拦截器已提示
+    /* 统一错误记录 */
   }
 }
 </script>
 
 <template>
-  <div class="panel">
-    <div class="flex flex-wrap items-center gap-2">
-      <span class="text-[15px] font-bold">{{ ov?.meta.title || name }}</span>
-      <el-tag v-if="(ov?.open_conflicts ?? 0) > 0" type="danger" size="small">
-        待裁决 {{ ov?.open_conflicts }} 条
-      </el-tag>
-      <el-tag v-else type="success" size="small">裁决队列空</el-tag>
-      <span class="flex-1"></span>
-      <!-- 档案编辑（规格04 §1 独立页面）：左树右编辑器 + 结构化表单 + AI diff 预览 -->
-      <el-button type="primary" @click="router.push(`/book/${encodeURIComponent(name)}/archive`)">
-        档案编辑
-      </el-button>
-      <span class="dim">
-        全书成本 {{ ((ov?.cost_total.cost_millicents ?? 0) / 100000).toFixed(2) }} 元 /
-        {{ ov?.cost_total.calls ?? 0 }} 次调用
-      </span>
-    </div>
-    <div class="dim mt-1">
-      {{ ov?.meta.genre }} · 目标{{ ((ov?.meta.target_words ?? 0) / 10000).toFixed(0) }}万字 ·
-      {{ ov?.meta.platform }} · {{ ov?.meta.status }}
-    </div>
-  </div>
-
-  <!-- 长期记忆健康度：缺卡/过期卡/时间线冲突，一眼看出"记忆有没有断" -->
-  <div class="panel">
-    <h3 class="panel-title">长期记忆健康度</h3>
-    <el-alert v-if="memHealthError" type="error" :closable="false" show-icon class="mb-2">
-      长期记忆健康度读取失败，当前状态未知；请刷新健康度后再判断，不能视为健康。
-    </el-alert>
-    <div v-if="memLoading" class="dim mb-2">长期记忆健康度加载中…</div>
-    <div class="flex flex-wrap items-center gap-3">
-      <span>
-        <template v-if="!memLoading && !memHealthError">
-          待补记忆卡
-          <el-tag :type="memPending.length ? 'danger' : 'success'" size="small">
-            {{ memPending.length }}
-          </el-tag>
-        </template>
-        <el-tag v-else type="info" size="small">待补记忆卡：未知</el-tag>
-      </span>
-      <span>
-        结构化状态
-        <el-tag
-          v-if="!memLoading && !memHealthError && stateData"
-          :type="stateData.rows > 0 ? 'success' : 'info'"
-          size="small"
-        >
-          {{ stateData.rows }} 条
-        </el-tag>
-        <el-tag v-else type="info" size="small">未知</el-tag>
-      </span>
-      <span>
-        状态卡提议
-        <el-tag
-          v-if="!memLoading && !memHealthError && stateData"
-          :type="stateData.proposed_fingerprint ? 'warning' : 'info'"
-          size="small"
-        >
-          {{
-            stateData.proposed_fingerprint
-              ? stateData.proposed_stale
-                ? '有待确认提议（已过期）'
-                : '有待确认提议'
-              : '无待确认提议'
-          }}
-        </el-tag>
-        <el-tag v-else type="info" size="small">未知</el-tag>
-      </span>
-      <span>
-        时间线
-        <el-tag
-          v-if="!memLoading && !memHealthError"
-          :type="
-            !timelineData?.exists
-              ? 'info'
-              : (timelineData.issues ?? []).length
-                ? 'danger'
-                : 'success'
-          "
-          size="small"
-        >
-          {{
-            !timelineData?.exists
-              ? '未建立'
-              : (timelineData.issues ?? []).length
-                ? '格式有误'
-                : '正常'
-          }}
-        </el-tag>
-        <el-tag v-else type="info" size="small">未知</el-tag>
-      </span>
-      <span class="flex-1"></span>
-      <el-button :loading="memLoading" @click="loadMemoryHealth">刷新健康度</el-button>
-      <el-button
-        :disabled="memLoading || memHealthError || !memPending.length"
-        :loading="memBusy"
-        type="warning"
-        plain
-        @click="rebuildAllMemory"
-      >
-        批量补做记忆卡
-      </el-button>
-      <el-button @click="router.push(`/book/${encodeURIComponent(name)}/state`)">
-        状态卡 / 时间线
-      </el-button>
-    </div>
-    <div v-if="memPending.length" class="mt-2" style="max-height: 150px; overflow: auto">
-      <div v-for="it in memPending.slice(0, 20)" :key="it.no" class="dim">
-        第{{ it.no }}章 {{ it.title }} —— {{ REASON_LABEL[it.reason] ?? it.reason }}
-        <el-button link type="primary" @click="gotoWorkbench(it.no)">去处理</el-button>
-      </div>
-    </div>
-    <div v-if="(timelineData?.issues ?? []).length" class="mt-2">
-      <div v-for="(i, idx) in (timelineData?.issues ?? []).slice(0, 5)" :key="idx" class="dim">
-        {{ i.rule }} 行{{ i.line }}：{{ i.message }}
-      </div>
-    </div>
-    <div class="dim mt-2">
-      记忆卡缺失不会让书立刻出错，但那一章的事实（状态/伏笔/地点）永久缺席——
-      三五章之后才会以"前后矛盾"的形式暴露，比流程报错更难查。
-    </div>
-  </div>
-
-  <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
-    <div>
-      <!-- 档案导航 · AI 生成 -->
-      <div class="panel">
-        <h3 class="panel-title">档案导航 · AI 生成</h3>
-        <div class="flex flex-wrap gap-2">
-          <el-button v-for="(label, pid) in G_LABELS" :key="pid" @click="aiArchive(pid)">
-            {{ label }}
-          </el-button>
-        </div>
-        <div class="dim mt-2">流程：生成 → diff 预览 → 人工改定 → 采纳落盘（AI 永不静默覆盖）</div>
-      </div>
-
-      <!-- 世界观圣经 -->
-      <div class="panel">
-        <h3 class="panel-title">世界观圣经（固定 H2 节）</h3>
-        <div v-for="k in Object.keys(bible)" :key="k" class="mb-2">
-          <div class="dim mb-1">## {{ k }}</div>
-          <el-input v-model="bible[k]" type="textarea" :rows="4" />
-        </div>
-        <el-button @click="saveBible">保存圣经</el-button>
-      </div>
-
-      <!-- 文风系统 -->
-      <div class="panel">
-        <h3 class="panel-title">文风系统（M5）</h3>
-        <StyleEditor :book="name" />
-      </div>
-
-      <!-- 伏笔台账 -->
-      <div class="panel">
-        <h3 class="panel-title">伏笔台账</h3>
-        <div class="dim">状态只允许 planted→building→paid 单向；paid 后不可回退</div>
-        <!-- 超期预警（规格01 PLOT_POINTS 三条校验之一）：G6 落盘那刻后端会回一行 warns，
-             但那是一次性提示，刷新即消失。这里按当前进度重算并常驻，避免"埋了忘收"。 -->
-        <el-alert
-          v-if="overdue.overdue.length"
-          class="mt-2"
-          type="warning"
-          :closable="false"
-          show-icon
-          :title="`伏笔超期预警：第 ${overdue.chapter} 章进度下，${overdue.overdue.length} 条已超 ${overdue.grace} 章未推进`"
-        >
-          <div v-for="w in overdue.overdue" :key="w" class="small">{{ w }}</div>
-        </el-alert>
-        <el-input v-model="ppText" type="textarea" :rows="10" class="mono mt-1" />
-        <div class="mt-2 flex items-center gap-2">
-          <el-button @click="savePP">保存台账</el-button>
-          <span class="dim">直接编辑表格文本（Markdown 表格）</span>
-        </div>
-      </div>
-
-      <!-- 角色档案 -->
-      <div class="panel">
-        <h3 class="panel-title">角色档案</h3>
-        <div class="flex flex-wrap gap-2">
-          <el-button v-for="n in ov?.characters ?? []" :key="n" @click="editChar(n)">{{
-            n
-          }}</el-button>
-          <span v-if="!ov?.characters.length" class="dim small">（无角色）</span>
-        </div>
-        <div class="mt-2 flex flex-wrap items-center gap-2">
-          <el-input v-model="newChar.name" placeholder="新角色名" style="width: 130px" />
-          <el-select v-model="newChar.role" style="width: 110px">
-            <el-option v-for="r in charRoles" :key="r" :label="r" :value="r" />
-          </el-select>
-          <el-button @click="createChar">建档</el-button>
-        </div>
-      </div>
-    </div>
-
-    <div>
-      <!-- 章节列表 -->
-      <div class="panel">
-        <h3 class="panel-title">章节列表</h3>
-        <div class="mb-2 flex flex-wrap items-center gap-2">
-          <el-input-number v-model="gotoNo" :min="1" style="width: 100px" />
-          <el-button type="primary" @click="gotoWorkbench(gotoNo)">进入工作台</el-button>
-          <span style="width: 16px"></span>
-          <el-input-number
-            v-model="auditNo"
-            :min="1"
-            placeholder="审计至第N章"
-            style="width: 150px"
-          />
-          <el-button @click="audit">卷末审计（V6）</el-button>
-        </div>
-
-        <!-- 卷末审计报告回看（审计结论已入 review_records，正文在 books/<书名>/audits/） -->
-        <div v-if="audits.length" class="mt-2">
-          <div class="dim mb-1">已生成的审计报告（{{ audits.length }} 份）</div>
-          <div class="flex flex-wrap gap-2">
-            <el-button v-for="a in audits" :key="a.file" size="small" @click="openAudit(a)">
-              {{ a.file }}
-              <span v-if="a.foreshadow_pay_rate" class="dim ml-1">
-                回收率 {{ a.foreshadow_pay_rate }}
-              </span>
-            </el-button>
-          </div>
-        </div>
-        <div v-else class="dim mt-2">
-          （还没有审计报告：填章号点「卷末审计」生成，或某卷最后一章定稿后自动触发）
-        </div>
-        <el-table :data="ov?.chapters ?? []" size="small" max-height="520">
-          <el-table-column prop="no" label="章" width="60" />
-          <el-table-column label="状态" width="140">
-            <template #default="{ row }">
-              <el-tag :type="tagType(row.status)" size="small">{{ row.status }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="版本" width="60">
-            <template #default="{ row }">v{{ row.current_version }}</template>
-          </el-table-column>
-          <el-table-column prop="fix_rounds" label="修复" width="55" />
-          <el-table-column label="成本" width="90">
-            <template #default="{ row }">
-              <span :class="{ 'cost-warn': row.cost_over_yuan }">
-                {{ (row.cost_millicents / 100000).toFixed(2) }}元
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="" width="90">
-            <template #default="{ row }">
-              <el-button size="small" @click="gotoWorkbench(row.no)">工作台</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-
-      <!-- 大纲（章节总表） -->
-      <div class="panel">
-        <h3 class="panel-title">大纲（章节总表）</h3>
-        <el-table :data="ov?.outline_rows ?? []" size="small" max-height="300">
-          <el-table-column prop="章" label="章" width="50" />
-          <el-table-column prop="本章目标" label="目标" min-width="140" show-overflow-tooltip />
-          <el-table-column prop="冲突来源" label="冲突" min-width="110" show-overflow-tooltip />
-          <el-table-column prop="爽点/揭露" label="爽点" min-width="110" show-overflow-tooltip />
-          <el-table-column prop="钩子类型" label="钩子" width="80" />
-          <el-table-column prop="重要度★" label="★" width="50" />
-        </el-table>
-        <el-collapse class="mt-2">
-          <el-collapse-item title="编辑大纲行（Markdown 表格）">
-            <el-input v-model="outlineText" type="textarea" :rows="12" class="mono" />
-            <el-button class="mt-2" @click="saveOutlineRows">保存大纲</el-button>
-          </el-collapse-item>
-        </el-collapse>
-      </div>
-    </div>
-  </div>
-
-  <!-- AI 生成结果预览 -->
-  <el-dialog v-model="aiDialog" width="860px" top="4vh" destroy-on-close>
-    <template #header>
-      <span class="font-bold">AI 生成结果预览（可改后采纳）</span>
-      <span class="dim ml-2">
-        目标：{{ aiTarget }}（来源 {{ aiPid }} digest {{ aiDigest.slice(0, 12) }}）
-      </span>
-    </template>
-    <el-input v-model="aiText" type="textarea" :rows="22" class="mono" />
-    <template #footer>
-      <el-button @click="aiDialog = false">取消</el-button>
-      <el-button type="primary" @click="adopt">采纳落盘</el-button>
-    </template>
-  </el-dialog>
-
-  <!-- 角色编辑 -->
-  <el-dialog v-model="charDialog" width="760px" top="5vh" destroy-on-close>
-    <template #header
-      ><span class="font-bold">编辑角色：{{ charEditName }}</span></template
+  <el-skeleton v-if="loading" :rows="10" animated />
+  <el-result
+    v-else-if="failed"
+    icon="error"
+    title="书总览加载失败"
+    sub-title="当前不是空书；请重试或返回书架，失败期间不显示旧书编辑入口。"
+  >
+    <template #extra
+      ><el-button type="primary" @click="load">重试</el-button
+      ><el-button @click="router.push('/shelf')">返回书架</el-button></template
     >
-    <div class="dim mb-1">frontmatter（JSON）</div>
-    <el-input v-model="charEditFm" type="textarea" :rows="10" class="mono" />
-    <div class="dim mt-2 mb-1">正文</div>
-    <el-input v-model="charEditBody" type="textarea" :rows="14" />
-    <template #footer>
-      <el-button @click="charDialog = false">取消</el-button>
-      <el-button type="primary" @click="saveChar">保存角色卡</el-button>
-    </template>
-  </el-dialog>
+  </el-result>
+  <template v-else-if="ov">
+    <div class="panel">
+      <div class="flex flex-wrap items-center gap-2">
+        <el-button @click="router.push('/shelf')">← 书架</el-button>
+        <span class="text-[15px] font-bold">{{ ov.meta.title || name }}</span>
+        <el-tag :type="ov.open_conflicts ? 'danger' : 'success'" size="small">{{
+          ov.open_conflicts ? `待裁决 ${ov.open_conflicts} 条` : '裁决队列空'
+        }}</el-tag>
+        <span class="flex-1"></span
+        ><el-button type="primary" @click="router.push(`/book/${encodeURIComponent(name)}/volumes`)"
+          >卷工作台 / 自动出稿</el-button
+        >
+        <el-button @click="archive('meta')">档案编辑</el-button>
+        <el-button plain @click="router.push(`/book/${encodeURIComponent(name)}/planning`)"
+          >旧分层规划（高级）</el-button
+        >
+      </div>
+      <div class="dim mt-1">
+        {{ ov.meta.genre }} · 目标 {{ ((ov.meta.target_words ?? 0) / 10000).toFixed(1) }} 万字 ·
+        {{ ov.meta.platform }}
+      </div>
+      <div class="mt-2 font-bold">{{ progressText }}</div>
+      <div class="mt-1 flex flex-wrap items-center gap-3">
+        <span v-if="unfinishedPlanned !== null">规划内未定稿 {{ unfinishedPlanned }} 章</span>
+        <el-progress
+          v-if="chapterPercent !== null"
+          :percentage="chapterPercent"
+          style="width: 220px"
+        />
+        <el-progress v-if="wordPercent !== null" :percentage="wordPercent" style="width: 220px" />
+      </div>
+      <el-alert
+        v-for="warning in ov.progress_warnings ?? []"
+        :key="warning.code"
+        type="warning"
+        :closable="false"
+        :title="warning.message"
+        class="mt-1"
+      />
+      <div class="dim mt-1">
+        全书成本 {{ (ov.cost_total.cost_millicents / 100000).toFixed(2) }} 元 /
+        {{ ov.cost_total.calls }} 次调用 · 最后编辑 {{ ov.last_edited_at || '未知' }}
+      </div>
+    </div>
 
-  <!-- 卷末审计报告回看（只读） -->
-  <el-dialog v-model="auditDialogOpen" width="860px" top="4vh" destroy-on-close>
-    <template #header>
-      <span class="font-bold">卷末审计报告 · {{ auditView?.file }}</span>
-      <span v-if="auditView?.foreshadow_pay_rate" class="dim ml-2">
-        伏笔回收率 {{ auditView.foreshadow_pay_rate }}
-      </span>
-    </template>
-    <pre class="stream-box" style="max-height: 60vh">{{ auditView?.content }}</pre>
-    <div class="dim mt-1">文件：{{ auditView?.path }}</div>
-    <template #footer>
-      <el-button @click="auditDialogOpen = false">关闭</el-button>
-    </template>
+    <div class="panel">
+      <h3 class="panel-title">章节导航</h3>
+      <el-alert
+        v-if="ov.planning_error"
+        type="warning"
+        :closable="false"
+        class="mb-2"
+        :title="`大纲读取失败：${ov.planning_error.message}；列表可能不完整，可查看已有章或去档案修复。`"
+      />
+      <div v-if="ov.chapter_numbers.length" class="flex flex-wrap items-center gap-2">
+        <ChapterSelect
+          v-model="selectedChapter"
+          :chapters="ov.chapter_numbers"
+          :rows="ov.chapters"
+          @select="workbench"
+        />
+        <el-button
+          type="primary"
+          :disabled="!selectedChapter"
+          @click="selectedChapter && workbench(selectedChapter)"
+          >进入工作台</el-button
+        >
+      </div>
+      <el-empty v-else description="尚无章节"
+        ><el-button type="primary" @click="router.push(`/book/${encodeURIComponent(name)}/volumes`)"
+          >去卷工作台准备第一卷</el-button
+        ><el-button @click="archive('outline:rows')">高级：手工规划大纲</el-button></el-empty
+      >
+    </div>
+
+    <div class="grid grid-cols-1 gap-3 xl:grid-cols-2">
+      <div>
+        <div class="panel">
+          <h3 class="panel-title">档案导航 · 共用 AI 候选</h3>
+          <ArchiveAI :book="name" @adopted="load" />
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">世界观圣经（只读摘要）</h3>
+          <el-alert
+            v-if="auxiliaryFailed"
+            type="error"
+            :closable="false"
+            title="档案摘要读取失败；主总览仍可用，请重试。"
+          />
+          <template v-else
+            ><div v-for="(content, title) in bible" :key="title" class="mb-2">
+              <el-button link type="primary" @click="archive(`bible:${title}`)">{{
+                title
+              }}</el-button>
+              <div class="dim summary-lines">
+                {{ content.split(/\r?\n/).slice(0, 3).join('\n') || '（空节）' }}
+              </div>
+            </div>
+            <div class="dim">
+              共 {{ Object.keys(bible).length }} 节；编辑请进入对应档案节点。
+            </div></template
+          >
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">伏笔台账（只读摘要）</h3>
+          <div class="dim">共 {{ plotPoints.length }} 条</div>
+          <div
+            v-for="row in plotPoints.slice(0, 3)"
+            :key="String(row['编号'])"
+            class="summary-lines"
+          >
+            {{ row['编号'] }} · {{ row['内容'] }}
+          </div>
+          <el-button link type="primary" @click="archive('plot')">进入伏笔台账编辑</el-button>
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">角色档案</h3>
+          <el-button
+            v-for="character in ov.characters"
+            :key="character"
+            link
+            type="primary"
+            @click="archive(`char:${character}`)"
+            >{{ character }}</el-button
+          ><span v-if="!ov.characters.length" class="dim">（无角色）</span>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <h3 class="panel-title">章节列表</h3>
+          <el-table :data="ov.chapters" size="small" max-height="480">
+            <el-table-column prop="no" label="章" width="60" /><el-table-column
+              label="状态"
+              min-width="130"
+              ><template #default="{ row }"
+                ><el-tag :type="tagType(row.status)" :title="row.status">{{
+                  statusLabel(row.status)
+                }}</el-tag></template
+              ></el-table-column
+            >
+            <el-table-column label="版本" width="70"
+              ><template #default="{ row }">v{{ row.current_version }}</template></el-table-column
+            ><el-table-column label="成本" width="90"
+              ><template #default="{ row }"
+                >{{ (row.cost_millicents / 100000).toFixed(2) }}元</template
+              ></el-table-column
+            ><el-table-column width="90"
+              ><template #default="{ row }"
+                ><el-button @click="workbench(row.no)">工作台</el-button></template
+              ></el-table-column
+            >
+          </el-table>
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">大纲（只读）</h3>
+          <el-table :data="ov.outline_rows" size="small" max-height="300"
+            ><el-table-column prop="章" label="章" width="60" /><el-table-column
+              prop="本章目标"
+              label="目标"
+              min-width="160"
+              show-overflow-tooltip /><el-table-column
+              prop="冲突来源"
+              label="冲突"
+              min-width="130"
+              show-overflow-tooltip /></el-table
+          ><el-button class="mt-2" @click="archive('outline:rows')"
+            >唯一编辑入口：章节总表</el-button
+          >
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 class="panel-title">长期记忆健康度</h3>
+      <el-skeleton v-if="memLoading" :rows="2" animated /><el-alert
+        v-else-if="memFailed"
+        type="error"
+        :closable="false"
+        title="健康度读取失败，状态未知，不视为健康。"
+        ><el-button @click="loadMemory">重试</el-button></el-alert
+      >
+      <div v-else class="flex flex-wrap items-center gap-3">
+        <span>待补记忆卡 {{ memPending.length }}</span
+        ><span>结构化状态 {{ stateData?.rows ?? 0 }} 条</span
+        ><span>状态卡提议 {{ stateData?.proposed_fingerprint ? '待确认' : '无' }}</span
+        ><span
+          >时间线
+          {{
+            !timelineData?.exists ? '未建立' : timelineData.issues.length ? '格式有误' : '正常'
+          }}</span
+        ><el-button :loading="memBusy" :disabled="!memPending.length" @click="rebuildAllMemory"
+          >批量补做记忆卡</el-button
+        ><el-button @click="router.push(`/book/${encodeURIComponent(name)}/state`)"
+          >状态卡 / 时间线</el-button
+        >
+      </div>
+    </div>
+    <div class="panel">
+      <h3 class="panel-title">卷末审计</h3>
+      <ChapterSelect
+        v-model="auditNo"
+        :chapters="ov.chapter_numbers"
+        :rows="ov.chapters"
+        placeholder="审计截止章"
+      /><el-button class="ml-2" @click="audit">卷末审计（V6）</el-button>
+      <el-alert
+        v-if="auditFailed"
+        type="warning"
+        :closable="false"
+        title="审计报告列表读取失败；主总览仍可用。"
+        ><el-button @click="loadAudits">重试</el-button></el-alert
+      >
+      <el-button
+        v-for="report in audits"
+        :key="report.file"
+        class="mt-2"
+        @click="
+          auditView = report
+          auditDialog = true
+        "
+        >{{ report.file }}</el-button
+      ><span v-if="!audits.length && !auditFailed" class="dim ml-2">尚无审计报告</span>
+    </div>
+  </template>
+  <el-empty v-else description="尚无总览数据" />
+  <el-dialog v-model="auditDialog" title="卷末审计报告（只读）" width="860px">
+    <pre class="stream-box">{{ auditView?.content }}</pre>
   </el-dialog>
 </template>
+
+<style scoped>
+.summary-lines {
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+</style>

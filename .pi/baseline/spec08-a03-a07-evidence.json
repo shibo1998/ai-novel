@@ -1,0 +1,218 @@
+{
+  "base": "http://127.0.0.1:8899",
+  "book": "规格08临时书",
+  "at": "2026-10-28T15:16:00.550Z",
+  "A-T03": {
+    "steps": [
+      {
+        "step": "A-T03 点击开始生成",
+        "clicked": "clicked"
+      },
+      {
+        "step": "A-T03 上滚离底 >48px",
+        "before": {
+          "mut": 88,
+          "maxLen": 704,
+          "lastLen": 704,
+          "lastTail": "腹下的纹路一点点发烫，像",
+          "scrollTop": 665,
+          "scrollHeight": 1201,
+          "clientHeight": 536,
+          "atBottom": true,
+          "streamBoxPresent": true,
+          "returnButton": false
+        },
+        "after": {
+          "mut": 108,
+          "maxLen": 864,
+          "lastLen": 864,
+          "lastTail": "了盏灯。[0783]\n\n",
+          "scrollTop": 0,
+          "scrollHeight": 1475,
+          "clientHeight": 536,
+          "atBottom": false,
+          "streamBoxPresent": true,
+          "returnButton": true
+        }
+      },
+      {
+        "step": "A-T03 点击回到最新",
+        "after": {
+          "mut": 121,
+          "maxLen": 968,
+          "lastLen": 968,
+          "lastTail": "骨头里点了盏灯。[088",
+          "scrollTop": 1091,
+          "scrollHeight": 1627,
+          "clientHeight": 536,
+          "atBottom": true,
+          "streamBoxPresent": true,
+          "returnButton": false
+        }
+      },
+      {
+        "step": "A-T03 后台冻结后恢复",
+        "before": {
+          "mut": 121,
+          "maxLen": 968,
+          "lastLen": 968,
+          "lastTail": "骨头里点了盏灯。[088",
+          "scrollTop": 1091,
+          "scrollHeight": 1627,
+          "clientHeight": 536,
+          "atBottom": true,
+          "streamBoxPresent": true,
+          "returnButton": false
+        },
+        "after": {
+          "mut": 122,
+          "maxLen": 970,
+          "lastLen": 970,
+          "lastTail": "里点了盏灯。[0885]",
+          "scrollTop": 1091,
+          "scrollHeight": 1627,
+          "clientHeight": 536,
+          "atBottom": true,
+          "streamBoxPresent": true,
+          "returnButton": false
+        }
+      },
+      {
+        "step": "A-T03 推流结束",
+        "done": true,
+        "final": {
+          "mut": 123,
+          "maxLen": 3000,
+          "lastLen": 3000,
+          "lastTail": "林寒压住令牌，指腹下的纹"
+        },
+        "expectedTail": "林寒压住令牌，指腹下的纹",
+        "expectedChars": 3000
+      }
+    ],
+    "expect": {
+      "chars": 3000,
+      "tail": "林寒压住令牌，指腹下的纹"
+    }
+  },
+  "A-T07": {
+    "steps": [
+      {
+        "step": "A-T07 初始（默认折叠）",
+        "selectedLabel": "选择当前筛选可见项（0）",
+        "state": {
+          "adoptDisabled": true,
+          "keepDisabled": true,
+          "renderedItems": 50,
+          "openManualForms": 0,
+          "messages": [
+            "生成完成，已读取落盘正文"
+          ]
+        }
+      },
+      {
+        "step": "A-T07 展开一条详情",
+        "state": {
+          "adoptDisabled": true,
+          "keepDisabled": true,
+          "renderedItems": 50,
+          "openManualForms": 1,
+          "messages": [
+            "生成完成，已读取落盘正文"
+          ]
+        }
+      },
+      {
+        "step": "A-T07 按书筛选",
+        "pick": {
+          "opened": "opened",
+          "options": [
+            "规格08临时书",
+            "规格08假书B",
+            "新设定待补录",
+            "时间线候选",
+            "角色字段待核对"
+          ],
+          "picked": "picked"
+        },
+        "selectedLabel": "选择当前筛选可见项（0）",
+        "state": {
+          "adoptDisabled": true,
+          "keepDisabled": true,
+          "renderedItems": 26,
+          "openManualForms": 0,
+          "messages": [
+            "生成完成，已读取落盘正文"
+          ]
+        }
+      },
+      {
+        "step": "A-T07 书+类型筛选",
+        "pick": {
+          "opened": "opened",
+          "options": [
+            "规格08临时书",
+            "规格08假书B",
+            "新设定待补录",
+            "时间线候选",
+            "角色字段待核对"
+          ],
+          "picked": "picked"
+        },
+        "selectedLabel": "选择当前筛选可见项（0）",
+        "state": {
+          "adoptDisabled": true,
+          "keepDisabled": true,
+          "renderedItems": 3,
+          "openManualForms": 0,
+          "messages": [
+            "生成完成，已读取落盘正文"
+          ]
+        }
+      },
+      {
+        "step": "A-T07 全选可见项",
+        "selectedLabel": "选择当前筛选可见项（3）",
+        "state": {
+          "adoptDisabled": false,
+          "keepDisabled": false,
+          "renderedItems": 3,
+          "openManualForms": 0,
+          "messages": [
+            "生成完成，已读取落盘正文"
+          ]
+        }
+      },
+      {
+        "step": "A-T07 未知/仅说明项批量采纳",
+        "resolveRequests": 0,
+        "selectedLabel": "选择当前筛选可见项（3）",
+        "state": {
+          "adoptDisabled": false,
+          "keepDisabled": false,
+          "renderedItems": 3,
+          "openManualForms": 0,
+          "messages": [
+            "生成完成，已读取落盘正文",
+            "选择中含不可批量写回/仅说明/未知类型，请取消这些条目后单条处理"
+          ]
+        }
+      },
+      {
+        "step": "A-T07 清空选择",
+        "selectedLabel": "选择当前筛选可见项（0）",
+        "state": {
+          "adoptDisabled": true,
+          "keepDisabled": true,
+          "renderedItems": 3,
+          "openManualForms": 0,
+          "messages": [
+            "生成完成，已读取落盘正文",
+            "选择中含不可批量写回/仅说明/未知类型，请取消这些条目后单条处理"
+          ]
+        }
+      }
+    ],
+    "resolveRequestsDuringFilter": 0
+  }
+}

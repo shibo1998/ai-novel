@@ -149,6 +149,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         _ensure_column(conn, "generation_log", "cost_millicents", "INTEGER")
         _ensure_column(conn, "generation_log", "request_id", "TEXT")
         _ensure_column(conn, "generation_log", "request_meta_json", "TEXT")
+        # 规格12 §2.4：记录协议与解析来源，供"这次为什么用这个模型"追溯
+        _ensure_column(conn, "generation_log", "provider", "TEXT")
+        _ensure_column(conn, "generation_log", "model_source", "TEXT")
         # 规格05 §11.1：老库轻量迁移（CREATE TABLE IF NOT EXISTS 不会改已有表）
         _ensure_column(conn, "chapters", "checked_fingerprint", "TEXT")
         _ensure_column(conn, "chapters", "checked_status", "TEXT")
@@ -179,6 +182,8 @@ def log_generation(
     prompt_version: str | None = None,
     prompt_digest: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
+    model_source: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     cost_millicents: int = 0,
@@ -193,11 +198,12 @@ def log_generation(
         cur = conn.execute(
             """INSERT INTO generation_log
                (book_id, chapter_no, stage, prompt_id, prompt_version, prompt_digest,
-                model, input_tokens, output_tokens, cost_cents, cost_millicents,
+                model, provider, model_source, input_tokens, output_tokens,
+                cost_cents, cost_millicents,
                 status, error, created_at, request_id, request_meta_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (book_id, chapter_no, stage, prompt_id, prompt_version, prompt_digest,
-             model, input_tokens, output_tokens,
+             model, provider, model_source, input_tokens, output_tokens,
              round(cost_millicents / 1000), cost_millicents,
              status, error, now(), request_id, meta_json),
         )

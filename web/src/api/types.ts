@@ -1,6 +1,20 @@
 // 后端响应类型（契约以 ainovel/api.py 为准，宽松字段用索引签名兜住 dict[str, Any]）。
 
-export interface BookCard {
+export interface ProgressWarning {
+  code: string
+  message: string
+}
+
+/** 规格07 §5.3：由文件派生，null 表示无法确定而不是 0。 */
+export interface BookProgress {
+  chapters_done: number | null
+  chapters_total: number | null
+  words_done: number | null
+  last_edited_at: string | null
+  progress_warnings: ProgressWarning[]
+}
+
+export interface BookCard extends Partial<BookProgress> {
   name: string
   title?: string
   genre?: string
@@ -31,7 +45,18 @@ export interface CostSummary {
   [k: string]: unknown
 }
 
-export interface Overview {
+export interface PlanningError {
+  code: string
+  message: string
+}
+
+export interface ChapterNavigation {
+  chapter_numbers: number[]
+  max_chapter: number
+  planning_error: PlanningError | null
+}
+
+export interface Overview extends ChapterNavigation, Partial<BookProgress> {
   meta: BookCard
   chapters: ChapterRow[]
   cost_total: CostSummary
@@ -39,6 +64,8 @@ export interface Overview {
   characters: string[]
   outline_rows: Record<string, string>[]
   prompts_source: string
+  bible?: Record<string, string>
+  plot_points?: Record<string, string>[]
 }
 
 export interface OutlineHook {
@@ -65,6 +92,35 @@ export interface OutlineFull {
   volumes?: unknown[]
   chapter_rows?: Record<string, string>[]
   [k: string]: unknown
+}
+
+// 规格08 A-T04：G5 采纳影响预览（服务端纯计算，不写档、不记凭据、不调模型）。
+// written/affected 为 null 表示"无法判定"，与 0 是两件事，前端不得当成无影响。
+export interface OutlinePreview {
+  ok: boolean
+  old_readable: boolean
+  plot_readable: boolean
+  old_rows: Record<string, string>[]
+  new_rows: Record<string, string>[]
+  old_row_numbers: number[]
+  new_row_numbers: number[]
+  added_numbers: number[]
+  removed_numbers: number[]
+  changed_numbers: number[]
+  written: { numbers: number[]; total: number | null; known: boolean }
+  affected_numbers: number[]
+  affected_total: number | null
+  volumes: number
+  chapter_rows: number
+  foreshadows_added: number
+  foreshadows_kept: number
+  foreshadow_rows: number
+  id_map: Record<string, string>
+  outline_text_old: string
+  outline_text_new: string
+  plot_points_text_old: string | null
+  plot_points_text_new: string | null
+  warnings: string[]
 }
 
 export interface Prose {
@@ -139,6 +195,26 @@ export interface DeslopHit {
   effective_level?: string
 }
 
+/** 透明正文计量（规格09 §2.2）：仅作回读参考，不参与机检评分。 */
+export interface ProseMetrics {
+  version: 1
+  paragraphs: {
+    count: number
+    mean_chars: number | null
+    median_chars: number | null
+    p90_chars: number | null
+    short_ratio: number | null
+  }
+  simile_cues: {
+    status: 'measured' | 'unavailable'
+    scope: 'all_text'
+    count: number | null
+    per_1000_chars: number | null
+    reason?: string
+    positions?: { line: number; start: number; end: number; cue: string; quote: string }[]
+  }
+}
+
 export interface DeslopResult {
   score: number
   hits: DeslopHit[]
@@ -147,6 +223,7 @@ export interface DeslopResult {
   hits_count: { blocking: number; advisory: number }
   density_penalty: number
   effective_level?: string
+  metrics?: ProseMetrics
 }
 
 /** 半成品草稿状态（生成为中断时仍在） */
@@ -227,9 +304,20 @@ export interface ImportPreview {
   file_path: string
 }
 
-export interface WorkbenchData {
+export interface OutlineGenerationPrecheck {
+  allowed: boolean
+  code: string | null
+  message: string | null
+}
+
+export interface WorkbenchData extends ChapterNavigation {
   no: number
   status: string
+  planned: boolean | null
+  exists: boolean
+  outline_generation: OutlineGenerationPrecheck
+  /** 规格08 §3.2：rolling 书的规划链门禁（legacy 一律 allowed）；字段追加不改原状态 */
+  planning_gate?: { allowed: boolean; code: string | null; message: string }
   row: { current_version: number; state_revision: number; [k: string]: unknown } | null
   outline: OutlineContract | null
   prose: Prose | null
@@ -237,6 +325,11 @@ export interface WorkbenchData {
   review: (ReviewResult & { status?: string }) | null
   cost: CostSummary | null
   golden3: boolean
+}
+
+export interface Versioned<T> {
+  data: T
+  etag: string | null
 }
 
 export interface PreviewSlot {
@@ -456,7 +549,15 @@ export interface Conflict {
   detail: string
   old: unknown
   new: unknown
+  allowed_actions?: string[]
+  manual_schema?: string | null
   [k: string]: unknown
+}
+
+export interface ConflictResolveResult {
+  ok: boolean
+  item: Conflict
+  effect: 'applied' | 'kept' | 'acknowledged'
 }
 
 // 机械检查阈值（规格03 §2.4 M-05~M-11；data/settings.json 的 mechcheck 对象，9 项）
@@ -472,13 +573,39 @@ export interface MechThresholds {
   first_person_ratio_max: number
 }
 
+/** 一个接口（规格13 §2.1）：键名是端点名，模型值写 `端点:模型` 即可走它 */
+export interface ProviderConfig {
+  api_key?: string
+  base_url?: string
+  label?: string
+  has_key?: boolean
+}
+
 export interface AppSettings {
-  providers?: { openai?: { api_key?: string; base_url?: string; has_key?: boolean } }
-  default_model?: string
+  providers?: Record<string, ProviderConfig>
+  /** 规格12 §2.2：原 default_model 降级为"最后兜底"，不再覆盖书级档位 */
+  fallback_model?: string
+  /** 全局五档默认；留空则该档继续向下探到 fallback_model */
+  model_defaults?: Partial<Record<ModelStage, string>>
   prices?: Record<string, unknown>
   mechcheck?: MechThresholds
   assembly_budget_tokens?: number
   [k: string]: unknown
+}
+
+/** GET /api/models（规格12 §3 / 规格13 §3）：拉不到该接口清单时 ok=false，前端退回手填 */
+export interface ModelList {
+  ok: boolean
+  provider?: string
+  models: { id: string }[]
+  error?: string
+}
+
+/** 某档位实际生效的模型与来源（规格12 §3 只读派生字段，不落盘） */
+export interface EffectiveModel {
+  model: string
+  source: 'book' | 'global_stage' | 'fallback' | 'default'
+  provider?: string
 }
 
 export type CharacterData = Record<string, unknown> & { _body?: string }
@@ -510,6 +637,8 @@ export interface BookConfig {
   scene_mode?: boolean
   lint_whitelist?: string[]
   assembly_budget_overrides?: Record<string, unknown>
+  /** 规格12 §3：只读派生字段（每档生效模型与来源），PUT 时后端会剥离 */
+  model_effective?: Partial<Record<ModelStage, EffectiveModel>>
   [k: string]: unknown
 }
 
@@ -543,3 +672,147 @@ export interface ProseEditResult {
 /** 书级 model_stages 五档位（规格01 §1 config.json） */
 export const MODEL_STAGES = ['plan', 'prose', 'polish', 'review', 'longctx'] as const
 export type ModelStage = (typeof MODEL_STAGES)[number]
+
+// ---------------------------------------------------------------------------
+// 内容规划（规格08 §2/§3，阶段B）：rolling 书的分层规划读模型与候选流
+// ---------------------------------------------------------------------------
+
+export interface PlanningTarget {
+  volume_no: number | null
+  unit_id: string | null
+  chapters: [number, number] | null
+}
+
+export type PlanningScope = 'global' | 'volume' | 'unit' | 'chapters'
+export type PlanningStatus = 'missing' | 'unadopted' | 'ready' | 'stale' | 'invalid'
+
+export interface PlanningLayer {
+  key?: string
+  status: PlanningStatus
+  message: string
+  content_digest?: string
+  accepted_at?: string | null
+  source?: string | null
+  [k: string]: unknown
+}
+
+export interface PlanningReadiness {
+  mode: 'legacy' | 'rolling' | 'invalid'
+  code?: string
+  message?: string
+  layers: {
+    global?: PlanningLayer
+    volumes: (PlanningLayer & { no?: string; name?: string })[]
+    units: (PlanningLayer & { id?: string; name?: string; chapters?: number[] })[]
+    chapters: (PlanningLayer & { unit_id?: string; from?: number; to?: number })[]
+  }
+}
+
+export interface PlanningEstimates {
+  target_words: number | null
+  chapter_word_range: [number, number] | null
+  estimated_chapters: number | null
+  auto_chapters?: number
+  source: 'auto' | 'manual' | 'unknown'
+  message: string
+}
+
+export interface PlanningTreeUnit {
+  id: string
+  name: string
+  chapters: number[]
+  detail_level: 'rough' | 'expanded'
+}
+
+export interface PlanningTreeVolume {
+  no: string
+  name: string
+  direction: string
+  detail_level: 'rough' | 'expanded'
+  chapters: number[]
+  estimated_chapters: number | null
+  units: PlanningTreeUnit[]
+}
+
+export interface PlanningTree {
+  mode: 'legacy' | 'rolling' | 'invalid'
+  message?: string
+  code?: string
+  global?: { logline: string; ending_direction: string; planning: Record<string, unknown> }
+  volumes?: PlanningTreeVolume[]
+  chapter_rows?: number
+  chapter_numbers?: number[]
+  estimates?: PlanningEstimates
+  readiness?: PlanningReadiness
+  protected_numbers?: number[]
+}
+
+export interface PlanningNextAction {
+  action: string
+  scope?: PlanningScope
+  target?: PlanningTarget
+  message: string
+}
+
+/** GET /planning 的完整读模型 */
+export interface PlanningModel {
+  mode: 'legacy' | 'rolling' | 'invalid'
+  schema_version: number | null
+  tree: PlanningTree | null
+  readiness: PlanningReadiness
+  chapter_numbers: number[]
+  protected_numbers: number[]
+  unassigned_numbers: number[]
+  estimates: PlanningEstimates
+  next_actions: PlanningNextAction[]
+  warnings: string[]
+}
+
+/** POST /planning/generate 的纯候选 */
+export interface PlanningCandidate {
+  scope: PlanningScope
+  target: PlanningTarget
+  content: string
+  prompt_id: string
+  prompt_version: number
+  prompt_digest: string
+  input_version: string
+}
+
+export interface PlanningPreview {
+  scope: PlanningScope
+  target: PlanningTarget
+  candidate: { scope: PlanningScope; target: PlanningTarget; data: Record<string, unknown> }
+  old_projection: Record<string, unknown>
+  new_projection: Record<string, unknown>
+  impact: {
+    scope: PlanningScope
+    target: PlanningTarget
+    added_numbers?: number[]
+    changed_numbers?: number[]
+    volumes_added?: number[]
+    volumes_touched?: number[]
+    units_added?: string[]
+    volume_no?: number
+    volume_range?: [number, number]
+    unit_id?: string
+    batch?: [number, number]
+  }
+  input_version: string
+  preview_version: string
+  rebase: boolean
+  baseline_changed: boolean
+  preview_digest: string
+  warnings: string[]
+}
+
+export interface PlanningAdoptResult {
+  updated_scope: PlanningScope
+  target: PlanningTarget
+  added_numbers: number[]
+  changed_numbers: number[]
+  volumes_added: number[]
+  units_added: string[]
+  readiness: PlanningReadiness
+  next_actions: PlanningNextAction[]
+}

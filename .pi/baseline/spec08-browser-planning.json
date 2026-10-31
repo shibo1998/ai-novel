@@ -1,0 +1,55 @@
+{
+  "base": "http://127.0.0.1:8899",
+  "steps": [
+    {
+      "step": "B1 rolling 规划页",
+      "result": {
+        "treeNodes": [
+          "全书粗纲 · 已采纳章纲 3 行已采纳",
+          "卷1 青云坊 · 已展开 · 3 单元已采纳",
+          "验令风波（章 1-3）· 已细化已采纳",
+          "章纲批次 1-3已采纳",
+          "杀手追缉（章 4-6）· 骨架待采纳",
+          "坊市立足（章 7-8）· 骨架待采纳",
+          "卷2 黑风寨 · 粗方向 · 0 单元待采纳"
+        ],
+        "next": "下一步：单元 杀手追缉：细化目标/阻力/选择/结果与信息边界",
+        "tags": [
+          "rolling",
+          "估算 120 章",
+          "已采纳",
+          "已采纳",
+          "已采纳",
+          "已采纳",
+          "待采纳",
+          "待采纳",
+          "待采纳",
+          "已采纳"
+        ]
+      }
+    },
+    {
+      "step": "B2 legacy 启用面板",
+      "result": {
+        "hasEnableButton": true
+      }
+    },
+    {
+      "step": "B3 确认框按钮 locale",
+      "result": {
+        "title": "启用内容规划（rolling）",
+        "buttons": [
+          "取消",
+          "确定"
+        ]
+      },
+      "pass": true
+    }
+  ],
+  "at": "2026-10-28T17:04:43.051Z",
+  "summary": {
+    "b1TreeAndNextAction": true,
+    "b2LegacyPanel": true,
+    "b3ChineseButtons": true
+  }
+}

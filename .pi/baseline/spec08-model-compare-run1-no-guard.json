@@ -1,0 +1,860 @@
+{
+  "book": "流程测试书",
+  "chapter": 14,
+  "temp_root": "D:\\software\\_workbuddy-isolated\\cn-tmp\\ainovel-model-compare-xj7f75ue",
+  "model": "gemini-3.8-flash-high",
+  "plan": {
+    "steps": [
+      {
+        "scope": "global",
+        "target": {
+          "volume_no": null,
+          "unit_id": null,
+          "chapters": null
+        },
+        "requirements": "本书已写到第 13 章，前两卷内容已完成。只需给出后续走向：本轮只分卷不细化。logline 与尽头方向必须原文照抄，不得改写。",
+        "attempts": 1,
+        "elapsed_s": 48.8,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "global",
+          "target": {
+            "volume_no": null,
+            "unit_id": null,
+            "chapters": null
+          },
+          "volumes_added": [
+            4,
+            5
+          ],
+          "volumes_touched": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        "adopted": {
+          "added_numbers": [],
+          "changed_numbers": [],
+          "units_added": []
+        }
+      },
+      {
+        "scope": "volume",
+        "target": {
+          "volume_no": 3,
+          "unit_id": null,
+          "chapters": null
+        },
+        "requirements": "只展开卷 3（第 14 章之后的内容）：单元骨架必须从第 14 章起连续覆盖本卷，不得回头改动第 13 章及更早的章行。",
+        "attempts": 1,
+        "elapsed_s": 21.2,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "volume",
+          "target": {
+            "volume_no": 3,
+            "unit_id": null,
+            "chapters": null
+          },
+          "volume_no": 3,
+          "volume_range": [
+            14,
+            40
+          ],
+          "units_added": [
+            "U-43ba43f44ad45e59bba50720d1054c85",
+            "U-2dc41f4aaaf15030b3ac82d30151a35d",
+            "U-796cb470544e5ad0846db0c2af5e1b46",
+            "U-515de66e7c3c5abeb26a38ba467d8af7",
+            "U-64cf04ec32ce576c88f821cbc76e5b9e"
+          ]
+        },
+        "adopted": {
+          "added_numbers": [],
+          "changed_numbers": [],
+          "units_added": [
+            "U-43ba43f44ad45e59bba50720d1054c85",
+            "U-2dc41f4aaaf15030b3ac82d30151a35d",
+            "U-796cb470544e5ad0846db0c2af5e1b46",
+            "U-515de66e7c3c5abeb26a38ba467d8af7",
+            "U-64cf04ec32ce576c88f821cbc76e5b9e"
+          ]
+        }
+      },
+      {
+        "scope": "unit",
+        "target": {
+          "volume_no": 3,
+          "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+          "chapters": null
+        },
+        "requirements": "本单元是第 14-19 章，其中第 13 章已定稿、第 14 章是本次要写的第一章。信息边界要写清楚：哪些能在本章露出、哪些必须压住。",
+        "attempts": 1,
+        "elapsed_s": 21.5,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "unit",
+          "target": {
+            "volume_no": 3,
+            "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+            "chapters": null
+          },
+          "unit_id": "U-43ba43f44ad45e59bba50720d1054c85"
+        },
+        "adopted": {
+          "added_numbers": [],
+          "changed_numbers": [],
+          "units_added": []
+        }
+      },
+      {
+        "scope": "chapters",
+        "target": {
+          "volume_no": 3,
+          "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+          "chapters": [
+            14,
+            16
+          ]
+        },
+        "requirements": "本批只写第 14-16 章七列章纲；第 14 章要有可直接写正文的目标/冲突/爽点/钩子；不得改写第 13 章及更早的行。\n\n【上次输出被程序驳回】范围必须与要求逐字一致：单元骨架从规定起始章连续覆盖、批次行号必须完整覆盖给定区间，不得越界或跳号。",
+        "attempts": 2,
+        "elapsed_s": 25.7,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "chapters",
+          "target": {
+            "volume_no": 3,
+            "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+            "chapters": [
+              14,
+              16
+            ]
+          },
+          "added_numbers": [
+            14,
+            15,
+            16
+          ],
+          "changed_numbers": [],
+          "batch": [
+            14,
+            16
+          ]
+        },
+        "adopted": {
+          "added_numbers": [
+            14,
+            15,
+            16
+          ],
+          "changed_numbers": [],
+          "units_added": []
+        }
+      }
+    ],
+    "requirements": {},
+    "row": {
+      "章": "14",
+      "卷": "3",
+      "本章目标": "林寒沿地下暗河排污总渠潜行，避开特事局声呐与畸变水兽，寻找九号井导流支线。",
+      "冲突来源": "特事局高频地波声呐锁死主水网，同时遭遇暗河工业灵毒催生的畸变秽物袭杀与云腾灭口组反向压制。",
+      "爽点/揭露": "以凝煞境化煞入水瞬杀水兽并借尸气反扰声呐；撞破云腾私设的‘废弃人料’沉淀池，坐实三年前矿工失踪并非瓦斯爆炸。",
+      "钩子类型": "悬念",
+      "重要度★": "4"
+    },
+    "unit_closure": {
+      "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+      "name": "暗河潜行与特事局交锋",
+      "chapters": [
+        14,
+        19
+      ]
+    },
+    "log": [
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5085,
+        "output_tokens": 5252,
+        "cost_millicents": 94,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5359,
+        "output_tokens": 1890,
+        "cost_millicents": 44,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5415,
+        "output_tokens": 1818,
+        "cost_millicents": 44,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5739,
+        "output_tokens": 2031,
+        "cost_millicents": 48,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5783,
+        "output_tokens": 2666,
+        "cost_millicents": 57,
+        "status": "ok",
+        "error": null
+      }
+    ]
+  },
+  "arm_legacy": {
+    "arm": "legacy",
+    "chapter": 14,
+    "steps": [],
+    "outline": {
+      "elapsed_s": 49.2,
+      "contract": {
+        "chapter_no": 14,
+        "volume": 3,
+        "stage": "发展",
+        "emotion_task": "小扬",
+        "purpose": [
+          "推进主线",
+          "推进伏笔"
+        ],
+        "core_event": "林寒破开运料车底板坠入暗河总渠，化煞斩杀畸变水兽并借尸气瘫痪特事局声呐，潜行中撞破云腾私设的活体人料沉淀池。",
+        "opening_bridge": "冰冷的防腐液已漫过胸口，运料车排渣夹层内的自检警报倒计时跳向二十五秒，林寒反手将长柄螺丝刀死死顶入车底排污泄洪阀的应急泄压销。",
+        "scenes": [
+          {
+            "goal": "在自洁灵煞喷淋激活前的最后极值时间内破开夹层底板，带苏婉脱离移动铁棺",
+            "conflict": "夹层高压锁死且车外巡逻队紧随，车体自洁灵煞即将喷淋，强行踹板会惊动守卫，内部机关锈蚀卡死",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "冷静决绝/重料运料车排渣夹层内/断肋骨戳肺叶、机油烫伤/撬开泄洪闸自救"
+              },
+              {
+                "name": "苏婉",
+                "state": "濒死昏迷/夹层内侧冰冷积液中/义眼眶皮肉裂损、神经逆流/无意识"
+              }
+            ],
+            "end_state": "螺栓崩断，夹层泄污底板洞穿，林寒抱紧苏婉自车底暗槽坠入重明峰地下暗河排污总渠"
+          },
+          {
+            "goal": "在地下暗河潜行穿过特事局声呐网，摆脱工业灵毒催生的畸变水兽袭杀",
+            "conflict": "特事局高频地波声呐封锁主水道，水底血腥味引来畸变秽兽围杀，任何大动作灵力波动都会引来灭口组集火",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "肃杀警惕/暗河恶臭冰流中/借玄铁令与骨簪煞气敛息/潜行并清除水下威胁"
+              },
+              {
+                "name": "苏婉",
+                "state": "昏厥脱水/被绑在林寒背部防水裹布中/呼吸微弱"
+              }
+            ],
+            "end_state": "林寒引动骨簪煞意凝气入水瞬杀畸变水兽，借兽尸浓烈秽血与尸气污染搅乱声呐反射波，借机潜入九号井支线盲区"
+          },
+          {
+            "goal": "摸排九号井导流支线入口，确认进入深层核心井的通路",
+            "conflict": "水道尽头并非正常矿坑排污口，而是被云腾科技灭口组设下水下钢闸与重度防腐禁制的封闭死水区",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "惊怒震动/九号井导流水闸沉淀池前/强压内伤/查验死水区异状"
+              }
+            ],
+            "end_state": "林寒割开沉淀池防化网，水底赫然浮出数百具注满防腐铅液的矿工干尸，坐实三年前瓦斯爆炸实为活体人料灭口惨剧"
+          }
+        ],
+        "emotion_arc": {
+          "from": "窒息压抑",
+          "via": "破局肃杀",
+          "to": "惊骇激愤"
+        },
+        "must_include": [
+          "撞破云腾科技私设的人料沉淀池，坐实三年前第九号矿洞塌陷非瓦斯爆炸而是活体灭口",
+          "利用畸变水兽尸血与煞气制造脉冲盲区以规避特事局地波声呐"
+        ],
+        "hook": {
+          "content": "水下密密麻麻的铁钩吊着数百具防腐矿工残骸，而在沉淀池最深处的锈蚀铁牌上，赫然刻着三年前负责这批‘甲级人料’入库交接的云腾监工签名——竟是林天成。",
+          "type": "悬念"
+        },
+        "foreshadow_ops": [
+          {
+            "op": "advance",
+            "fo_id": "FO-009",
+            "note": "人料沉淀池证实矿工被剥夺神魂与经脉做成灵脉锚定耗材，三年前爆炸是掩盖人料提取的骗局"
+          },
+          {
+            "op": "advance",
+            "fo_id": "FO-012",
+            "note": "骨簪在沉淀池底产生逆向颤鸣，越过沉淀池直指深层九号井核心主祭坛"
+          }
+        ],
+        "word_range": [
+          2200,
+          2800
+        ],
+        "pov": "林寒",
+        "confirmed": false
+      }
+    },
+    "prose": {
+      "elapsed_s": 104.2,
+      "word_count": 2645,
+      "version": 1,
+      "finish_reason": "stop",
+      "mode": "scene",
+      "length_fit": []
+    },
+    "mech": {
+      "elapsed_s": 0.1,
+      "verdict": "pass",
+      "blocks": [
+        {
+          "rule": "M-12",
+          "word": "33",
+          "message": "文风规则提示 33（历史阈值<45）：D-05×1、D-05×1、D-05×1；仅建议，非AI生成概率"
+        }
+      ],
+      "warns": [
+        {
+          "rule": "M-05",
+          "word": "她右眼眶边缘的皮肉彻底撕裂，精钢单片镜下"
+        },
+        {
+          "rule": "M-05",
+          "word": "灼热的腐蚀毒雾落下的瞬间，林寒抓紧背带将"
+        },
+        {
+          "rule": "M-05",
+          "word": "裹布浸透了水，沉甸甸地勒进肩膀，苏婉伏在"
+        },
+        {
+          "rule": "M-05",
+          "word": "借着微弱的水下磷光，林寒看清了逼近的阴影"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒侧身拧腰，右手握紧骨簪，顺着水兽溃烂"
+        },
+        {
+          "rule": "M-05",
+          "word": "趁着声呐屏被污血彻底搅成盲区的一瞬，林寒"
+        },
+        {
+          "rule": "M-05",
+          "word": "三年前第九号矿洞那场震动全城的塌陷，从来"
+        },
+        {
+          "rule": "M-06",
+          "word": "9个感叹号"
+        }
+      ],
+      "ineffective": [
+        {
+          "rule": "M-13..M-15",
+          "reason": "unparsed"
+        }
+      ],
+      "status_after": "llm_review"
+    },
+    "review": {
+      "elapsed_s": 18.6,
+      "scores": {
+        "ai_flavor": 95,
+        "plot": 96,
+        "pacing": 95,
+        "prose": 94,
+        "hook": 96
+      },
+      "issues": [],
+      "verdict": "pass"
+    },
+    "text": {
+      "chars": 2645,
+      "opening": "冰冷的防腐液已漫过胸口。\n\n运料车排渣夹层内的自检警报倒计时跳向二十五秒。\n\n刺鼻的乙醚与防腐化学剂呛进鼻腔，林寒呛出一口带血的唾沫。断掉的肋骨随着每一次粗重喘息，尖锐地顶着肺叶，疼得他浑身肌肉绷紧。\n\n怀里的苏婉双眼紧闭。\n\n她右眼眶边缘的皮肉彻底撕裂，精钢单片镜下，翡翠色的义眼微光紊乱闪烁，滚烫的机油与渗出的神经液混在一起，把林寒肩头的布料烧穿了一大片。\n\n死人一样的冰冷。\n\n滋——\n\n头顶导流孔内的喷头正在加压。\n\n猩红的警报光斑",
+      "prev_tail": "啸。\n\n落下的根本不是干燥粗糙的原矿渣。\n\n成吨带着恶臭与化学防腐剂气味的刺鼻冷冻液从导流孔疯狂倒灌，瞬间浇透了两人的衣服，冻得骨头缝发麻发紧。\n\n蜂鸣器短促炸响三次。\n\n夹层内侧原本暗着的自检面板亮起猩红警报。\n\n高频电子音机械播报：\n\n“检测到非标生物填料，三十秒后启动高浓度地煞自洁喷淋。”\n\n三十秒。\n\n要么踹开脚下的排渣阀跳车，在荒滩上被几十支重火力枪管打成筛子；要么缩在暗箱里，被车顶喷下的地煞把经脉和血肉活生生熔成一滩烂泥。\n",
+      "names_in_opening": [
+        "林寒",
+        "苏婉"
+      ],
+      "names_in_prev_tail": []
+    },
+    "log": [
+      {
+        "stage": "outline",
+        "prompt_id": "G6",
+        "prompt_version": "5",
+        "prompt_digest": "656f352c43978c5a054e96878198a17487bce3604c2ccaf9cd980e5f29828f4d",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5263,
+        "output_tokens": 4335,
+        "cost_millicents": 81,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10534,
+        "output_tokens": 3153,
+        "cost_millicents": 79,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10703,
+        "output_tokens": 3349,
+        "cost_millicents": 82,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10690,
+        "output_tokens": 3551,
+        "cost_millicents": 85,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "review",
+        "prompt_id": "V1",
+        "prompt_version": "3",
+        "prompt_digest": "42719564f8bdf52552cf70d5c042786802bfdc4db582960642cffa3113c0b24a",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10153,
+        "output_tokens": 1610,
+        "cost_millicents": 55,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "total_elapsed_s": 172.0
+  },
+  "arm_rolling": {
+    "arm": "rolling",
+    "chapter": 14,
+    "steps": [],
+    "outline": {
+      "elapsed_s": 39.7,
+      "contract": {
+        "chapter_no": 14,
+        "volume": 3,
+        "stage": "引入",
+        "emotion_task": "小扬",
+        "purpose": [
+          "推进主线",
+          "推进伏笔"
+        ],
+        "core_event": "林寒破开运料车底板坠入暗河排污渠，化煞入水瞬杀畸变水兽反扰特事局声呐，并撞破云腾私设的矿工沉淀池。",
+        "opening_bridge": "就在运料车夹层自洁喷淋倒计时跳至二十四秒的瞬间，林寒卡在狭窄铁箱死角，手中长柄螺丝刀已反向凿穿了底板泄料暗栓。",
+        "scenes": [
+          {
+            "goal": "在自洁地煞喷淋启动前逃脱运料车，且不被外围地面守卫察觉",
+            "conflict": "车厢被气压锁死且外部满是重火力守卫，顶部地煞喷淋倒计时仅剩二十余秒",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "冷静狠厉/运料车排渣夹层/破阀逃生，断肋戳肺带伤"
+              },
+              {
+                "name": "苏婉",
+                "state": "重度昏迷/林寒身侧夹层/生机微弱义眼受损"
+              }
+            ],
+            "end_state": "林寒暴力破开排渣底板，携苏婉坠入重明峰地下三十米的暗河排污总渠"
+          },
+          {
+            "goal": "在特事局高频地波声呐扫测与畸变水兽袭杀的双重夹击下潜伏渡过主渠",
+            "conflict": "特事局高频声呐封死水网，暗河灵毒水兽嗅血疯狂突袭，稍有灵力外泄即被地面声呐捕获锁定",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "极限紧绷/排污暗河浑水中/隐藏行迹并清除突袭秽物"
+              },
+              {
+                "name": "苏婉",
+                "state": "昏迷/被束带固定在林寒背部/体温冰冷"
+              }
+            ],
+            "end_state": "林寒以凝煞境化煞入水瞬杀水兽，借庞大尸气与腥血震荡反扰并屏蔽声呐探查"
+          },
+          {
+            "goal": "寻找九号井导流支线闸口，摸清云腾集团地底布控",
+            "conflict": "支线闸口前设有人工拦截栅，云腾灭口组正在排污沉淀池倾倒带有编号的工业残渣",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "杀意冰凝/排污沉淀池暗礁后/侦察敌情寻找潜入口"
+              }
+            ],
+            "end_state": "林寒撞破云腾‘废弃人料’沉淀池真相并借玄铁令锁定九号井古闸道，但前方云腾巡逻队正向藏身点逼近"
+          }
+        ],
+        "emotion_arc": {
+          "from": "命悬一线的窒息压迫",
+          "via": "暗河反杀的狠辣从容",
+          "to": "目睹血肉真相的冰冷杀意与悬疑紧迫"
+        },
+        "must_include": [
+          "撞破云腾集团私设‘废弃人料’沉淀池，坐实三年前矿工失踪并非瓦斯爆炸",
+          "关键决策：放弃强行顺流出逃，选择逆潜入沉淀池死角并引尸气遮蔽声呐"
+        ],
+        "hook": {
+          "content": "沉淀池生铁格栅后浮起一具嵌着防爆矿工铭牌的烂骨，而头顶闸门轰然开启，云腾灭口组冰冷的战术射灯正笔直扫向林寒潜伏的水面凹槽。",
+          "type": "悬念"
+        },
+        "foreshadow_ops": [
+          {
+            "op": "advance",
+            "fo_id": "FO-001",
+            "note": "玄铁令靠近九号井支线闸道时产生微弱脉冲，与古闸内部沉降阵眼产生微度共振"
+          },
+          {
+            "op": "advance",
+            "fo_id": "FO-009",
+            "note": "沉淀池中发现大量三年前矿工工牌与血肉溶解痕迹，父母作为承重桩耗材的疑云进一步收紧"
+          }
+        ],
+        "word_range": [
+          2200,
+          2800
+        ],
+        "pov": "林寒",
+        "confirmed": false
+      }
+    },
+    "prose": {
+      "elapsed_s": 95.7,
+      "word_count": 2644,
+      "version": 1,
+      "finish_reason": "stop",
+      "mode": "scene",
+      "length_fit": []
+    },
+    "mech": {
+      "elapsed_s": 0.1,
+      "verdict": "pass",
+      "blocks": [
+        {
+          "rule": "M-12",
+          "word": "36",
+          "message": "文风规则提示 36（历史阈值<45）：D-05×1、D-05×1、D-05×1；仅建议，非AI生成概率"
+        }
+      ],
+      "warns": [
+        {
+          "rule": "M-02",
+          "word": "陡然"
+        },
+        {
+          "rule": "M-05",
+          "word": "苏婉被尼龙束带死死捆在他背后，脑袋耷拉在"
+        },
+        {
+          "rule": "M-05",
+          "word": "运料车正好碾过进入厂区隧道前的减速带，车"
+        },
+        {
+          "rule": "M-05",
+          "word": "他反手一把搂紧背后昏迷不醒的苏婉，在头顶"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒右手五指猛地并拢如铁锥，身躯顺着水流"
+        },
+        {
+          "rule": "M-05",
+          "word": "借着浓重尸血的掩护，林寒反手扣住苏婉的腰"
+        },
+        {
+          "rule": "M-05",
+          "word": "整批失踪的矿工从来没有遇难，而是被云腾集"
+        },
+        {
+          "rule": "M-06",
+          "word": "16个感叹号"
+        }
+      ],
+      "ineffective": [
+        {
+          "rule": "M-13..M-15",
+          "reason": "unparsed"
+        }
+      ],
+      "status_after": "llm_review"
+    },
+    "review": {
+      "elapsed_s": 29.2,
+      "scores": {
+        "ai_flavor": 95,
+        "plot": 93,
+        "pacing": 95,
+        "prose": 94,
+        "hook": 95
+      },
+      "issues": [
+        {
+          "category": "plot",
+          "severity": "warning",
+          "location": "章中第153行前后",
+          "quote": "凝煞境淬炼的不是清澈灵气，而是沉淀在骨髓深处的阴煞杀气。",
+          "description": "林寒当前档案境界为「感气境初入」，且正文前文明确提及「感气境灵流」，此处直接表述为「凝煞境淬炼的不是……」，易造成读者误以为林寒已正式踏入凝煞境，出现境界跨层与体系术语混淆的风险。",
+          "suggestion": "可将境界描述调整为功法或煞气特性，例如修改为「他所淬炼的煞气并非清澈灵气，而是沉淀在骨髓深处的阴煞杀气」或明确指出是以感气境强行催动煞意，避免直接将主角归入「凝煞境」。"
+        }
+      ],
+      "verdict": "pass"
+    },
+    "text": {
+      "chars": 2644,
+      "opening": "就在运料车夹层自洁喷淋倒计时跳至二十四秒的瞬间，林寒卡在狭窄铁箱死角，手中长柄螺丝刀已反向凿穿了底板泄料暗栓。\n\n冷冻液还在疯狂漫灌。\n\n冰冷刺骨的药水混着铁锈味，已经没过了林寒的胸口。\n\n断裂的肋骨在每一次呼吸时都像生锈的锯齿在肺叶上刮擦，带来剧烈的钝痛。\n\n苏婉被尼龙束带死死捆在他背后，脑袋耷拉在他颈窝，呼吸微弱得像随时会断掉的游丝，冰凉的下巴贴着他的脖颈。\n\n“二十三秒。”\n\n自检面板上的红字疯狂闪烁。\n\n头顶管道内已经传来高压泵",
+      "prev_tail": "啸。\n\n落下的根本不是干燥粗糙的原矿渣。\n\n成吨带着恶臭与化学防腐剂气味的刺鼻冷冻液从导流孔疯狂倒灌，瞬间浇透了两人的衣服，冻得骨头缝发麻发紧。\n\n蜂鸣器短促炸响三次。\n\n夹层内侧原本暗着的自检面板亮起猩红警报。\n\n高频电子音机械播报：\n\n“检测到非标生物填料，三十秒后启动高浓度地煞自洁喷淋。”\n\n三十秒。\n\n要么踹开脚下的排渣阀跳车，在荒滩上被几十支重火力枪管打成筛子；要么缩在暗箱里，被车顶喷下的地煞把经脉和血肉活生生熔成一滩烂泥。\n",
+      "names_in_opening": [
+        "林寒",
+        "苏婉"
+      ],
+      "names_in_prev_tail": []
+    },
+    "unit_boundary": {
+      "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+      "name": "暗河潜行与特事局交锋",
+      "goal": "林寒利用玄铁令上的叠云穿脉扣感应，沿老城区地下排污总渠与废弃暗河潜行，避开太昊死士的地毯式封锁，穿透特事局特勤小队的声呐布控网，抵达九号绝密灵井外围减压闸口。",
+      "must_hold": [
+        "林寒父母已被不可逆神经接驳为活体承重桩的核心惨状（必须压至卷末第25-28章揭露）。",
+        "玄铁令第三层旧神活体囚笼与养蛊容器的本质（必须压至第120章）。",
+        "灵根觉醒即灵毒侵蚀的真相（必须压至第80章）。",
+        "九号井最底层的自毁清除协议控制权代码与太昊总部的直连链路。"
+      ],
+      "can_reveal": [
+        "特事局特种符文弹药掺杂死刑犯骨灰以中和地煞反噬的技术内幕（第15章低级隐藏规则落地）。",
+        "云腾集团在暗河排污闸私设‘废弃人料’沉淀过滤池，证实三年前失踪矿工并非死于简单瓦斯爆炸。",
+        "玄铁令表层叠云穿脉扣能被九号井古水闸阵眼主动识别，林天成确为该工程初代地脉总工且留有逃生后手。",
+        "特事局内部对太昊门阀存在妥协派与肃清派的分歧，特勤组受到上层限制无法动用重型钻地武器。"
+      ],
+      "must_hold_hit_in_text": []
+    },
+    "log": [
+      {
+        "stage": "outline",
+        "prompt_id": "G6",
+        "prompt_version": "5",
+        "prompt_digest": "656f352c43978c5a054e96878198a17487bce3604c2ccaf9cd980e5f29828f4d",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 6215,
+        "output_tokens": 3331,
+        "cost_millicents": 69,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10598,
+        "output_tokens": 2729,
+        "cost_millicents": 73,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10770,
+        "output_tokens": 1979,
+        "cost_millicents": 62,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10781,
+        "output_tokens": 4504,
+        "cost_millicents": 100,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "review",
+        "prompt_id": "V1",
+        "prompt_version": "3",
+        "prompt_digest": "42719564f8bdf52552cf70d5c042786802bfdc4db582960642cffa3113c0b24a",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 9855,
+        "output_tokens": 2839,
+        "cost_millicents": 72,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "total_elapsed_s": 164.7
+  },
+  "compare": {
+    "outline_chars": {
+      "legacy": 1615,
+      "rolling": 1513
+    },
+    "outline_elapsed_s": {
+      "legacy": 49.2,
+      "rolling": 39.7
+    },
+    "words": {
+      "legacy": 2645,
+      "rolling": 2644
+    },
+    "prose_elapsed_s": {
+      "legacy": 104.2,
+      "rolling": 95.7
+    },
+    "mech": {
+      "legacy": "pass",
+      "rolling": "pass",
+      "legacy_blocks": [
+        "M-12"
+      ],
+      "rolling_blocks": [
+        "M-12"
+      ],
+      "legacy_warns": 8,
+      "rolling_warns": 8
+    },
+    "review_verdict": {
+      "legacy": "pass",
+      "rolling": "pass"
+    },
+    "scores": {
+      "legacy": {
+        "ai_flavor": 95,
+        "plot": 96,
+        "pacing": 95,
+        "prose": 94,
+        "hook": 96
+      },
+      "rolling": {
+        "ai_flavor": 95,
+        "plot": 93,
+        "pacing": 95,
+        "prose": 94,
+        "hook": 95
+      }
+    },
+    "continuity": {
+      "legacy": {
+        "names_in_opening": [
+          "林寒",
+          "苏婉"
+        ],
+        "names_in_prev_tail": []
+      },
+      "rolling": {
+        "names_in_opening": [
+          "林寒",
+          "苏婉"
+        ],
+        "names_in_prev_tail": []
+      }
+    },
+    "unit_boundary": {
+      "unit_id": "U-43ba43f44ad45e59bba50720d1054c85",
+      "name": "暗河潜行与特事局交锋",
+      "goal": "林寒利用玄铁令上的叠云穿脉扣感应，沿老城区地下排污总渠与废弃暗河潜行，避开太昊死士的地毯式封锁，穿透特事局特勤小队的声呐布控网，抵达九号绝密灵井外围减压闸口。",
+      "must_hold": [
+        "林寒父母已被不可逆神经接驳为活体承重桩的核心惨状（必须压至卷末第25-28章揭露）。",
+        "玄铁令第三层旧神活体囚笼与养蛊容器的本质（必须压至第120章）。",
+        "灵根觉醒即灵毒侵蚀的真相（必须压至第80章）。",
+        "九号井最底层的自毁清除协议控制权代码与太昊总部的直连链路。"
+      ],
+      "can_reveal": [
+        "特事局特种符文弹药掺杂死刑犯骨灰以中和地煞反噬的技术内幕（第15章低级隐藏规则落地）。",
+        "云腾集团在暗河排污闸私设‘废弃人料’沉淀过滤池，证实三年前失踪矿工并非死于简单瓦斯爆炸。",
+        "玄铁令表层叠云穿脉扣能被九号井古水闸阵眼主动识别，林天成确为该工程初代地脉总工且留有逃生后手。",
+        "特事局内部对太昊门阀存在妥协派与肃清派的分歧，特勤组受到上层限制无法动用重型钻地武器。"
+      ],
+      "must_hold_hit_in_text": []
+    },
+    "planning_steps": [
+      {
+        "scope": "global",
+        "elapsed_s": 48.8,
+        "version": 3
+      },
+      {
+        "scope": "volume",
+        "elapsed_s": 21.2,
+        "version": 3
+      },
+      {
+        "scope": "unit",
+        "elapsed_s": 21.5,
+        "version": 3
+      },
+      {
+        "scope": "chapters",
+        "elapsed_s": 25.7,
+        "version": 3
+      }
+    ],
+    "cost_millicents": {
+      "planning": 287,
+      "legacy_chapter": 382,
+      "rolling_chapter": 376
+    }
+  }
+}

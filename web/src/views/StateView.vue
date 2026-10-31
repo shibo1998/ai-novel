@@ -7,6 +7,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { approveState, discardState, getState, getTimeline, putTimeline } from '@/api'
 import type { MechHit, StateData, TimelineData, TimelineRow } from '@/api/types'
 import DiffViewer from '@/components/DiffViewer.vue'
+import MdView from '@/components/MdView.vue'
 import MdTableEditor from '@/components/MdTableEditor.vue'
 import type { TableColumn } from '@/components/MdTableEditor.vue'
 
@@ -134,6 +135,12 @@ async function saveTimeline(): Promise<void> {
   }
 }
 
+async function copyState(): Promise<void> {
+  if (!state.value?.content) return
+  await navigator.clipboard.writeText(state.value.content)
+  ElMessage.success('已复制状态卡原文')
+}
+
 watch(book, () => void load(), { immediate: true })
 </script>
 
@@ -158,14 +165,13 @@ watch(book, () => void load(), { immediate: true })
 
   <div class="panel">
     <h3 class="panel-title">已确认状态卡</h3>
-    <div v-if="stateLoading" class="dim">加载中…</div>
+    <el-skeleton v-if="stateLoading" :rows="5" animated />
     <el-alert v-else-if="stateFailed" type="error" :closable="false" show-icon>
       状态卡读取失败，请刷新重试，不能据此判断是否有待确认提议。
     </el-alert>
     <template v-else-if="state">
-      <pre v-if="state.content" class="whitespace-pre-wrap text-xs leading-6">{{
-        state.content
-      }}</pre>
+      <MdView v-if="state.content" :text="state.content" />
+      <el-button v-if="state.content" class="mt-2" @click="copyState">复制原文</el-button>
       <div v-else class="dim">（尚无已确认状态卡）请先定稿生成提议，核对后采纳。</div>
     </template>
   </div>
@@ -210,7 +216,7 @@ watch(book, () => void load(), { immediate: true })
         保存双时间线
       </el-button>
     </div>
-    <div v-if="timelineLoading" class="dim">加载中…</div>
+    <el-skeleton v-if="timelineLoading" :rows="5" animated />
     <el-alert v-else-if="timelineFailed" type="error" :closable="false" show-icon>
       时间线读取失败，请刷新重试；读取成功前不能保存，避免误覆盖。
     </el-alert>

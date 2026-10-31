@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "scope": "规格11隔离Mock工程验收；实际FastAPI/前端，非真实模型质量",
+  "checks": [
+    {
+      "name": "actual_empty_story_entry",
+      "ok": true,
+      "text": "墨网文工作台\n书架\n裁决队列\n设置\n导出\n当前书：规格11玄幻假书\n书架\n/\n规格11玄幻假书\n/\n卷工作台\n卷工作台 · 自动出稿，人工把关\n规格11玄幻假书\n刷新 / 找回任务\n一\n填故事，准备本卷\n二\n一次确认整卷细纲\n三\n通读稿件，人工定稿\n卷 / 章节\n0 卷\n\n空书尚无卷。创建书本身不调用模型；在右侧准备第一卷。\n\n高级入口\n第一卷，从一句话开始\n第一步 · 告诉系统你要写什么\n把第一卷交给一个清楚的起点\n可选灵感 · 不改正式书稿\n没想法？AI 给我 3 个故事方案\n当前题材：玄幻\n\n在建书时选定的题材内，比较不同主角与冲突。无需先填一句话故事；也可以跳过，直接手填下方表单。\n\n创意偏好\n可选；留空也能生成\n0 / 2000 字 · 题材来自本书配置，不在这里切换\nAI 给我 3 个故事方案\n一次点击调用一次模型，可能产生费用；不会自动准备本卷。\n\n还没有候选。先让 AI 提供起点，或直接写下你的故事，两条路都由你决定。\n\n选择范围（不改已有章号）\n准备本卷未写范围\n本卷追加 N 章\n新增下一卷\n\n复用已有有效档案，只准备未写范围的整卷候选。准备不会自动采纳、确认细纲或定稿。\n\n一句话故事\n本卷要求\n期望章数\n1—50 章\n默认 10 章\n逐章串行出稿\n准备本卷\n显式启动会调用模型；章号由服务端确定。不是一次超大正文请求。",
+      "genre": "当前题材：玄幻",
+      "calls": 0
+    },
+    {
+      "name": "actual_empty_story_three_cards",
+      "ok": true,
+      "cardNames": [
+        "废炉守灯",
+        "山契行者",
+        "断脉医师"
+      ],
+      "calls": 1,
+      "logs": [
+        {
+          "prompt_id": "T1",
+          "chapter_no": null,
+          "status": "ok",
+          "request_id": "720aed04-905c-4644-bfed-3819e6b45a7e"
+        }
+      ],
+      "archivesUnchanged": true,
+      "automaticProduction": 0,
+      "geometry": {
+        "width": 1280,
+        "height": 800,
+        "scrollWidth": 1265
+      }
+    },
+    {
+      "name": "actual_cancel_replacement_preserves_input",
+      "ok": true,
+      "dialog": "选用故事 · 核对替换内容\n\n只替换以下两项本地输入；书名、题材与期望章数不变。不写档、不自动准备本卷。\n\n一句话故事\n当前输入\n人工故事保留\n将替换为\n守炉杂役为了救出困在古炉中的师妹必须追查线索，但宗门将古炉认作祭器。\n本卷要求\n当前输入\n人工本卷要求\n将替换为\n简介：守炉杂役发现日常秩序背后的秘密，为了救出困在古炉中的师妹开始调查。阻碍迫使其在真相与安全之间作出选择。\n\n主角：守炉杂役\n\n核心冲突：救出困在古炉中的师妹，但宗门将古炉认作祭器。\n\n创作卖点：身份反差与具体选择推动冲突，不作市场保证\n\n首卷目标：救出困在古炉中的师妹\n\n卷末钩子：第一卷取得关键证据，却发现宗门将古炉认作祭器背后还有新的交易。\n取消，保留原输入\n仅替换这两项输入",
+      "calls": 1
+    },
+    {
+      "name": "actual_select_only_local_form",
+      "ok": true,
+      "logline": "守炉杂役为了救出困在古炉中的师妹必须追查线索，但宗门将古炉认作祭器。",
+      "count": "3",
+      "calls": 1,
+      "productionRequests": 0
+    },
+    {
+      "name": "actual_next_batch_failure_keeps_cards_input",
+      "ok": true,
+      "cardNames": [
+        "废炉守灯",
+        "山契行者",
+        "断脉医师"
+      ],
+      "logs": 2,
+      "inputKept": true
+    },
+    {
+      "name": "actual_explicit_next_batch",
+      "ok": true,
+      "cardNames": [
+        "渡桥拾骨",
+        "不鸣的钟",
+        "雪原契师"
+      ],
+      "calls": 2,
+      "archivesUnchanged": true
+    },
+    {
+      "name": "actual_cross_book_late_response_isolation",
+      "ok": true,
+      "book": "规格11悬疑假书",
+      "genre": "当前题材：悬疑",
+      "cards": 0
+    },
+    {
+      "name": "actual_stop_waiting_unknown_blocks_prepare",
+      "ok": true,
+      "prepareDisabled": true
+    },
+    {
+      "name": "actual_stopped_response_not_auto_retried_or_adopted",
+      "ok": true,
+      "logDelta": 1,
+      "archivesUnchanged": true
+    },
+    {
+      "name": "actual_unknown_retry_cancel_no_call",
+      "ok": true,
+      "logsUnchanged": true
+    },
+    {
+      "name": "actual_explicit_retry_one_call_unblocks_prepare",
+      "ok": true,
+      "cards": 3,
+      "prepareDisabled": false,
+      "logDelta": 1,
+      "notice": "可选灵感 · 不改正式书稿\n没想法？AI 给我 3 个故事方案\n当前题材：都市\n\n在建书时选定的题材内，比较不同主角与冲突。无需先填一句话故事；也可以跳过，直接手填下方表单。\n\n创意偏好\n可选；留空也能生成\n0 / 2000 字 · 题材来自本书配置，不在这里切换\n换一批 · 再调用一次\n一次点击调用一次模型，可能产生费用；不会自动准备本卷。\n\n已收到 3 个故事方案。选用只填写下方两项；你可以修改，再手动准备本卷。\n\n方案 01 · 暂定故事名\n修表人的旧城\n一句话故事\n修表学徒为了挽救将被拆除的老店必须追查线索，但开发商藏起了旧契约。\n简介\n修表学徒发现日常秩序背后的秘密，为了挽救将被拆除的老店开始调查。阻碍迫使其在真相与安全之间作出选择。\n主角\n修表学徒\n核心冲突\n挽救将被拆除的老店，但开发商藏起了旧契约。\n创作卖点\n身份反差与具体选择推动冲突，不作市场保证\n首卷目标\n挽救将被拆除的老店\n卷末钩子\n第一卷取得关键证据，却发现开发商藏起了旧契约背后还有新的交易。\n选用这个故事\n方案 02 · 暂定故事名\n最后一班配送\n一句话故事\n失业配送员为了找回被冒领的救命药必须追查线索，但每名签收人都否认自己在场。\n简介\n失业配送员发现日常秩序背后的秘密，为了找回被冒领的救命药开始调查。阻碍迫使其在真相与安全之间作出选择。\n主角\n失业配送员\n核心冲突\n找回被冒领的救命药，但每名签收人都否认自己在场。\n创作卖点\n身份反差与具体选择推动冲突，不作市场保证\n首卷目标\n找回被冒领的救命药\n卷末钩子\n第一卷取得关键证据，却发现每名签收人都否认自己在场背后还有新的交易。\n选用这个故事\n方案 03 · 暂定故事名\n街巷账本\n一句话故事\n社区会计为了守住居民合办的食堂必须追查线索，但账本里出现不存在的支出。\n简介\n社区会计发现日常秩序背后的秘密，为了守住居民合办的食堂开始调查。阻碍迫使其在真相与安全之间作出选择。\n主角\n社区会计\n核心冲突\n守住居民合办的食堂，但账本里出现不存在的支出。\n创作卖点\n身份反差与具体选择推动冲突，不作市场保证\n首卷目标\n守住居民合办的食堂\n卷末钩子\n第一卷取得关键证"
+    },
+    {
+      "name": "actual_final_select_edit_does_not_start_production",
+      "ok": true,
+      "logline": "修表学徒为了挽救将被拆除的老店必须追查线索，但开发商藏起了旧契约。",
+      "count": "10",
+      "productionRequests": 0
+    },
+    {
+      "name": "actual_manual_prepare_stops_at_outline_confirmation",
+      "ok": true,
+      "status": "awaiting_outline_confirmation",
+      "numbers": [
+        1,
+        2,
+        3
+      ],
+      "bodyCount": 0,
+      "productionRequests": 1,
+      "confirmationRequests": 0,
+      "finalizeRequests": 0,
+      "jobId": "0575d5b5-3147-4d85-aa81-91de2a8a46f5"
+    },
+    {
+      "name": "actual_suspense_genre_three_distinct_stories",
+      "ok": true,
+      "genre": "当前题材：悬疑",
+      "cardNames": [
+        "消失的门牌",
+        "深夜修复室",
+        "渡口无名客"
+      ],
+      "archivesUnchanged": true
+    }
+  ],
+  "all_passed": true,
+  "total": 14,
+  "viewport": {
+    "method": "同源iframe内部真实应用视口",
+    "width": 1280,
+    "height": 800,
+    "scroll_width": 1265
+  },
+  "initial_book_files": {
+    "规格11玄幻假书": {
+      "config.json": "df1d37f0db666881fa98d078f3ecaec300bfec42cc3603eea0fd880ca79ad576",
+      "LOCATIONS.md": "ef19f88bff3d65938f75b199ae217a763c99bc6e3952f56b43538cdf7b6cffc0",
+      "meta.md": "46f099baed1ab00f76656b7d8de8b71c0f2eb35eb942d3d3294f98f73435dbe7",
+      "OUTLINE.md": "490797f058422d1d369f35a7730a658bdddbd4d1007391c9aab32fac022617c0",
+      "PLOT_POINTS.md": "64166224fa9ed9fbc1c00c17409480bbf58a2e1f6fcaad0a20efa15a292a7567",
+      "STORY_BIBLE.md": "8300e05bc8bfed9bc4dd3f5a88235632da98d73a6bab7a466236692e7d94a477"
+    },
+    "规格11悬疑假书": {
+      "config.json": "150ab3583db8888619de050ec33612af63d5c40a53b8c29cdc5e698771c17974",
+      "LOCATIONS.md": "ef19f88bff3d65938f75b199ae217a763c99bc6e3952f56b43538cdf7b6cffc0",
+      "meta.md": "d08476f862b4ad8656c3ad64ee8433919a5d64c41fcf59eb1f01e1112316196d",
+      "OUTLINE.md": "490797f058422d1d369f35a7730a658bdddbd4d1007391c9aab32fac022617c0",
+      "PLOT_POINTS.md": "64166224fa9ed9fbc1c00c17409480bbf58a2e1f6fcaad0a20efa15a292a7567",
+      "STORY_BIBLE.md": "8300e05bc8bfed9bc4dd3f5a88235632da98d73a6bab7a466236692e7d94a477"
+    },
+    "规格11等待假书": {
+      "config.json": "ae54c72c76744e3308c56064c68d789d8f8e0da7fe37cfaabe127920d1bbfef7",
+      "LOCATIONS.md": "ef19f88bff3d65938f75b199ae217a763c99bc6e3952f56b43538cdf7b6cffc0",
+      "meta.md": "fc1dfc7fd7b59f41001c88f7c5916a94e66f45e150b10783a9c98944e5e4b7b9",
+      "OUTLINE.md": "490797f058422d1d369f35a7730a658bdddbd4d1007391c9aab32fac022617c0",
+      "PLOT_POINTS.md": "64166224fa9ed9fbc1c00c17409480bbf58a2e1f6fcaad0a20efa15a292a7567",
+      "STORY_BIBLE.md": "8300e05bc8bfed9bc4dd3f5a88235632da98d73a6bab7a466236692e7d94a477"
+    }
+  },
+  "final_book_files": {
+    "规格11玄幻假书": {
+      "config.json": "df1d37f0db666881fa98d078f3ecaec300bfec42cc3603eea0fd880ca79ad576",
+      "LOCATIONS.md": "ef19f88bff3d65938f75b199ae217a763c99bc6e3952f56b43538cdf7b6cffc0",
+      "meta.md": "46f099baed1ab00f76656b7d8de8b71c0f2eb35eb942d3d3294f98f73435dbe7",
+      "OUTLINE.md": "490797f058422d1d369f35a7730a658bdddbd4d1007391c9aab32fac022617c0",
+      "PLOT_POINTS.md": "64166224fa9ed9fbc1c00c17409480bbf58a2e1f6fcaad0a20efa15a292a7567",
+      "STORY_BIBLE.md": "8300e05bc8bfed9bc4dd3f5a88235632da98d73a6bab7a466236692e7d94a477"
+    },
+    "规格11悬疑假书": {
+      "config.json": "150ab3583db8888619de050ec33612af63d5c40a53b8c29cdc5e698771c17974",
+      "LOCATIONS.md": "ef19f88bff3d65938f75b199ae217a763c99bc6e3952f56b43538cdf7b6cffc0",
+      "meta.md": "d08476f862b4ad8656c3ad64ee8433919a5d64c41fcf59eb1f01e1112316196d",
+      "OUTLINE.md": "490797f058422d1d369f35a7730a658bdddbd4d1007391c9aab32fac022617c0",
+      "PLOT_POINTS.md": "64166224fa9ed9fbc1c00c17409480bbf58a2e1f6fcaad0a20efa15a292a7567",
+      "STORY_BIBLE.md": "8300e05bc8bfed9bc4dd3f5a88235632da98d73a6bab7a466236692e7d94a477"
+    },
+    "规格11等待假书": {
+      "config.json": "ae54c72c76744e3308c56064c68d789d8f8e0da7fe37cfaabe127920d1bbfef7",
+      "LOCATIONS.md": "ef19f88bff3d65938f75b199ae217a763c99bc6e3952f56b43538cdf7b6cffc0",
+      "meta.md": "fc1dfc7fd7b59f41001c88f7c5916a94e66f45e150b10783a9c98944e5e4b7b9",
+      "OUTLINE.md": "490797f058422d1d369f35a7730a658bdddbd4d1007391c9aab32fac022617c0",
+      "PLOT_POINTS.md": "64166224fa9ed9fbc1c00c17409480bbf58a2e1f6fcaad0a20efa15a292a7567",
+      "STORY_BIBLE.md": "8300e05bc8bfed9bc4dd3f5a88235632da98d73a6bab7a466236692e7d94a477",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/manifest.json": "fcc0ce7534f565021a9f239a7af63724cbd1456dfe541afa752a5adb1d33d4ec",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/planning_candidate.json": "4a61b7ddd8e0c9e027156c9249e536ddb16d900c6c5b1f5b5907b8ce3d938ff4",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/09c7fe8372c5c79106fbc06e9ba597e8ec967ba6401a1df1b1171698a3bbdced.json": "c456c1eb6a5d82dd19bce54a79b4fc29c6226ad4e6c417123e4373d0b3956638",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/406773c7a5bef5f0b3060124f845bf6d326d799e5027dbe496499afc35a3b925.json": "9d97acb284492d0ba2eeb6359e4428a8d86ce827091ebcf27c700150e70ebbd0",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/4a5d8cde7b0549036280adbcabf678dabcfae2624814f3bb3192b87868537891.json": "b5952507b01551d58bbc3ed425beb4dde67cb352cdf884f5d0350f6f09acf65a",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/57e616c5171dda84d8788b49b4a5078dd989b79ba4574faccc5b109422390d0a.json": "61b57376856dd261c52aabf4f55966b00a3d23982bc317f2ebd7ded4210d34a5",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/5c07e51c36d1b848b2192fcd9a184473bf01ecdd890dc3716cd44a6b26b201f5.json": "b6eda9896a0fb0650fe9eded27fba17b96db07286dc6d1cdfbd385093420e7d3",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/6f7181785d50a7d57e5e665ddd0fe8e456b9840003a700d3d288df15960ca054.json": "9def99b33c6bfceb512c6146744917427a3343dcc8fbcf75ff6a3c960c98900b",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/7c746091af50de94b430aa4b7d6a552c5937ac7108fb78d816e7e99a3131f989.json": "c968b71c728e185dbaa6a25a71c1fd23c8782616ba92c6fd510ed162eecd2f58",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/b4633ba5412819337630282c733733983e9ec7b8e90069721d6e4ff47d1fafbe.json": "4ec9cb8a227818a5f2bcffc6f18ef2847fc603b4a1ff70ced957165fb07ec097",
+      "production/0575d5b5-3147-4d85-aa81-91de2a8a46f5/checkpoints/prepared_requests/df71f4188034c226189b8d8584b589e6acefacba9d0a6ffc484f8c55cd961602.json": "1f74900ad24b50688ea8bca06698de88e776782b26966b6766babcb8d76a8a15"
+    }
+  },
+  "manual_prepare_job": "0575d5b5-3147-4d85-aa81-91de2a8a46f5",
+  "notes": [
+    "早期错误题材/未生效确认点击未计入通过项",
+    "停止后的后台Mock可能完成；未返回候选不自动采用",
+    "手动prepare才建立卷任务，未确认细纲或定稿",
+    "前端演示夹具另见spec11-ui-browser.json，不冒充真实API"
+  ]
+}

@@ -59,17 +59,17 @@ def write(book: str, fm: dict[str, Any], body: str) -> None:
     atomic.write_text(file_for(book, fm["name"]), FM.dump(fm, body))
 
 
-def create(book: str, name: str, role: str = "龙套", sections: dict[str, str] | None = None) -> None:
+def create(book: str, name: str, role: str = "龙套", sections: dict[str, str] | None = None,
+           status: dict[str, Any] | None = None) -> None:
     if file_for(book, name).exists():
         raise FileExistsError(f"角色已存在: {name}")
-    fm = {
-        "name": name,
-        "role": role,
-        "status": {
-            "realm": "", "location": "", "injuries": [], "inventory": [],
-            "emotion": "", "alive": True, "known_info": [], "updated_chapter": 0,
-        },
+    initial = {
+        "realm": "", "location": "", "injuries": [], "inventory": [],
+        "emotion": "", "alive": True, "known_info": [], "updated_chapter": 0,
     }
+    # 建档与初始状态一次写盘：避免“卡片已建、状态写入失败”的半成品档案。
+    initial.update({k: v for k, v in (status or {}).items() if k in STATUS_FIELDS})
+    fm = {"name": name, "role": role, "status": initial}
     secs = sections or {}
     body = "\n".join(
         f"## {s}\n\n{secs.get(s, '（待填）')}\n"

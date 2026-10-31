@@ -3,23 +3,23 @@
 // 规格明确要求的三条：① 左树导航六类档案；② 结构化字段（力量体系表、角色动态状态）用表单；
 // ③ AI 生成按钮 → diff 预览 → 采纳。长文本（Bible 正文、角色 H2 节）用 Markdown textarea。
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import MdTableEditor from '@/components/MdTableEditor.vue'
-import DiffViewer from '@/components/DiffViewer.vue'
+import ModelSelect from '@/components/ModelSelect.vue'
+import ArchiveAI from '@/components/ArchiveAI.vue'
 import StyleEditor from '@/components/StyleEditor.vue'
 import {
-  adoptArchive,
   createCharacter,
-  getBible,
-  getBookConfig,
-  getCharacter,
-  getLocations,
-  getMeta,
-  getOutlineFull,
-  getPlotPoints,
-  listCharactersFull,
+  getBibleVersioned,
+  getBookConfigVersioned,
+  getCharacterVersioned,
+  getLocationsVersioned,
+  getMetaVersioned,
+  getOutlineVersioned,
+  getPlotPointsVersioned,
+  listCharactersVersioned,
   putBible,
   putBookConfig,
   putCharacter,
@@ -38,10 +38,10 @@ import type {
 } from '@/api/types'
 import { MODEL_STAGES } from '@/api/types'
 import { useBookStore } from '@/stores/book'
-import { G_LABELS, G_TARGETS, adoptSummary, genArchive } from '@/utils/archiveAI'
+import { registerDirtyGuard } from '@/utils/editing'
 import { dumpH2Sections, parseH2Sections } from '@/utils/h2'
 import { toMdTable } from '@/utils/mdtable'
-import { tagType } from '@/utils/status'
+import { MODEL_STAGE_HINT, modelStageLabel, tagType } from '@/utils/status'
 import type { TableColumn } from '@/components/MdTableEditor.vue'
 
 const route = useRoute()
@@ -72,6 +72,20 @@ interface TreeNode {
 }
 
 const selectedId = ref('meta')
+const treeRef = ref<{ setCurrentKey: (key: string) => void } | null>(null)
+const loading = ref(false)
+const loadFailed = ref(false)
+const saving = ref(false)
+const loadError = ref('')
+const etags = ref<Record<string, string | null>>({})
+const baselineChar = ref('')
+const returnChapter = computed(() => {
+  const raw = Number(route.query.returnChapter)
+  return Number.isInteger(raw) && raw > 0 ? raw : null
+})
+let loadRequest = 0
+let selectedRequest = 0
+let pageGeneration = 0
 
 // —— 数据 ——
 const meta = ref<BookMeta>({})
@@ -244,30 +258,65 @@ function rowsToText(cols: TableColumn[], rows: Record<string, string>[]): string
   )
 }
 
-async function load(): Promise<void> {
-  store.setCurrentBook(book.value)
-  const [m, c, b, cs, loc, pp, od] = await Promise.all([
-    getMeta(book.value),
-    getBookConfig(book.value),
-    getBible(book.value),
-    listCharactersFull(book.value),
-    getLocations(book.value),
-    getPlotPoints(book.value),
-    getOutlineFull(book.value),
-  ])
-  meta.value = m
-  cfg.value = c
-  bibleSections.value = Object.entries(b).map(([title, content]) => ({ title, content }))
-  chars.value = cs
-  locations.value = loc
-  locRows.value = loc.map((r) => ({ ...r }))
-  plotPoints.value = pp
-  ppRows.value = pp.map((r) => ({ ...r }))
-  outline.value = od
-  outlineRows.value = (od.chapter_rows ?? []).map((r) => ({ ...r }))
-  rhythmText.value = String(od._rhythm ?? '')
-  volRows.value = volumesToRows(od.volumes ?? [])
-  await loadSelected()
+async function load(): Promise<boolean> {
+  const targetBook = book.value
+  const request = ++loadRequest
+  const generation = pageGeneration
+  store.setCurrentBook(targetBook)
+  loading.value = true
+  loadFailed.value = false
+  loadError.value = ''
+  try {
+    const [m, c, b, cs, loc, pp, od] = await Promise.all([
+      getMetaVersioned(targetBook),
+      getBookConfigVersioned(targetBook),
+      getBibleVersioned(targetBook),
+      listCharactersVersioned(targetBook),
+      getLocationsVersioned(targetBook),
+      getPlotPointsVersioned(targetBook),
+      getOutlineVersioned(targetBook),
+    ])
+    if (request !== loadRequest || generation !== pageGeneration || targetBook !== book.value)
+      return false
+    const versions = {
+      meta: m.etag,
+      config: c.etag,
+      bible: b.etag,
+      characters: cs.etag,
+      locations: loc.etag,
+      plot_points: pp.etag,
+      outline: od.etag,
+    }
+    if (Object.values(versions).some((etag) => !etag))
+      throw new Error('服务版本不匹配：档案读取缺少 ETag，已禁用无保护写入')
+    etags.value = versions
+    meta.value = m.data
+    baselineMeta.value = JSON.parse(JSON.stringify(m.data)) as BookMeta
+    cfg.value = c.data
+    lintWhitelistText.value = (c.data.lint_whitelist ?? []).join('\n')
+    baselineConfig.value = JSON.stringify({ cfg: c.data, whitelist: lintWhitelistText.value })
+    bibleSections.value = Object.entries(b.data).map(([title, content]) => ({ title, content }))
+    chars.value = cs.data
+    locations.value = loc.data
+    locRows.value = loc.data.map((r) => ({ ...r }))
+    plotPoints.value = pp.data
+    ppRows.value = pp.data.map((r) => ({ ...r }))
+    outline.value = od.data
+    outlineRows.value = (od.data.chapter_rows ?? []).map((r) => ({ ...r }))
+    rhythmText.value = String(od.data._rhythm ?? '')
+    volRows.value = volumesToRows(od.data.volumes ?? [])
+    await applyNodeQuery()
+    await loadSelected()
+    return true
+  } catch (error) {
+    if (request === loadRequest && targetBook === book.value) {
+      loadFailed.value = true
+      loadError.value = error instanceof Error ? error.message : '档案加载失败'
+    }
+    return false
+  } finally {
+    if (request === loadRequest) loading.value = false
+  }
 }
 
 function volumesToRows(vols: unknown[]): Record<string, string>[] {
@@ -316,13 +365,24 @@ async function loadSelected(): Promise<void> {
   if (k === 'character') {
     const n = current.value?.arg ?? ''
     if (!n) return
+    const targetBook = book.value
+    const request = ++selectedRequest
     try {
-      const c = await getCharacter(book.value, n)
+      const response = await getCharacterVersioned(targetBook, n)
+      if (request !== selectedRequest || targetBook !== book.value || current.value?.arg !== n)
+        return
+      if (!response.etag) throw new Error('角色档案缺少 ETag，已禁用保存')
+      etags.value[`character:${n}`] = response.etag
+      const c = response.data
       charStatus.value = { ...((c.status ?? {}) as CharacterStatus) }
       const parsed = parseH2Sections(String(c._body ?? ''))
       charSections.value = parsed.sections
+      baselineChar.value = JSON.stringify({
+        status: charStatus.value,
+        sections: charSections.value,
+      })
     } catch {
-      // 拦截器已提示
+      // 拦截器已提示；保留当前输入，不把失败当空角色。
     }
   }
 }
@@ -331,64 +391,221 @@ function bibleTextOf(title: string): string {
   return bibleSections.value.find((s) => s.title === title)?.content ?? ''
 }
 
-watch([book], () => void load().catch(() => {}), { immediate: true })
-watch(selectedId, () => void loadSelected().catch(() => {}))
+const dirty = computed(() => {
+  const k = currentKind.value
+  if (k === 'meta') return JSON.stringify(meta.value) !== JSON.stringify(baselineMeta.value)
+  if (k === 'bible-section') {
+    const title = current.value?.arg ?? ''
+    const content = title === '力量体系' ? rowsToText(POWER_COLS, powerRows.value) : bibleText.value
+    return content !== bibleTextOf(title)
+  }
+  if (k === 'character')
+    return (
+      JSON.stringify({ status: charStatus.value, sections: charSections.value }) !==
+      baselineChar.value
+    )
+  if (k === 'locations') return JSON.stringify(locRows.value) !== JSON.stringify(locations.value)
+  if (k === 'plot_points') return JSON.stringify(ppRows.value) !== JSON.stringify(plotPoints.value)
+  if (k === 'outline-rows')
+    return JSON.stringify(outlineRows.value) !== JSON.stringify(outline.value.chapter_rows ?? [])
+  if (k === 'outline-volumes')
+    return (
+      JSON.stringify(volRows.value) !== JSON.stringify(volumesToRows(outline.value.volumes ?? []))
+    )
+  if (k === 'outline-rhythm') return rhythmText.value !== String(outline.value._rhythm ?? '')
+  return false
+})
+const baselineMeta = ref<BookMeta>({})
+watch(
+  meta,
+  (value) => {
+    if (loading.value) baselineMeta.value = JSON.parse(JSON.stringify(value)) as BookMeta
+  },
+  { deep: true },
+)
+
+async function confirmLeave(): Promise<'save' | 'discard' | 'cancel'> {
+  if (!dirty.value && !configDirty.value) return 'discard'
+  if (saving.value) return 'cancel'
+  try {
+    const action = await ElMessageBox.confirm(
+      `「${currentTitle.value}」有未保存修改。保存后继续，或放弃修改？`,
+      '档案修改未保存',
+      {
+        type: 'warning',
+        distinguishCancelAndClose: true,
+        confirmButtonText: '保存后继续',
+        cancelButtonText: '放弃修改',
+        showClose: true,
+      },
+    )
+    return action === 'confirm' ? 'save' : 'discard'
+  } catch (action) {
+    return action === 'cancel' ? 'discard' : 'cancel'
+  }
+}
+async function selectNode(id: string): Promise<void> {
+  if (id === selectedId.value) return
+  const decision = await confirmLeave()
+  if (decision === 'cancel') {
+    treeRef.value?.setCurrentKey(selectedId.value)
+    return
+  }
+  if (decision === 'save' && !(await saveCurrent())) return
+  selectedRequest++
+  selectedId.value = id
+  await loadSelected()
+}
+async function applyNodeQuery(): Promise<void> {
+  const raw = route.query.node
+  if (raw === undefined) return
+  const id = typeof raw === 'string' ? raw : ''
+  const target = flatNodes.value.get(id)
+  if (!target) {
+    selectedId.value = 'meta'
+    ElMessage.warning(`档案节点无效（${id || '空'}），已回到书籍信息`)
+  } else {
+    selectedId.value = target.children?.length ? target.children[0]!.id : target.id
+  }
+  await nextTick()
+  treeRef.value?.setCurrentKey(selectedId.value)
+  document.querySelector('.archive-editor')?.scrollTo({ top: 0 })
+}
+watch(
+  book,
+  () => {
+    pageGeneration++
+    void load()
+  },
+  { immediate: true },
+)
+watch(
+  () => route.query.node,
+  async () => {
+    if (loading.value || loadFailed.value) return
+    const decision = await confirmLeave()
+    if (decision === 'cancel') return
+    if (decision === 'save' && !(await saveCurrent())) return
+    await applyNodeQuery()
+    await loadSelected()
+  },
+)
+const unregisterDirty = registerDirtyGuard(
+  async () => {
+    const decision = await confirmLeave()
+    if (decision === 'save') return (await saveCurrent()) ? 'save' : 'cancel'
+    return decision
+  },
+  () => dirty.value || configDirty.value,
+)
+onUnmounted(() => {
+  pageGeneration++
+  loadRequest++
+  selectedRequest++
+  unregisterDirty()
+})
 
 // —— 保存：meta ——
-const META_STATUS = ['drafting', 'serializing', 'done']
-async function saveMeta(): Promise<void> {
+// 规格12 文案中文化：token 仍是 drafting/serializing/done，只换展示名
+const META_STATUS = [
+  { value: 'drafting', label: '创作中' },
+  { value: 'serializing', label: '连载中' },
+  { value: 'done', label: '已完结' },
+]
+async function saveMeta(): Promise<boolean> {
+  if (!etags.value.meta || !etags.value.config || saving.value) return false
+  if (!dirty.value) return true
+  try {
+    await ElMessageBox.confirm(
+      '将保存 meta.md 全部字段，并同步单章字数区间到 config.json；两项使用各自打开时版本校验。',
+      '确认保存范围',
+      { type: 'warning' },
+    )
+  } catch {
+    return false
+  }
+  saving.value = true
   try {
     const payload: BookMeta = { ...meta.value }
-    delete payload._body
-    meta.value = await putMeta(book.value, payload)
-    // 单章字数区间的真相源是 config.json（管线只读 config，不读 meta），
-    // 所以 meta 表单改这一项时必须同步写 config，否则"改了不生效"。
+    meta.value = await putMeta(book.value, payload, etags.value.meta)
     const wr = meta.value.chapter_word_range
-    if (Array.isArray(wr) && wr.length === 2) {
-      const cur = await getBookConfig(book.value)
-      await putBookConfig(book.value, { ...cur, chapter_word_range: wr })
-    }
+    if (Array.isArray(wr) && wr.length === 2)
+      await putBookConfig(book.value, { ...cfg.value, chapter_word_range: wr }, etags.value.config)
     ElMessage.success('meta.md 已保存（字数区间已同步到书级配置）')
+    await load()
+    return true
   } catch {
-    // 拦截器已提示
+    return false
+  } finally {
+    saving.value = false
   }
 }
 
 // —— 保存：Bible 单节（力量体系走表格，其余走 Markdown）——
-async function saveBibleSection(): Promise<void> {
+async function saveBibleSection(): Promise<boolean> {
   const title = current.value?.arg ?? ''
-  if (!title) return
+  if (!title || !etags.value.bible || saving.value) return false
+  if (!dirty.value) return true
   const content = title === '力量体系' ? rowsToText(POWER_COLS, powerRows.value) : bibleText.value
+  try {
+    await ElMessageBox.confirm(
+      `仅修改 Bible「${title}」节；提交整文件时以打开整份资源时的 ETag 防止覆盖其他页修改。`,
+      '确认保存差异',
+      { type: 'warning' },
+    )
+  } catch {
+    return false
+  }
   const all: Record<string, string> = {}
   for (const s of bibleSections.value) all[s.title] = s.content
   all[title] = content
+  saving.value = true
   try {
-    await putBible(book.value, all)
+    await putBible(book.value, all, etags.value.bible)
     const local = bibleSections.value.find((s) => s.title === title)
     if (local) local.content = content
     ElMessage.success(`「${title}」已保存`)
+    await load()
+    return true
   } catch {
-    // 拦截器已提示
+    return false
+  } finally {
+    saving.value = false
   }
 }
 
 // —— 保存：角色（动态状态表单 + 其余 H2 节 Markdown）——
 const ROLE_OPTIONS = ['主角', '女主', '反派', '重要配角', '龙套']
-async function saveCharacter(): Promise<void> {
+async function saveCharacter(): Promise<boolean> {
   const name = current.value?.arg ?? ''
-  if (!name) return
+  const etag = etags.value[`character:${name}`]
+  if (!name || !etag || saving.value) return false
+  if (!dirty.value) return true
+  try {
+    await ElMessageBox.confirm(
+      `将保存角色「${name}」动态状态与全部 H2 长文本节；按打开角色时 ETag 校验。`,
+      '确认角色变更',
+      { type: 'warning' },
+    )
+  } catch {
+    return false
+  }
   const fm: Record<string, unknown> = {
     name,
     role: String(chars.value.find((c) => String(c.name) === name)?.role ?? '龙套'),
     status: { ...charStatus.value },
     _body: dumpH2Sections(charSections.value),
   }
+  saving.value = true
   try {
-    await putCharacter(book.value, name, fm as CharacterData)
+    await putCharacter(book.value, name, fm as CharacterData, etag)
     ElMessage.success(`角色「${name}」已保存`)
     await load()
+    return true
   } catch {
-    // 拦截器已提示
+    return false
+  } finally {
+    saving.value = false
   }
 }
 
@@ -411,70 +628,89 @@ async function createChar(): Promise<void> {
 }
 
 // —— 保存：地点 / 伏笔台账 / 大纲 ——
-async function saveLocations(): Promise<void> {
+async function saveLocations(): Promise<boolean> {
+  if (!etags.value.locations || saving.value) return false
+  if (!dirty.value) return true
   try {
-    await putLocations(book.value, locRows.value)
+    await ElMessageBox.confirm(
+      `将保存地点档案 ${locRows.value.length} 行；按整个地点文件版本校验。`,
+      '确认保存范围',
+      { type: 'warning' },
+    )
+  } catch {
+    return false
+  }
+  saving.value = true
+  try {
+    await putLocations(book.value, locRows.value, etags.value.locations)
     ElMessage.success('地点档案已保存')
-    locations.value = locRows.value.map((r) => ({ ...r }))
+    await load()
+    return true
   } catch {
-    // 拦截器已提示
+    return false
+  } finally {
+    saving.value = false
   }
 }
 
-async function savePlotPoints(): Promise<void> {
+async function savePlotPoints(): Promise<boolean> {
+  if (!etags.value.plot_points || saving.value) return false
+  if (!dirty.value) return true
   try {
-    await putPlotPoints(book.value, ppRows.value)
+    await ElMessageBox.confirm(
+      `将保存伏笔台账 ${ppRows.value.length} 行，状态迁移仍由后端校验。`,
+      '确认保存范围',
+      { type: 'warning' },
+    )
+  } catch {
+    return false
+  }
+  saving.value = true
+  try {
+    await putPlotPoints(book.value, ppRows.value, etags.value.plot_points)
     ElMessage.success('伏笔台账已保存')
-    plotPoints.value = ppRows.value.map((r) => ({ ...r }))
+    await load()
+    return true
   } catch {
-    // 状态迁移非法由拦截器提示
+    return false
+  } finally {
+    saving.value = false
   }
 }
 
-async function saveOutlineRows(): Promise<void> {
+async function saveOutline(kind: string): Promise<boolean> {
+  if (!etags.value.outline || saving.value) return false
+  if (!dirty.value) return true
   try {
-    const od: OutlineFull = { ...outline.value }
-    delete od._body
-    delete od._rhythm
-    od.chapter_rows = outlineRows.value
-    od.volumes = rowsToVolumes(volRows.value)
-    await putOutlineFull(book.value, od)
-    ElMessage.success('章节总表已保存（卷规划一并落盘）')
-    await load()
+    await ElMessageBox.confirm(
+      `将保存${kind}；提交保留当前卷规划、章节总表和节奏总谱，ETag 同时覆盖 OUTLINE.md 与 PLOT_POINTS.md。`,
+      '确认大纲变更',
+      { type: 'warning' },
+    )
   } catch {
-    // 拦截器已提示
+    return false
+  }
+  const od: OutlineFull = {
+    ...outline.value,
+    chapter_rows: outlineRows.value,
+    volumes: rowsToVolumes(volRows.value),
+    _rhythm: rhythmText.value,
+  }
+  saving.value = true
+  try {
+    await putOutlineFull(book.value, od, etags.value.outline)
+    ElMessage.success(`${kind}已保存`)
+    await load()
+    return true
+  } catch {
+    return false
+  } finally {
+    saving.value = false
   }
 }
-
-async function saveVolumes(): Promise<void> {
-  try {
-    const od: OutlineFull = { ...outline.value }
-    delete od._body
-    delete od._rhythm
-    od.chapter_rows = outlineRows.value
-    od.volumes = rowsToVolumes(volRows.value)
-    await putOutlineFull(book.value, od)
-    ElMessage.success('卷规划已保存')
-    await load()
-  } catch {
-    // 拦截器已提示
-  }
-}
-
-async function saveRhythm(): Promise<void> {
-  try {
-    const od: OutlineFull = { ...outline.value }
-    delete od._body
-    od._rhythm = rhythmText.value
-    od.chapter_rows = outlineRows.value
-    od.volumes = rowsToVolumes(volRows.value)
-    await putOutlineFull(book.value, od)
-    ElMessage.success('爽点节奏总谱已保存')
-    await load()
-  } catch {
-    // 拦截器已提示
-  }
-}
+const saveOutlineRows = (): Promise<boolean> => saveOutline('章节总表')
+const saveVolumes = (): Promise<boolean> => saveOutline('卷规划')
+const saveRhythm = (): Promise<boolean> => saveOutline('爽点节奏总谱')
 
 // —— 书级配置（model_stages 五档 / 字数区间 / 修复轮次 / scene_mode / 白名单）——
 const lintWhitelistText = ref('')
@@ -486,7 +722,22 @@ watch(
   { immediate: true, deep: true },
 )
 
-async function saveConfig(): Promise<void> {
+const baselineConfig = ref('')
+watch(
+  [cfg, lintWhitelistText],
+  () => {
+    if (loading.value)
+      baselineConfig.value = JSON.stringify({ cfg: cfg.value, whitelist: lintWhitelistText.value })
+  },
+  { deep: true, immediate: true },
+)
+const configDirty = computed(
+  () =>
+    baselineConfig.value !== JSON.stringify({ cfg: cfg.value, whitelist: lintWhitelistText.value }),
+)
+async function saveConfig(): Promise<boolean> {
+  if (!etags.value.config || saving.value) return false
+  if (!configDirty.value) return true
   const payload: BookConfig = {
     ...cfg.value,
     lint_whitelist: lintWhitelistText.value
@@ -495,12 +746,31 @@ async function saveConfig(): Promise<void> {
       .filter(Boolean),
   }
   try {
-    cfg.value = await putBookConfig(book.value, payload)
-    ElMessage.success('书级配置已保存')
+    await ElMessageBox.confirm(
+      '将保存 config.json 模型档位、字数区间、场景模式与词库白名单。',
+      '确认书级配置变更',
+      { type: 'warning' },
+    )
   } catch {
-    // 拦截器已提示
+    return false
+  }
+  saving.value = true
+  try {
+    cfg.value = await putBookConfig(book.value, payload, etags.value.config)
+    ElMessage.success('书级配置已保存')
+    await load()
+    return true
+  } catch {
+    return false
+  } finally {
+    saving.value = false
   }
 }
+
+/** 五档中文用途说明：让"长文通读"这类档位名不用猜（规格12 文案中文化） */
+const stageLegend = computed(() =>
+  MODEL_STAGES.map((s) => `${modelStageLabel(s)}＝${MODEL_STAGE_HINT[s]}`).join('；'),
+)
 
 function setStageModel(stage: ModelStage, value: string): void {
   cfg.value = {
@@ -509,67 +779,45 @@ function setStageModel(stage: ModelStage, value: string): void {
   }
 }
 
-// —— AI 生成 → diff 预览 → 采纳（规格02 §4）——
-async function ask(label: string, value = ''): Promise<string> {
-  try {
-    const r = await ElMessageBox.prompt(label, 'AI 生成档案', { inputValue: value })
-    return r.value ?? ''
-  } catch {
-    return ''
-  }
+// 生效来源（规格12 §3）：书级填了就是书级；清空后按全局档位/兜底解析。
+// 标签取的是"保存后"的预期来源，未保存时以本地输入为准。
+const SOURCE_LABELS: Record<string, string> = {
+  book: '书级',
+  global_stage: '全局档位',
+  fallback: '兜底',
+  default: '代码默认',
+}
+function stageSource(stage: ModelStage): string {
+  if ((cfg.value.model_stages?.[stage] ?? '').trim()) return 'book'
+  const eff = cfg.value.model_effective?.[stage]
+  return eff && eff.source !== 'book' ? eff.source : ''
+}
+function stageEffectiveModel(stage: ModelStage): string {
+  const local = (cfg.value.model_stages?.[stage] ?? '').trim()
+  if (local) return local
+  const eff = cfg.value.model_effective?.[stage]
+  if (!eff) return ''
+  // 默认接口只显示模型名；其它接口带上端点，否则看不出走的是哪家中转站。
+  return eff.provider && eff.provider !== 'openai' ? `${eff.provider}@${eff.model}` : eff.model
 }
 
-const aiDialog = ref(false)
-const aiLoading = ref(false)
-const aiPid = ref('')
-const aiText = ref('')
-const aiOldText = ref('')
-const aiTarget = ref<'bible' | 'characters' | 'outline'>('bible')
-const aiDigest = ref('')
-
-/** 采纳目标对应的「当前内容」（diff 的旧侧）。 */
-function currentTextForTarget(target: 'bible' | 'characters' | 'outline'): string {
-  if (target === 'bible') {
-    return bibleSections.value.map((s) => `## ${s.title}\n\n${s.content}`).join('\n\n')
-  }
-  if (target === 'characters') {
-    return chars.value.map((c) => String(c._body ?? '')).join('\n\n')
-  }
-  return [
-    '## 章节总表',
-    rowsToText(OC_COLS, outlineRows.value),
-    '',
-    '## 爽点节奏总谱',
-    rhythmText.value,
-  ].join('\n')
+async function saveCurrent(): Promise<boolean> {
+  if (configDirty.value && !(await saveConfig())) return false
+  const kind = currentKind.value
+  if (kind === 'meta') return saveMeta()
+  if (kind === 'bible-section') return saveBibleSection()
+  if (kind === 'character') return saveCharacter()
+  if (kind === 'locations') return saveLocations()
+  if (kind === 'plot_points') return savePlotPoints()
+  if (kind === 'outline-rows') return saveOutlineRows()
+  if (kind === 'outline-volumes') return saveVolumes()
+  if (kind === 'outline-rhythm') return saveRhythm()
+  return true
 }
-
-async function aiArchive(pid: string): Promise<void> {
-  aiLoading.value = true
-  try {
-    const r = await genArchive(book.value, pid, ask)
-    aiTarget.value = G_TARGETS[pid] ?? 'bible'
-    aiPid.value = pid
-    aiDigest.value = r.digest
-    aiText.value = r.text
-    aiOldText.value = currentTextForTarget(aiTarget.value)
-    aiDialog.value = true
-  } catch {
-    // 拦截器已提示
-  } finally {
-    aiLoading.value = false
-  }
-}
-
-async function adopt(): Promise<void> {
-  try {
-    const r = await adoptArchive(book.value, aiTarget.value, aiText.value)
-    ElMessage.success({ message: adoptSummary(aiTarget.value, r), duration: 8000 })
-    aiDialog.value = false
-    await load()
-  } catch {
-    // 拦截器已提示
-  }
+async function saveAndReturn(): Promise<void> {
+  if (!returnChapter.value) return
+  if (!(await saveCurrent())) return
+  await router.push(`/book/${encodeURIComponent(book.value)}/chapter/${returnChapter.value}`)
 }
 </script>
 
@@ -577,6 +825,9 @@ async function adopt(): Promise<void> {
   <div class="panel">
     <div class="flex flex-wrap items-center gap-2">
       <el-button @click="router.push(`/book/${encodeURIComponent(book)}`)">← 书总览</el-button>
+      <el-button v-if="returnChapter" type="primary" :loading="saving" @click="saveAndReturn"
+        >保存并返回第 {{ returnChapter }} 章</el-button
+      >
       <span class="text-[15px] font-bold">档案编辑 · {{ meta.title || book }}</span>
       <el-tag v-if="meta.status" :type="tagType(meta.status)" size="small">{{
         meta.status
@@ -586,359 +837,372 @@ async function adopt(): Promise<void> {
         >左树选档案 → 右侧编辑 → 保存；结构化字段（力量体系/角色状态/台账/地点/大纲）用表单</span
       >
     </div>
-    <div class="mt-2 flex flex-wrap items-center gap-2">
-      <span class="dim">AI 生成（生成 → diff 预览 → 人工改定 → 采纳落盘）：</span>
-      <el-button
-        v-for="(label, pid) in G_LABELS"
-        :key="pid"
-        :loading="aiLoading && aiPid === pid"
-        @click="aiArchive(pid)"
-      >
-        {{ label }}
-      </el-button>
-      <span class="dim">AI 永不静默覆盖：采纳前先看 diff</span>
-    </div>
+    <ArchiveAI :book="book" @adopted="load" />
   </div>
 
-  <div class="grid grid-cols-1 gap-3 lg:grid-cols-[280px_1fr]">
-    <!-- 左树 -->
-    <div class="panel archive-tree">
-      <el-tree
-        :data="tree"
-        node-key="id"
-        :props="{ label: 'label', children: 'children' }"
-        :default-expanded-keys="['bible', 'chars', 'outline']"
-        :current-node-key="selectedId"
-        highlight-current
-        @node-click="(n: TreeNode) => (selectedId = n.id)"
-      />
+  <el-skeleton v-if="loading" :rows="12" animated />
+  <el-result v-else-if="loadFailed" icon="error" title="档案加载失败" :sub-title="loadError"
+    ><template #extra
+      ><el-button @click="load">重试</el-button
+      ><el-button @click="router.push(`/book/${encodeURIComponent(book)}`)"
+        >返回书总览</el-button
+      ></template
+    ></el-result
+  >
+  <template v-else>
+    <div class="grid grid-cols-1 gap-3 lg:grid-cols-[280px_1fr]">
+      <!-- 左树 -->
+      <div class="panel archive-tree">
+        <el-tree
+          ref="treeRef"
+          :data="tree"
+          node-key="id"
+          :props="{ label: 'label', children: 'children' }"
+          :default-expanded-keys="['bible', 'chars', 'outline']"
+          :current-node-key="selectedId"
+          highlight-current
+          @node-click="(n: TreeNode) => selectNode(n.id)"
+        />
+      </div>
+
+      <!-- 右侧编辑器 -->
+      <div class="panel archive-editor">
+        <h3 class="panel-title">{{ currentTitle }}</h3>
+
+        <!-- meta.md 结构化表单（规格01 §2.1）-->
+        <template v-if="currentKind === 'meta'">
+          <el-form label-width="150px">
+            <el-form-item label="书名">
+              <el-input v-model="meta.title" style="width: 320px" />
+            </el-form-item>
+            <el-form-item label="笔名">
+              <el-input v-model="meta.author" style="width: 320px" />
+            </el-form-item>
+            <el-form-item label="题材">
+              <el-input v-model="meta.genre" style="width: 320px" />
+            </el-form-item>
+            <el-form-item label="标签">
+              <el-select
+                v-model="meta.tags"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                placeholder="回车新增标签"
+                style="width: 420px"
+              />
+            </el-form-item>
+            <el-form-item label="目标字数">
+              <el-input-number
+                :model-value="Number(meta.target_words ?? 0)"
+                :min="0"
+                :step="100000"
+                style="width: 200px"
+                @update:model-value="(v: number | undefined) => (meta.target_words = v ?? 0)"
+              />
+              <span class="dim ml-2"
+                >约 {{ ((meta.target_words ?? 0) / 10000).toFixed(0) }} 万字</span
+              >
+            </el-form-item>
+            <el-form-item label="单章字数区间">
+              <el-input-number
+                :model-value="Number(meta.chapter_word_range?.[0] ?? 2200)"
+                :min="0"
+                :step="100"
+                style="width: 130px"
+                @update:model-value="
+                  (v: number | undefined) =>
+                    (meta.chapter_word_range = [v ?? 2200, meta.chapter_word_range?.[1] ?? 2800])
+                "
+              />
+              <span class="mx-2">—</span>
+              <el-input-number
+                :model-value="Number(meta.chapter_word_range?.[1] ?? 2800)"
+                :min="0"
+                :step="100"
+                style="width: 130px"
+                @update:model-value="
+                  (v: number | undefined) =>
+                    (meta.chapter_word_range = [meta.chapter_word_range?.[0] ?? 2200, v ?? 2800])
+                "
+              />
+              <span class="dim ml-2">保存时同步写入书级配置（生成时读的是配置文件）</span>
+            </el-form-item>
+            <el-form-item label="平台">
+              <el-input v-model="meta.platform" style="width: 240px" />
+            </el-form-item>
+            <el-form-item label="对标书">
+              <el-input v-model="meta.benchmark_book" style="width: 420px" />
+            </el-form-item>
+            <el-form-item label="状态">
+              <el-select v-model="meta.status" style="width: 160px">
+                <el-option
+                  v-for="s in META_STATUS"
+                  :key="s.value"
+                  :label="s.label"
+                  :value="s.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="合规声明">
+              <el-input
+                v-model="meta.compliance_note"
+                type="textarea"
+                :rows="2"
+                style="width: 620px"
+              />
+            </el-form-item>
+            <el-form-item label="正文（自由文本）">
+              <el-input v-model="meta._body" type="textarea" :rows="5" style="width: 620px" />
+            </el-form-item>
+          </el-form>
+          <el-button type="primary" @click="saveMeta">保存基础信息</el-button>
+        </template>
+
+        <!-- Bible 节：力量体系 = 8 列表单；其余 = Markdown -->
+        <template v-else-if="currentKind === 'bible-section'">
+          <template v-if="current?.arg === '力量体系'">
+            <div class="dim mb-2">
+              规格01 §2.2 固定 8
+              列表格：大境界｜子境界｜突破条件｜能力边界(不能做什么)｜战力对标｜寿元｜代价与风险｜突破异象。
+              装配器从这里抽境界行，境界倒退冲突检测也读它。
+            </div>
+            <MdTableEditor v-model:rows="powerRows" :columns="POWER_COLS" reorderable />
+          </template>
+          <template v-else>
+            <div class="dim mb-1">## {{ current?.arg }}（Markdown 正文）</div>
+            <el-input v-model="bibleText" type="textarea" :rows="22" class="mono" />
+          </template>
+          <el-button class="mt-2" type="primary" @click="saveBibleSection"
+            >保存「{{ current?.arg }}」</el-button
+          >
+        </template>
+
+        <!-- 角色：动态状态表单 + 其余 H2 节 Markdown -->
+        <template v-else-if="currentKind === 'character'">
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <span class="dim">新角色</span>
+            <el-input v-model="newChar.name" placeholder="角色名" style="width: 140px" />
+            <el-select v-model="newChar.role" style="width: 120px">
+              <el-option v-for="r in ROLE_OPTIONS" :key="r" :label="r" :value="r" />
+            </el-select>
+            <el-button @click="createChar">建档</el-button>
+          </div>
+          <template v-if="current?.arg">
+            <div class="mono mb-1 text-xs">动态状态段（规格01 §2.3，每章由记忆卡回写）</div>
+            <el-form label-width="130px">
+              <el-form-item label="境界">
+                <el-input v-model="charStatus.realm" style="width: 300px" />
+              </el-form-item>
+              <el-form-item label="位置">
+                <el-input v-model="charStatus.location" style="width: 300px" />
+              </el-form-item>
+              <el-form-item label="情绪">
+                <el-input v-model="charStatus.emotion" style="width: 300px" />
+              </el-form-item>
+              <el-form-item label="存活">
+                <el-switch v-model="charStatus.alive" />
+                <span class="dim ml-2">关闭 = 已死亡（记忆卡试图复活会进裁决队列）</span>
+              </el-form-item>
+              <el-form-item label="伤势">
+                <el-select
+                  v-model="charStatus.injuries"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="回车新增"
+                  style="width: 420px"
+                />
+              </el-form-item>
+              <el-form-item label="物品">
+                <el-select
+                  v-model="charStatus.inventory"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="回车新增"
+                  style="width: 420px"
+                />
+              </el-form-item>
+              <el-form-item label="已知信息">
+                <el-select
+                  v-model="charStatus.known_info"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  placeholder="回车新增（防提前知情穿帮）"
+                  style="width: 420px"
+                />
+              </el-form-item>
+              <el-form-item label="更新章">
+                <el-input-number
+                  :model-value="Number(charStatus.updated_chapter ?? 0)"
+                  :min="0"
+                  :controls="false"
+                  style="width: 120px"
+                  @update:model-value="
+                    (v: number | undefined) => (charStatus.updated_chapter = v ?? 0)
+                  "
+                />
+              </el-form-item>
+            </el-form>
+            <el-divider />
+            <div class="dim mb-1">
+              其余 H2 节（Markdown）。关系网络由 G4 采纳自动合并写回，也可手改。
+            </div>
+            <el-collapse>
+              <el-collapse-item v-for="(s, i) in charSections" :key="s.title" :title="s.title">
+                <el-input v-model="charSections[i]!.content" type="textarea" :rows="6" />
+              </el-collapse-item>
+            </el-collapse>
+            <el-button class="mt-2" type="primary" @click="saveCharacter">
+              保存角色「{{ current.arg }}」
+            </el-button>
+          </template>
+          <span v-else class="dim">（左侧选择一个角色）</span>
+        </template>
+
+        <!-- 地点 5 列表 -->
+        <template v-else-if="currentKind === 'locations'">
+          <div class="dim mb-2">
+            规格01 §2.6 5 列。装配器的前文检索会读地点名，为空会降低召回质量。
+          </div>
+          <MdTableEditor v-model:rows="locRows" :columns="LOC_COLS" />
+          <el-button class="mt-2" type="primary" @click="saveLocations">保存地点档案</el-button>
+        </template>
+
+        <!-- 伏笔台账 7 列表 -->
+        <template v-else-if="currentKind === 'plot_points'">
+          <div class="dim mb-2">
+            规格01 §2.5 7 列。状态只能 planted→building→paid 单向；paid 不得回退（后端校验）。
+          </div>
+          <MdTableEditor v-model:rows="ppRows" :columns="PP_COLS" />
+          <el-button class="mt-2" type="primary" @click="savePlotPoints">保存伏笔台账</el-button>
+        </template>
+
+        <!-- 大纲：章节总表 -->
+        <template v-else-if="currentKind === 'outline-rows'">
+          <div class="dim mb-2">规格01 §2.4 章节总表 7 列。保存时卷规划一并落盘（避免丢卷）。</div>
+          <MdTableEditor v-model:rows="outlineRows" :columns="OC_COLS" reorderable />
+          <el-button class="mt-2" type="primary" @click="saveOutlineRows">保存章节总表</el-button>
+        </template>
+
+        <!-- 大纲：卷规划 -->
+        <template v-else-if="currentKind === 'outline-volumes'">
+          <div class="dim mb-2">
+            规格01 §2.4 frontmatter.volumes：卷号/卷名/起止章/核心冲突/本卷目标/卷末高潮/卷末钩子。
+            起止章形如 <span class="mono">1-12</span>。
+          </div>
+          <MdTableEditor v-model:rows="volRows" :columns="VOL_COLS" reorderable />
+          <el-button class="mt-2" type="primary" @click="saveVolumes">保存卷规划</el-button>
+        </template>
+
+        <!-- 大纲：爽点节奏总谱 -->
+        <template v-else-if="currentKind === 'outline-rhythm'">
+          <div class="dim mb-2">
+            规格01 §2.4「## 爽点节奏总谱」正文。此前无 UI 入口且保存大纲会把它重置，这里独占编辑。
+          </div>
+          <el-input v-model="rhythmText" type="textarea" :rows="16" class="mono" />
+          <el-button class="mt-2" type="primary" @click="saveRhythm">保存爽点节奏总谱</el-button>
+        </template>
+
+        <!-- 文风 M5 -->
+        <template v-else-if="currentKind === 'style'">
+          <StyleEditor :book="book" />
+        </template>
+      </div>
     </div>
 
-    <!-- 右侧编辑器 -->
-    <div class="panel archive-editor">
-      <h3 class="panel-title">{{ currentTitle }}</h3>
-
-      <!-- meta.md 结构化表单（规格01 §2.1）-->
-      <template v-if="currentKind === 'meta'">
-        <el-form label-width="150px">
-          <el-form-item label="书名 title">
-            <el-input v-model="meta.title" style="width: 320px" />
+    <!-- 书级配置（规格01 §1 config.json）：model_stages 五档 / 字数区间 / 修复轮次 / scene_mode / 白名单 -->
+    <div class="panel">
+      <h3 class="panel-title">书级配置</h3>
+      <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <el-form label-width="140px">
+          <el-form-item v-for="s in MODEL_STAGES" :key="s" :label="`${modelStageLabel(s)}档模型`">
+            <div class="flex flex-col gap-1">
+              <div class="flex items-center gap-2">
+                <ModelSelect
+                  :model-value="cfg.model_stages?.[s] ?? ''"
+                  width="260px"
+                  placeholder="留空则按全局/兜底解析"
+                  @update:model-value="(v: string) => setStageModel(s, v)"
+                />
+                <el-tag
+                  v-if="stageSource(s)"
+                  size="small"
+                  :type="stageSource(s) === 'book' ? 'primary' : 'info'"
+                >
+                  {{ SOURCE_LABELS[stageSource(s)] }}
+                </el-tag>
+              </div>
+              <span class="dim text-xs">
+                <template v-if="stageEffectiveModel(s)">
+                  生效：{{ stageEffectiveModel(s) }}
+                  <template v-if="stageSource(s) !== 'book'"
+                    >（来自{{ SOURCE_LABELS[stageSource(s)] }}）</template
+                  >
+                </template>
+                <template v-else>留空：保存后按全局档位 → 兜底模型解析</template>
+              </span>
+            </div>
           </el-form-item>
-          <el-form-item label="笔名 author">
-            <el-input v-model="meta.author" style="width: 320px" />
-          </el-form-item>
-          <el-form-item label="题材 genre">
-            <el-input v-model="meta.genre" style="width: 320px" />
-          </el-form-item>
-          <el-form-item label="标签 tags">
-            <el-select
-              v-model="meta.tags"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              placeholder="回车新增标签"
-              style="width: 420px"
-            />
-          </el-form-item>
-          <el-form-item label="目标字数 target_words">
-            <el-input-number
-              :model-value="Number(meta.target_words ?? 0)"
-              :min="0"
-              :step="100000"
-              style="width: 200px"
-              @update:model-value="(v: number | undefined) => (meta.target_words = v ?? 0)"
-            />
-            <span class="dim ml-2"
-              >约 {{ ((meta.target_words ?? 0) / 10000).toFixed(0) }} 万字</span
-            >
+          <el-form-item label=" ">
+            <span class="dim">
+              {{ stageLegend }}
+            </span>
           </el-form-item>
           <el-form-item label="单章字数区间">
             <el-input-number
-              :model-value="Number(meta.chapter_word_range?.[0] ?? 2200)"
+              :model-value="Number(cfg.chapter_word_range?.[0] ?? 2200)"
               :min="0"
               :step="100"
               style="width: 130px"
               @update:model-value="
                 (v: number | undefined) =>
-                  (meta.chapter_word_range = [v ?? 2200, meta.chapter_word_range?.[1] ?? 2800])
+                  (cfg.chapter_word_range = [v ?? 2200, cfg.chapter_word_range?.[1] ?? 2800])
               "
             />
             <span class="mx-2">—</span>
             <el-input-number
-              :model-value="Number(meta.chapter_word_range?.[1] ?? 2800)"
+              :model-value="Number(cfg.chapter_word_range?.[1] ?? 2800)"
               :min="0"
               :step="100"
               style="width: 130px"
               @update:model-value="
                 (v: number | undefined) =>
-                  (meta.chapter_word_range = [meta.chapter_word_range?.[0] ?? 2200, v ?? 2800])
+                  (cfg.chapter_word_range = [cfg.chapter_word_range?.[0] ?? 2200, v ?? 2800])
               "
             />
-            <span class="dim ml-2">保存 meta 时同步写入书级配置（管线读的是 config.json）</span>
           </el-form-item>
-          <el-form-item label="平台 platform">
-            <el-input v-model="meta.platform" style="width: 240px" />
-          </el-form-item>
-          <el-form-item label="对标书 benchmark_book">
-            <el-input v-model="meta.benchmark_book" style="width: 420px" />
-          </el-form-item>
-          <el-form-item label="状态 status">
-            <el-select v-model="meta.status" style="width: 160px">
-              <el-option v-for="s in META_STATUS" :key="s" :label="s" :value="s" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="合规声明 compliance_note">
-            <el-input
-              v-model="meta.compliance_note"
-              type="textarea"
-              :rows="2"
-              style="width: 620px"
+          <el-form-item label="审校修复最大轮次">
+            <el-input-number
+              :model-value="Number(cfg.review_fix_max_rounds ?? 2)"
+              :min="0"
+              :max="5"
+              style="width: 120px"
+              @update:model-value="(v: number | undefined) => (cfg.review_fix_max_rounds = v ?? 2)"
             />
+            <span class="dim ml-2">规格03 §2.5 默认 2 轮</span>
           </el-form-item>
-          <el-form-item label="正文（自由文本）">
-            <el-input v-model="meta._body" type="textarea" :rows="5" style="width: 620px" />
+          <el-form-item label="逐场景生成">
+            <el-switch
+              :model-value="Boolean(cfg.scene_mode)"
+              @update:model-value="(v: boolean | string | number) => (cfg.scene_mode = Boolean(v))"
+            />
+            <span class="dim ml-2">开启后按场景逐个生成再缝合（每场景独立注意力+字数配额）</span>
           </el-form-item>
         </el-form>
-        <el-button type="primary" @click="saveMeta">保存 meta.md</el-button>
-      </template>
-
-      <!-- Bible 节：力量体系 = 8 列表单；其余 = Markdown -->
-      <template v-else-if="currentKind === 'bible-section'">
-        <template v-if="current?.arg === '力量体系'">
-          <div class="dim mb-2">
-            规格01 §2.2 固定 8
-            列表格：大境界｜子境界｜突破条件｜能力边界(不能做什么)｜战力对标｜寿元｜代价与风险｜突破异象。
-            装配器从这里抽境界行，境界倒退冲突检测也读它。
-          </div>
-          <MdTableEditor v-model:rows="powerRows" :columns="POWER_COLS" reorderable />
-        </template>
-        <template v-else>
-          <div class="dim mb-1">## {{ current?.arg }}（Markdown 正文）</div>
-          <el-input v-model="bibleText" type="textarea" :rows="22" class="mono" />
-        </template>
-        <el-button class="mt-2" type="primary" @click="saveBibleSection"
-          >保存「{{ current?.arg }}」</el-button
-        >
-      </template>
-
-      <!-- 角色：动态状态表单 + 其余 H2 节 Markdown -->
-      <template v-else-if="currentKind === 'character'">
-        <div class="mb-2 flex flex-wrap items-center gap-2">
-          <span class="dim">新角色</span>
-          <el-input v-model="newChar.name" placeholder="角色名" style="width: 140px" />
-          <el-select v-model="newChar.role" style="width: 120px">
-            <el-option v-for="r in ROLE_OPTIONS" :key="r" :label="r" :value="r" />
-          </el-select>
-          <el-button @click="createChar">建档</el-button>
-        </div>
-        <template v-if="current?.arg">
-          <div class="mono mb-1 text-xs">动态状态段（规格01 §2.3，每章由记忆卡回写）</div>
-          <el-form label-width="130px">
-            <el-form-item label="境界 realm">
-              <el-input v-model="charStatus.realm" style="width: 300px" />
-            </el-form-item>
-            <el-form-item label="位置 location">
-              <el-input v-model="charStatus.location" style="width: 300px" />
-            </el-form-item>
-            <el-form-item label="情绪 emotion">
-              <el-input v-model="charStatus.emotion" style="width: 300px" />
-            </el-form-item>
-            <el-form-item label="存活 alive">
-              <el-switch v-model="charStatus.alive" />
-              <span class="dim ml-2">关闭 = 已死亡（记忆卡试图复活会进裁决队列）</span>
-            </el-form-item>
-            <el-form-item label="伤势 injuries">
-              <el-select
-                v-model="charStatus.injuries"
-                multiple
-                filterable
-                allow-create
-                default-first-option
-                placeholder="回车新增"
-                style="width: 420px"
-              />
-            </el-form-item>
-            <el-form-item label="物品 inventory">
-              <el-select
-                v-model="charStatus.inventory"
-                multiple
-                filterable
-                allow-create
-                default-first-option
-                placeholder="回车新增"
-                style="width: 420px"
-              />
-            </el-form-item>
-            <el-form-item label="已知信息 known_info">
-              <el-select
-                v-model="charStatus.known_info"
-                multiple
-                filterable
-                allow-create
-                default-first-option
-                placeholder="回车新增（防提前知情穿帮）"
-                style="width: 420px"
-              />
-            </el-form-item>
-            <el-form-item label="更新章 updated_chapter">
-              <el-input-number
-                :model-value="Number(charStatus.updated_chapter ?? 0)"
-                :min="0"
-                :controls="false"
-                style="width: 120px"
-                @update:model-value="
-                  (v: number | undefined) => (charStatus.updated_chapter = v ?? 0)
-                "
-              />
-            </el-form-item>
-          </el-form>
-          <el-divider />
+        <div>
           <div class="dim mb-1">
-            其余 H2 节（Markdown）。关系网络由 G4 采纳自动合并写回，也可手改。
+            禁词白名单 lint_whitelist（每行一个词；目标文风作者招牌词豁免 M-02）
           </div>
-          <el-collapse>
-            <el-collapse-item v-for="(s, i) in charSections" :key="s.title" :title="s.title">
-              <el-input v-model="charSections[i]!.content" type="textarea" :rows="6" />
-            </el-collapse-item>
-          </el-collapse>
-          <el-button class="mt-2" type="primary" @click="saveCharacter">
-            保存角色「{{ current.arg }}」
-          </el-button>
-        </template>
-        <span v-else class="dim">（左侧选择一个角色）</span>
-      </template>
-
-      <!-- 地点 5 列表 -->
-      <template v-else-if="currentKind === 'locations'">
-        <div class="dim mb-2">
-          规格01 §2.6 5 列。装配器的前文检索会读地点名，为空会降低召回质量。
+          <el-input v-model="lintWhitelistText" type="textarea" :rows="10" class="mono" />
         </div>
-        <MdTableEditor v-model:rows="locRows" :columns="LOC_COLS" />
-        <el-button class="mt-2" type="primary" @click="saveLocations">保存地点档案</el-button>
-      </template>
-
-      <!-- 伏笔台账 7 列表 -->
-      <template v-else-if="currentKind === 'plot_points'">
-        <div class="dim mb-2">
-          规格01 §2.5 7 列。状态只能 planted→building→paid 单向；paid 不得回退（后端校验）。
-        </div>
-        <MdTableEditor v-model:rows="ppRows" :columns="PP_COLS" />
-        <el-button class="mt-2" type="primary" @click="savePlotPoints">保存伏笔台账</el-button>
-      </template>
-
-      <!-- 大纲：章节总表 -->
-      <template v-else-if="currentKind === 'outline-rows'">
-        <div class="dim mb-2">规格01 §2.4 章节总表 7 列。保存时卷规划一并落盘（避免丢卷）。</div>
-        <MdTableEditor v-model:rows="outlineRows" :columns="OC_COLS" reorderable />
-        <el-button class="mt-2" type="primary" @click="saveOutlineRows">保存章节总表</el-button>
-      </template>
-
-      <!-- 大纲：卷规划 -->
-      <template v-else-if="currentKind === 'outline-volumes'">
-        <div class="dim mb-2">
-          规格01 §2.4 frontmatter.volumes：卷号/卷名/起止章/核心冲突/本卷目标/卷末高潮/卷末钩子。
-          起止章形如 <span class="mono">1-12</span>。
-        </div>
-        <MdTableEditor v-model:rows="volRows" :columns="VOL_COLS" reorderable />
-        <el-button class="mt-2" type="primary" @click="saveVolumes">保存卷规划</el-button>
-      </template>
-
-      <!-- 大纲：爽点节奏总谱 -->
-      <template v-else-if="currentKind === 'outline-rhythm'">
-        <div class="dim mb-2">
-          规格01 §2.4「## 爽点节奏总谱」正文。此前无 UI 入口且保存大纲会把它重置，这里独占编辑。
-        </div>
-        <el-input v-model="rhythmText" type="textarea" :rows="16" class="mono" />
-        <el-button class="mt-2" type="primary" @click="saveRhythm">保存爽点节奏总谱</el-button>
-      </template>
-
-      <!-- 文风 M5 -->
-      <template v-else-if="currentKind === 'style'">
-        <StyleEditor :book="book" />
-      </template>
-    </div>
-  </div>
-
-  <!-- 书级配置（规格01 §1 config.json）：model_stages 五档 / 字数区间 / 修复轮次 / scene_mode / 白名单 -->
-  <div class="panel">
-    <h3 class="panel-title">书级配置（config.json）</h3>
-    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
-      <el-form label-width="140px">
-        <el-form-item v-for="s in MODEL_STAGES" :key="s" :label="`${s} 档模型`">
-          <el-input
-            :model-value="cfg.model_stages?.[s] ?? ''"
-            style="width: 320px"
-            :placeholder="s === 'plan' ? '如 deepseek-chat' : '如 gemini-2.5-pro'"
-            @update:model-value="(v: string) => setStageModel(s, v)"
-          />
-        </el-form-item>
-        <el-form-item label="单章字数区间">
-          <el-input-number
-            :model-value="Number(cfg.chapter_word_range?.[0] ?? 2200)"
-            :min="0"
-            :step="100"
-            style="width: 130px"
-            @update:model-value="
-              (v: number | undefined) =>
-                (cfg.chapter_word_range = [v ?? 2200, cfg.chapter_word_range?.[1] ?? 2800])
-            "
-          />
-          <span class="mx-2">—</span>
-          <el-input-number
-            :model-value="Number(cfg.chapter_word_range?.[1] ?? 2800)"
-            :min="0"
-            :step="100"
-            style="width: 130px"
-            @update:model-value="
-              (v: number | undefined) =>
-                (cfg.chapter_word_range = [cfg.chapter_word_range?.[0] ?? 2200, v ?? 2800])
-            "
-          />
-        </el-form-item>
-        <el-form-item label="审校修复最大轮次">
-          <el-input-number
-            :model-value="Number(cfg.review_fix_max_rounds ?? 2)"
-            :min="0"
-            :max="5"
-            style="width: 120px"
-            @update:model-value="(v: number | undefined) => (cfg.review_fix_max_rounds = v ?? 2)"
-          />
-          <span class="dim ml-2">规格03 §2.5 默认 2 轮</span>
-        </el-form-item>
-        <el-form-item label="逐场景生成 scene_mode">
-          <el-switch
-            :model-value="Boolean(cfg.scene_mode)"
-            @update:model-value="(v: boolean | string | number) => (cfg.scene_mode = Boolean(v))"
-          />
-          <span class="dim ml-2">开启后按场景逐个生成再缝合（每场景独立注意力+字数配额）</span>
-        </el-form-item>
-      </el-form>
-      <div>
-        <div class="dim mb-1">
-          禁词白名单 lint_whitelist（每行一个词；目标文风作者招牌词豁免 M-02）
-        </div>
-        <el-input v-model="lintWhitelistText" type="textarea" :rows="10" class="mono" />
       </div>
+      <el-button class="mt-2" type="primary" @click="saveConfig">保存书级配置</el-button>
     </div>
-    <el-button class="mt-2" type="primary" @click="saveConfig">保存书级配置</el-button>
-  </div>
-
-  <!-- AI 生成 → diff 预览 → 采纳 -->
-  <el-dialog v-model="aiDialog" width="92%" top="3vh" destroy-on-close>
-    <template #header>
-      <span class="font-bold">AI 生成 · diff 预览</span>
-      <span class="dim ml-2">
-        来源 {{ aiPid }} ｜ 采纳目标 {{ aiTarget }} ｜ digest {{ aiDigest.slice(0, 12) }}
-      </span>
-    </template>
-    <DiffViewer :old-text="aiOldText" :new-text="aiText" title="旧档案 → AI 生成结果" />
-    <el-divider />
-    <div class="dim mb-1">生成结果（可手改后再采纳；采纳为「合并式」，不删除未提及的人工内容）</div>
-    <el-input v-model="aiText" type="textarea" :rows="10" class="mono" />
-    <template #footer>
-      <el-button @click="aiDialog = false">取消</el-button>
-      <el-button type="primary" @click="adopt">采纳落盘</el-button>
-    </template>
-  </el-dialog>
+  </template>
 </template>

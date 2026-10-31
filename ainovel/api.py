@@ -5,19 +5,20 @@ import io
 import json
 import logging
 import re
+import threading
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (assembler, bible, books, chapters, characters, conflicts, db,
-               fts, llm, mechcheck, outline, pipeline, prompts, settings,
-               statemachine)
+               fts, g5impact, llm, mechcheck, models, navigation, outline, pipeline,
+               planning, progress, prompts, resources, settings, statemachine)
 from .paths import book_dir, project_root
 from .operations import BusyError, chapter_serialized, serialized
 from .polish import PolishError
@@ -43,11 +44,40 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="AI 网文工作台", lifespan=_lifespan)
 
+# 规格10：卷级任务独立路由，必须在根静态挂载前注册。
+from .productionapi import router as production_router
+from .production import ProductionError
+
+app.include_router(production_router)
+
+# 规格11：故事候选独立接口，不复用卷确认/写档端点。
+from .storyideasapi import router as storyideas_router
+
+app.include_router(storyideas_router)
+
+
+@app.exception_handler(ProductionError)
+async def _production_error(request: Request, exc: ProductionError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": str(exc)}})
+
+
+from .volumeproduction import VolumeProductionError
+from .draftcontext import DraftContextError
+
+
+@app.exception_handler(VolumeProductionError)
+@app.exception_handler(DraftContextError)
+async def _production_candidate_error(request: Request, exc: Exception) -> JSONResponse:
+    """（规格10 §3）候选结构/范围校验失败是业务错误，不回通用500。"""
+    status = 409 if "禁止覆盖" in str(exc) or "受保护" in str(exc) else 422
+    return JSONResponse(status_code=status, content={"detail": {"code": "PRODUCTION_CANDIDATE_INVALID", "message": str(exc)}})
+
 
 @app.exception_handler(BusyError)
 async def _busy_handler(request: Request, exc: BusyError) -> JSONResponse:
     """（规格05 C-02）重复写请求返回冲突，不让客户端误以为内部错误。"""
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
+    return JSONResponse(status_code=409, content={"detail": {
+        "code": "BOOK_BUSY", "message": str(exc)}})
 
 
 @app.exception_handler(PolishError)
@@ -79,7 +109,15 @@ def _err(e: Exception, code: int = 400) -> HTTPException:
         return HTTPException(status_code=e.http_status, detail={"code": e.code, "message": str(e)})
     if isinstance(e, StyleConflict):
         return HTTPException(status_code=409, detail=str(e))
-    if isinstance(e, BusyError) or (isinstance(e, statemachine.StateError) and "并发" in str(e)):
+    if isinstance(e, BusyError):
+        return HTTPException(status_code=409, detail={"code": "BOOK_BUSY", "message": str(e)})
+    if isinstance(e, navigation.OutlineGateError):
+        return HTTPException(status_code=e.http_status,
+                             detail={"code": e.code, "message": str(e)})
+    if isinstance(e, conflicts.ConflictError):
+        return HTTPException(status_code=e.http_status,
+                             detail={"code": e.code, "message": str(e)})
+    if isinstance(e, statemachine.StateError) and "并发" in str(e):
         code = 409
     return HTTPException(status_code=code, detail=str(e))
 
@@ -125,21 +163,60 @@ def put_settings(payload: SettingsPayload):
     return settings.masked()
 
 
+@app.get("/api/models")
+def list_models(provider: str = ""):
+    """（规格12 §3 / 规格13 §3）拉指定接口的模型清单，供档位选择器做候选。
+
+    provider 省略 = 默认接口。接口不存在直接 404，不静默回落到默认接口——
+    否则用户会以为自己在看备用站的模型，实际拿到的是主站的。
+    接口存在但不可达/未实现 /v1/models 时返回 200 + ok:false：拉不到只代表
+    "没有候选可选"，不代表没有模型可用，前端保留手填。
+    """
+    key = (provider or settings.DEFAULT_PROVIDER).strip().lower()
+    try:
+        prov = settings.provider(key)
+    except KeyError as e:
+        raise _err(ValueError(str(e).strip("'\"")), 404)
+    if not prov.get("api_key"):
+        return {"ok": False, "provider": key, "models": [], "error": f"接口 {key} 未配置密钥"}
+    url = str(prov.get("base_url") or "").rstrip("/") + "/models"
+    try:
+        import httpx
+
+        with httpx.Client(timeout=15.0) as session:
+            resp = session.get(url, headers={"Authorization": f"Bearer {prov['api_key']}"})
+        if resp.status_code >= 400:
+            return {"ok": False, "provider": key, "models": [], "error": f"HTTP {resp.status_code}"}
+        data = resp.json().get("data") or []
+        ids = sorted({str(item.get("id")) for item in data
+                      if isinstance(item, dict) and item.get("id")})
+        return {"ok": True, "provider": key, "models": [{"id": i} for i in ids], "error": ""}
+    except Exception as e:  # 网络/JSON 形状都可能出错，都不能升级成 500
+        return {"ok": False, "provider": key, "models": [], "error": str(e)[:200]}
+
+
 @app.post("/api/settings/test")
 def test_connection(payload: dict):
-    """测试唯一 OpenAI 兼容端点。payload.model 可选，默认 deepseek-chat。"""
-    s = settings.load()
-    prov = s.get("providers", {}).get("openai")
-    if not prov or not prov.get("api_key"):
-        return {"ok": False, "error": "未配置 API key"}
-    model = payload.get("model") or s.get("default_model") or "deepseek-chat"
+    """测试唯一 OpenAI 兼容端点。payload.model 可选。
+
+    （规格12 §3）省略时按 全局 plan 档 → 兜底模型 取：验证的是"真正会用到的那一个"，
+    而不是一个与实际调用无关的默认名。
+    """
+    key = str(payload.get("provider") or "").strip().lower() or settings.DEFAULT_PROVIDER
     try:
-        cli = llm.OpenAICompatClient(prov["base_url"], prov["api_key"])
-        res = cli.chat(model=model, system="你是连通性测试。", user="回复：OK",
-                       temperature=0.0)
-        return {"ok": True, "reply": res.text[:50], "model": model}
+        prov = settings.provider(key)
+    except KeyError as e:
+        return {"ok": False, "provider": key, "error": str(e).strip("'\"")}
+    if not prov.get("api_key"):
+        return {"ok": False, "provider": key, "error": f"接口 {key} 未配置密钥"}
+    model = payload.get("model") or models.resolve(None, "plan").model
+    try:
+        cli = llm.OpenAICompatClient(prov["base_url"], prov["api_key"], provider=key)
+        res = cli.chat(model=model, provider=key, system="你是连通性测试。",
+                       user="回复：OK", temperature=0.0)
+        return {"ok": True, "provider": key, "reply": res.text[:50], "model": model}
     except Exception as e:
-        return {"ok": False, "error": str(e)[:300]}
+        return {"ok": False, "provider": key, "error": str(e)[:300]}
 
 
 class LintPayload(BaseModel):
@@ -147,25 +224,37 @@ class LintPayload(BaseModel):
     content: str
 
 
+_LINT_LOCK = threading.RLock()
+
+
 @app.get("/api/lint/{which}")
-def get_lint(which: str):
+def get_lint(which: str, response: Response):
     if which not in ("banned_words", "sensitive_words", "dialog_suffix"):
         raise _err(ValueError("非法词库"))
     from .paths import lint_dir
 
     p = lint_dir() / f"{which}.txt"
-    return {"which": which, "content": p.read_text(encoding="utf-8") if p.exists() else ""}
+    exists = p.is_file()
+    resources.expose(response, resources.etag(p))
+    return {"which": which, "exists": exists,
+            "content": p.read_text(encoding="utf-8") if exists else ""}
 
 
 @app.put("/api/lint/{which}")
-def put_lint(which: str, payload: LintPayload):
+def put_lint(which: str, payload: LintPayload, request: Request, response: Response):
     if which not in ("banned_words", "sensitive_words", "dialog_suffix"):
         raise _err(ValueError("非法词库"))
+    if payload.which != which:
+        raise _err(ValueError("路径与 payload 的 which 不一致，拒绝保存"))
     from . import atomic
     from .paths import lint_dir
 
-    atomic.write_text(lint_dir() / f"{which}.txt", payload.content)
-    return {"ok": True}
+    path = lint_dir() / f"{which}.txt"
+    with _LINT_LOCK:
+        resources.check(request.headers.get("if-match"), resources.etag(path))
+        atomic.write_text(path, payload.content)
+        resources.expose(response, resources.etag(path))
+    return {"ok": True, "which": which}
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +268,12 @@ class BookCreate(BaseModel):
     author: str = ""
     platform: str = "番茄"
     chapter_word_range: list[int] | None = None
+    # （规格12 §3）建书即可选型：规划用 deepseek、写作用 gemini 是常见组合。
+    # 只接受五个已知档位；值允许空串（= 该档继续向全局下探）。
+    model_stages: dict[str, str] | None = None
+    # 规格08 §3.2：新 Web 建书显式传 rolling（只初始化空规划元数据，不调用模型）；
+    # 省略保持 legacy，旧 API 调用行为不变。
+    planning_mode: str = "legacy"
 
 
 @app.get("/api/books")
@@ -188,11 +283,18 @@ def list_books():
 
 @app.post("/api/books")
 def create_book(payload: BookCreate):
+    if payload.planning_mode not in ("legacy", "rolling"):
+        raise _err(ValueError("planning_mode 只支持 legacy/rolling"))
     try:
-        return books.create_book(payload.name, genre_template=payload.genre_template,
-                                 target_words=payload.target_words, author=payload.author,
-                                 platform=payload.platform,
-                                 chapter_word_range=payload.chapter_word_range)
+        stages = models.validate_stages(payload.model_stages)
+        result = books.create_book(payload.name, genre_template=payload.genre_template,
+                                   target_words=payload.target_words, author=payload.author,
+                                   platform=payload.platform,
+                                   chapter_word_range=payload.chapter_word_range,
+                                   model_stages=stages or None)
+        if payload.planning_mode == "rolling":
+            planning.enable(payload.name)  # 只加空元数据，零模型调用
+        return result
     except Exception as e:
         raise _err(e)
 
@@ -262,44 +364,68 @@ def overview(book: str):
         c["cost_millicents"] = cost_by_ch.get(c["no"], 0)
         c["cost_cents"] = round(c["cost_millicents"] / 1000)
         c["cost_over_yuan"] = c["cost_millicents"] > 100_000  # 单章 >1 元标黄（验收线）
+    nav = navigation.inspection(book)
+    nav.pop("planned_numbers")
+    try:
+        outline_rows = outline.read_outline(book)["chapter_rows"]
+    except Exception:
+        outline_rows = []
     return {
         "meta": {k: v for k, v in meta.items() if not k.startswith("_")},
         "chapters": chs,
         "cost_total": db.cost_summary(bid),
         "open_conflicts": len(conflicts.list_open(book)),
         "characters": characters.list_characters(book),
-        "outline_rows": outline.read_outline(book)["chapter_rows"],
+        "outline_rows": outline_rows,
         "prompts_source": "book" if (book_dir(book) / "prompts").exists() else "global",
-    }
+    } | nav | progress.derive(book)
 
 
 @app.get("/api/books/{book}/config")
-def get_config(book: str):
-    return books.load_config(book)
+def get_config(book: str, response: Response):
+    resources.expose(response, resources.etag(book_dir(book) / "config.json"))
+    cfg = books.load_config(book)
+    # （规格12 §3）只读派生字段：每档实际生效的模型与来源，供 UI 显示"为什么用这个"。
+    cfg["model_effective"] = models.effective(book, cfg)
+    return cfg
 
 
 @app.put("/api/books/{book}/config")
 @serialized
-def put_config(book: str, payload: dict):
+def put_config(book: str, payload: dict, request: Request, response: Response):
+    path = book_dir(book) / "config.json"
+    resources.check(request.headers.get("if-match"), resources.etag(path))
     cfg = books.load_config(book)
-    cfg.update(payload)
+    body = dict(payload)
+    # 派生字段绝不落盘：前端会把 GET 结果整体 PUT 回来，不剥离就会写进 config.json
+    # （同 outline 剥离 _body/_rhythm 的先例，README 偏差 10）。
+    body.pop("model_effective", None)
+    if "model_stages" in body:
+        body["model_stages"] = models.validate_stages(body["model_stages"])
+    cfg.update(body)
     books.save_config(book, cfg)
+    resources.expose(response, resources.etag(path))
+    cfg["model_effective"] = models.effective(book, cfg)
     return cfg
 
 
 @app.get("/api/books/{book}/meta")
-def get_meta(book: str):
+def get_meta(book: str, response: Response):
+    resources.expose(response, resources.etag(book_dir(book) / "meta.md"))
     return books.read_meta(book)
 
 
 @app.put("/api/books/{book}/meta")
 @serialized
-def put_meta(book: str, payload: dict):
+def put_meta(book: str, payload: dict, request: Request, response: Response):
+    path = book_dir(book) / "meta.md"
+    resources.check(request.headers.get("if-match"), resources.etag(path))
     body = payload.pop("_body", None)
     try:
         books.write_meta(book, payload, body)
     except Exception as e:
         raise _err(e)
+    resources.expose(response, resources.etag(path))
     return books.read_meta(book)
 
 
@@ -312,29 +438,47 @@ class LocationPayload(BaseModel):
     rows: list[dict[str, str]] = []
 
 
+def _bible_etag(book: str) -> str:
+    return resources.etag(book_dir(book) / "STORY_BIBLE.md")
+
+
+def _characters_etag(book: str) -> str:
+    return resources.etag([characters.file_for(book, name)
+                           for name in characters.list_characters(book)])
+
+
+def _outline_etag(book: str) -> str:
+    return resources.etag([book_dir(book) / "OUTLINE.md", book_dir(book) / "PLOT_POINTS.md"])
+
+
 @app.get("/api/books/{book}/bible")
-def get_bible(book: str):
+def get_bible(book: str, response: Response):
+    resources.expose(response, _bible_etag(book))
     return bible.read(book)
 
 
 @app.put("/api/books/{book}/bible")
 @serialized
-def put_bible(book: str, payload: dict):
+def put_bible(book: str, payload: dict, request: Request, response: Response):
+    resources.check(request.headers.get("if-match"), _bible_etag(book))
     try:
         bible.write(book, payload)
     except Exception as e:
         raise _err(e)
+    resources.expose(response, _bible_etag(book))
     return {"ok": True}
 
 
 @app.get("/api/books/{book}/characters")
-def get_characters(book: str):
+def get_characters(book: str, response: Response):
+    resources.expose(response, _characters_etag(book))
     return [characters.read(book, n) for n in characters.list_characters(book)]
 
 
 @app.get("/api/books/{book}/characters/{name}")
-def get_character(book: str, name: str):
+def get_character(book: str, name: str, response: Response):
     try:
+        resources.expose(response, resources.etag(characters.file_for(book, name)))
         return characters.read(book, name)
     except Exception as e:
         raise _err(e, 404)
@@ -342,13 +486,16 @@ def get_character(book: str, name: str):
 
 @app.put("/api/books/{book}/characters/{name}")
 @serialized
-def put_character(book: str, name: str, payload: dict):
+def put_character(book: str, name: str, payload: dict, request: Request, response: Response):
+    path = characters.file_for(book, name)
+    resources.check(request.headers.get("if-match"), resources.etag(path))
     body = payload.pop("_body", None)
     try:
         payload["name"] = name
         characters.write(book, payload, body if body is not None else payload.get("_body", ""))
     except Exception as e:
         raise _err(e)
+    resources.expose(response, resources.etag(path))
     return {"ok": True}
 
 
@@ -363,20 +510,26 @@ def post_character(book: str, payload: dict):
 
 
 @app.get("/api/books/{book}/outline")
-def get_outline(book: str):
+def get_outline(book: str, response: Response):
+    resources.expose(response, _outline_etag(book))
     return outline.read_outline(book)
 
 
 @app.put("/api/books/{book}/outline")
 @serialized
-def put_outline(book: str, payload: dict):
+def put_outline(book: str, payload: dict, request: Request, response: Response):
     """保存大纲（规格01 §2.4）。
 
     前端会把 GET 回来的整个对象原样回传，其中含读接口专用的 `_body`。
     必须剥离，否则会被当成 frontmatter 键写进 OUTLINE.md（污染 YAML）。
     `_rhythm` 前端不提供时沿用文件里已有的「爽点节奏总谱」，避免每次保存
     都把该节重置为「（待规划）」（P0 回归）。
+
+    rolling 书不接受缺规划元数据的旧 payload 覆写整书（规格08 §3.2）：
+    人工编辑转规划页的预览/采纳流程。
     """
+    _reject_rolling(book, "整书大纲直写")
+    resources.check(request.headers.get("if-match"), _outline_etag(book))
     payload.pop("_body", None)
     rows = payload.pop("chapter_rows", [])
     rhythm = payload.pop("_rhythm", None)
@@ -386,11 +539,149 @@ def put_outline(book: str, payload: dict):
         outline.write_outline(book, payload, rows, rhythm)
     except Exception as e:
         raise _err(e)
+    resources.expose(response, _outline_etag(book))
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# 内容规划（规格08 §3.1 阶段B：rolling 书的分层规划入口）
+# ---------------------------------------------------------------------------
+
+def _planning_require_book(book: str) -> None:
+    if not book_dir(book).is_dir():
+        raise HTTPException(status_code=404, detail={"code": "BOOK_NOT_FOUND",
+                                                     "message": f"书不存在: {book}"})
+
+
+def _planning_if_match(request: Request) -> str:
+    """规划写入口必须显式提供 If-Match（规格08 §3.1，不沿用旧端点兼容豁免）。"""
+    value = request.headers.get("if-match")
+    if value is None or not value.strip():
+        raise HTTPException(status_code=428, detail={
+            "code": "PLANNING_VERSION_REQUIRED",
+            "message": "规划写入口必须提供 If-Match（GET /api/books/{book}/planning 的 ETag）"})
+    return value
+
+
+def _reject_rolling(book: str, action: str) -> None:
+    """rolling 书拒绝旧全量写入口（规格08 §3.2 防绕过：不能只靠前端隐藏按钮）。"""
+    try:
+        info = planning.read_planning(book)
+    except planning.PlanningInvalid:
+        return  # 规划元数据读不出时交给后续既有校验，不在这里二次报错
+    if info["mode"] == "rolling":
+        raise HTTPException(status_code=409, detail={
+            "code": "PLANNING_SCOPE_REQUIRED",
+            "message": f"本书已启用内容规划（rolling），{action}必须走规划页局部接口"
+                       f"（/api/books/{book}/planning/*）"})
+
+
+@app.exception_handler(planning.PlanningInvalid)
+async def _planning_error_handler(request: Request, exc: planning.PlanningInvalid) -> JSONResponse:
+    """（规格08 §3.2）规划稳定错误码 → HTTP。"""
+    status = planning.PLANNING_HTTP.get(exc.code, 422)
+    return JSONResponse(status_code=status,
+                        content={"detail": {"code": exc.code, "message": str(exc)}})
+
+
+@app.get("/api/books/{book}/planning")
+def get_planning(book: str, response: Response):
+    """规划读模型（只读）：mode/tree/readiness/保护集/未分配行/估算/下一步。"""
+    _planning_require_book(book)
+    resources.expose(response, planning.version_etag(book))
+    return planning.read_model(book)
+
+
+class PlanningEnablePayload(BaseModel):
+    mode: str = "rolling"
+
+
+@app.post("/api/books/{book}/planning/enable")
+@serialized
+def planning_enable(book: str, payload: PlanningEnablePayload,
+                    request: Request, response: Response):
+    """显式启用内容规划：只加空元数据，保留旧内容，不生成、不自动采纳（§4.2 幂等）。"""
+    _planning_require_book(book)
+    if payload.mode != "rolling":
+        raise _err(ValueError("目前只支持 mode=rolling"))
+    resources.check(_planning_if_match(request), planning.version_etag(book))
+    # PlanningInvalid 交给 app 级 handler 统一映射 {code,message}（规格08 §3.2）
+    model = planning.enable(book)
+    resources.expose(response, planning.version_etag(book))
+    return model
+
+
+class PlanningGeneratePayload(BaseModel):
+    scope: str
+    target: dict[str, Any]
+    requirements: str = ""
+
+
+@app.post("/api/books/{book}/planning/generate")
+def planning_generate(book: str, payload: PlanningGeneratePayload, request: Request):
+    """按作用域生成规划候选（走既有 G5 调用链，generation_log 必记；不写正式规划）。"""
+    _planning_require_book(book)
+    resources.check(_planning_if_match(request), planning.version_etag(book))
+    target = planning.normalize_target(payload.scope, payload.target)
+    gate = planning.generation_gate(book, payload.scope, target)
+    if not gate["allowed"]:
+        raise HTTPException(status_code=planning.PLANNING_HTTP.get(gate["code"], 409),
+                            detail={"code": gate["code"], "message": gate["message"]})
+    input_version = planning.version_etag(book)
+    variables = planning.generate_variables(book, payload.scope, target,
+                                             payload.requirements)
+    try:
+        res, p, _text = pipeline._call(book, None, "planning", "G5", variables)
+    except prompts.PromptError as e:
+        raise _err(e, 404)
+    except Exception as e:
+        raise _err(e, 502)
+    return {"scope": payload.scope, "target": target,
+            "content": res.text, "prompt_id": p.id,
+            "prompt_version": p.fm.get("version"), "prompt_digest": p.digest,
+            "input_version": input_version}
+
+
+class PlanningPreviewPayload(BaseModel):
+    scope: str
+    target: dict[str, Any]
+    content: str
+    input_version: str
+    rebase: bool = False
+
+
+@app.post("/api/books/{book}/planning/preview")
+def planning_preview(book: str, payload: PlanningPreviewPayload, request: Request):
+    """纯计算的规范化候选/影响/preview_digest：不写档、不记凭据、不调模型。"""
+    _planning_require_book(book)
+    resources.check(_planning_if_match(request), planning.version_etag(book))
+    target = planning.normalize_target(payload.scope, payload.target)
+    return planning.compute_preview(book, payload.scope, target, payload.content,
+                                     payload.input_version, payload.rebase)
+
+
+class PlanningAdoptPayload(PlanningPreviewPayload):
+    preview_digest: str
+
+
+@app.post("/api/books/{book}/planning/adopt")
+@serialized
+def planning_adopt(book: str, payload: PlanningAdoptPayload,
+                   request: Request, response: Response):
+    """人工采纳：重算同一预览并比对，写后读回核对（规格08 §3.1/§5）。"""
+    _planning_require_book(book)
+    resources.check(_planning_if_match(request), planning.version_etag(book))
+    target = planning.normalize_target(payload.scope, payload.target)
+    result = planning.adopt_preview(book, payload.scope, target, payload.content,
+                                    payload.input_version, payload.preview_digest,
+                                    payload.rebase)
+    resources.expose(response, planning.version_etag(book))
+    return result
+
+
 @app.get("/api/books/{book}/plot_points")
-def get_pp(book: str):
+def get_pp(book: str, response: Response):
+    resources.expose(response, resources.etag(book_dir(book) / "PLOT_POINTS.md"))
     return outline.read_plot_points(book)
 
 
@@ -410,34 +701,41 @@ def get_pp_overdue(book: str, chapter: int | None = None):
 
 @app.put("/api/books/{book}/plot_points")
 @serialized
-def put_pp(book: str, payload: dict):
+def put_pp(book: str, payload: dict, request: Request, response: Response):
+    path = book_dir(book) / "PLOT_POINTS.md"
+    resources.check(request.headers.get("if-match"), resources.etag(path))
     rows = payload.get("rows", [])
     old = outline.read_plot_points(book)
     errs = outline.validate_transitions(old, rows)
     if errs:
         raise _err(ValueError("状态迁移非法: " + "; ".join(errs)))
     outline.write_plot_points(book, rows)
+    resources.expose(response, resources.etag(path))
     return {"ok": True}
 
 
 @app.get("/api/books/{book}/locations")
-def get_locations(book: str):
+def get_locations(book: str, response: Response):
+    resources.expose(response, resources.etag(book_dir(book) / "LOCATIONS.md"))
     return outline.read_locations(book)
 
 
 @app.put("/api/books/{book}/locations")
 @serialized
-def put_locations(book: str, payload: LocationPayload):
+def put_locations(book: str, payload: LocationPayload, request: Request, response: Response):
     """整表保存地点档案（规格01 §2.6 / 规格04 §1"地点档案可导航可编辑"）。
 
     前端传 5 列表格行；多余键忽略、缺列补空串（由 outline.write_locations 归一化）。
     行内空白「名称」直接丢弃——空名行在档案里没有意义，且会破坏 FTS 关键词抽取。
     """
+    path = book_dir(book) / "LOCATIONS.md"
+    resources.check(request.headers.get("if-match"), resources.etag(path))
     rows = [r for r in payload.rows if str(r.get("名称", "")).strip()]
     try:
         outline.write_locations(book, rows)
     except Exception as e:
         raise _err(e)
+    resources.expose(response, resources.etag(path))
     return {"ok": True}
 
 
@@ -473,6 +771,14 @@ class AIGenPayload(BaseModel):
 
 @app.post("/api/books/{book}/ai/generate")
 def ai_generate(book: str, payload: AIGenPayload):
+    # rolling 书拒绝旧全量 G5（规格08 §3.2：防绕过不能只靠前端隐藏按钮）
+    if payload.prompt_id == "G5":
+        _reject_rolling(book, "旧全量 G5 大纲生成")
+        # legacy 调用补明确作用域变量，不让 G5 v3 的新占位符残留（规格08 §2.4）
+        payload.variables.setdefault(
+            "规划作用域", "legacy：全书大纲（卷规划 + 章节总表 + 伏笔总表 + 节奏总谱四部分）")
+        payload.variables.setdefault(
+            "规划上下文", "旧模式：无滚动规划上下文，按既有四部分结构输出全书大纲")
     try:
         res, p, text = pipeline._call(book, None, "archive", payload.prompt_id,
                                       payload.variables)
@@ -490,8 +796,9 @@ class AdoptPayload(BaseModel):
 
 @app.post("/api/books/{book}/adopt/bible")
 @serialized
-def adopt_bible(book: str, payload: AdoptPayload):
+def adopt_bible(book: str, payload: AdoptPayload, request: Request, response: Response):
     """合并式采纳：G1 整本或 G2 单节都只更新出现的节，其余保留。"""
+    resources.check(request.headers.get("if-match"), _bible_etag(book))
     incoming = bible._parse_sections(payload.content)
     # 剥离一切自检节（G1 的"自检"、G2 的"平衡五问自检"等）
     incoming = {k: v for k, v in incoming.items() if "自检" not in k}
@@ -504,13 +811,17 @@ def adopt_bible(book: str, payload: AdoptPayload):
     sections = bible.read(book)
     sections.update(incoming)
     bible.write(book, sections)
+    resources.expose(response, _bible_etag(book))
     return {"ok": True, "sections": list(sections), "updated": list(incoming)}
 
 
 @app.post("/api/books/{book}/adopt/outline")
 @serialized
-def adopt_outline(book: str, payload: AdoptPayload):
+def adopt_outline(book: str, payload: AdoptPayload, request: Request, response: Response):
     """解析 G5 输出 → OUTLINE.md + PLOT_POINTS.md（伏笔编号自动转 FO-xxx）。
+
+    rolling 书在本函数开头即被拒绝（409 PLANNING_SCOPE_REQUIRED）：整表替换语义
+    只属于 legacy，rolling 必须走 /planning/preview + /planning/adopt 局部采纳。
 
     真实模型的章号/卷号常写成"第1章/第一卷"——采纳时统一归一化为纯数字。
 
@@ -519,48 +830,28 @@ def adopt_outline(book: str, payload: AdoptPayload):
     - 伏笔台账：**合并**。已有内容相同的行保留原编号与原状态/埋设章/推进章，只补空字段；
       新内容才分配新编号（`max(现有FO数字)+1` 递增）；G5 未提及的旧行一律保留。
     - logline：OUTLINE.md 已有非空 logline 时保留，只有为空才用 meta 正文兜底。
-    """
-    from .mdtable import parse_table
 
+    解析与伏笔合并复用 `g5impact`（规格08 A-T04），保证 `/preview/outline` 预告的影响
+    与真实采纳完全同源；预览只读、本函数才落盘。
+    """
+    _reject_rolling(book, "旧全量大纲采纳")
+    resources.check(request.headers.get("if-match"), _outline_etag(book))
     text = payload.content
-    # 章节总表（先解析，卷兜底要用行号范围）
-    _ccols, crows = parse_table(text, "本章目标")
-    norm_rows = []
-    for r in crows:
-        m = re.search(r"\d+", str(r.get("章", "")))
-        if not m:
-            continue
-        vm = re.search(r"\d+", str(r.get("卷", "")))
-        r = dict(r)
-        r["章"] = m.group()
-        if vm:
-            r["卷"] = vm.group()
-        norm_rows.append(r)
+    norm_rows = g5impact.normalize_rows(text)
     if not norm_rows:
         raise _err(ValueError("章节总表未解析到任何有效行"))
     lo, hi = int(norm_rows[0]["章"]), max(int(x["章"]) for x in norm_rows)
 
-    # 卷规划（归一化：卷号抽数字；起止章抽两个数字，缺失则用总表范围）
-    volumes = []
-    _vcols, vrows = parse_table(text, "卷号")
-    for i, r in enumerate(vrows, 1):
-        nums = [int(x) for x in re.findall(r"\d+", str(r.get("起止章", "")))]
-        m = re.search(r"\d+", str(r.get("卷号", "")))
-        ch = (nums + [lo, hi])[:2] if len(nums) >= 2 else [lo, hi]
-        volumes.append({"no": m.group() if m else str(i), "name": r.get("卷名", ""),
-                        "chapters": ch, "core_conflict": r.get("核心冲突", ""),
-                        "goal": r.get("本卷目标", ""), "climax": r.get("卷末高潮", ""),
-                        "hook_out": r.get("卷末钩子(出卷悬念)", "")})
+    volumes = g5impact.normalize_volumes(text, lo, hi)
     if not volumes:
         volumes = [{"no": "1", "name": "", "chapters": [lo, hi], "core_conflict": "",
                     "goal": "", "climax": "", "hook_out": ""}]
 
     # 伏笔总表 → 合并式落盘（FO 编号只增不重编）
-    _fcols, frows = parse_table(text, "编号")
-    fo_rows, id_map, added, kept = _merge_foreshadows(book, frows)
+    frows = g5impact.parse_foreshadows(text)
+    fo_rows, id_map, added, kept = g5impact.merge_foreshadows(book, frows)
 
-    m = re.search(r"(?ms)^##\s*爽点节奏总谱\s*\n(.*?)(?=^##|\Z)", text)
-    rhythm = m.group(1).strip() if m else ""
+    rhythm = g5impact.parse_rhythm(text)
     try:
         old = outline.read_outline(book)
     except Exception:
@@ -577,69 +868,35 @@ def adopt_outline(book: str, payload: AdoptPayload):
     outline.write_outline(book, writing, rows=norm_rows, rhythm=rhythm)
     if fo_rows:
         outline.write_plot_points(book, fo_rows)
+    resources.expose(response, _outline_etag(book))
     return {"ok": True, "volumes": len(volumes), "chapter_rows": len(norm_rows),
             "foreshadows": len(frows), "id_map": id_map,
             "foreshadows_added": added, "foreshadows_kept": kept}
 
 
-def _merge_foreshadows(
-    book: str, frows: list[dict[str, str]],
-) -> tuple[list[dict[str, str]], dict[str, str], int, int]:
-    """把 G5 伏笔行合并进现有台账（规格02 §4 编号自动分配 + 永不静默覆盖）。
+@app.post("/api/books/{book}/preview/outline")
+def preview_outline(book: str, payload: AdoptPayload):
+    """G5 采纳影响预览（规格08 §0.1 08-A03 / §6.2 A-T04）。
 
-    匹配键 = 「内容」文本（去空白）。命中 → 沿用原编号与已有状态/埋设章/推进章/预计回收章，
-    只补空字段；未命中 → 分配 `max(现有FO数字)+1` 递增的新编号。
-
-    返回 (合并后台账行, {G5编号: FO编号}, 新增数, 命中保留数)。
+    **纯计算、不写档、不记凭据、不调用模型**，因此不要求 If-Match（并发写入的
+    最终保护仍由 adopt 的 ETag 校验负责）。返回：
+    - 旧/新 OUTLINE 与 PLOT_POINTS 全文（与落盘同一渲染，供 diff）
+    - 已有正文真实章数（按文件章号去重）与受影响章号交集
+    - 新增/删除/内容变化章号、伏笔新增/保留数
+    - 读不出来的文件给 `None` + 中文 warning，不假计 0
     """
+    if not book_dir(book).is_dir():
+        raise HTTPException(status_code=404, detail={"code": "BOOK_NOT_FOUND",
+                                                     "message": f"书不存在: {book}"})
     try:
-        existing = outline.read_plot_points(book)
-    except FileNotFoundError:
-        # 台账文件缺失（手工删过/老目录升级）：按空台账处理，G5 至少能建起一份
-        existing = []
-    merged = [dict(r) for r in existing]
-    # 内容 → 合并副本（首条优先；空内容不参与匹配，避免互相误吞）
-    by_content: dict[str, dict[str, str]] = {}
-    next_no = 1
-    for row in merged:
-        fid = str(row.get("编号", ""))
-        m = re.search(r"(\d+)", fid)
-        if m:
-            next_no = max(next_no, int(m.group(1)) + 1)
-        content = str(row.get("内容", "")).strip()
-        if content and content not in by_content:
-            by_content[content] = row
-
-    id_map: dict[str, str] = {}
-    added = kept = 0
-    for r in frows:
-        g5_id = str(r.get("编号", "")).strip()
-        content = str(r.get("内容", "")).strip()
-        hit = by_content.get(content) if content else None
-        if hit is not None:
-            # 已有：保留原编号/状态/章次，只补空字段
-            for col in ("埋设章", "推进章", "预计回收章", "备注"):
-                if not str(hit.get(col, "")).strip() and str(r.get(col, "")).strip():
-                    hit[col] = r.get(col, "")
-            id_map[g5_id] = str(hit.get("编号", ""))
-            kept += 1
-            continue
-        new_id = f"FO-{next_no:03d}"
-        next_no += 1
-        row = {"编号": new_id, "内容": content, "埋设章": r.get("埋设章", ""),
-               "推进章": r.get("推进章", ""), "预计回收章": r.get("预计回收章", ""),
-               "状态": "planted", "备注": r.get("备注", "")}
-        merged.append(row)
-        if content:
-            by_content[content] = row
-        id_map[g5_id] = new_id
-        added += 1
-    return merged, id_map, added, kept
+        return g5impact.preview(book, payload.content)
+    except ValueError as e:
+        raise _err(e, 422)
 
 
 @app.post("/api/books/{book}/adopt/characters")
 @serialized
-def adopt_characters(book: str, payload: AdoptPayload):
+def adopt_characters(book: str, payload: AdoptPayload, request: Request, response: Response):
     """解析 G3/G4 输出（===角色:<名>=== 分卡）→ 建角色档案 + 关系网合并写回。
 
     规格02 §4：G4「结果合并写回各角色的『关系网络』节」。原实现对已存在角色直接
@@ -647,6 +904,7 @@ def adopt_characters(book: str, payload: AdoptPayload):
     没有 `## 关系网络` 节标题，`characters.relationships()` 读不到。
     现在：已存在角色 → 只把关系行合并进其关系网络节；新角色 → 建卡 + 写节。
     """
+    resources.check(request.headers.get("if-match"), _characters_etag(book))
     cards = re.split(r"(?m)^===\s*角色[:：]\s*(.+?)\s*===\s*$", payload.content)
     created: list[str] = []
     updated: list[str] = []
@@ -671,6 +929,7 @@ def adopt_characters(book: str, payload: AdoptPayload):
             rel_added[name] = n
             if name not in created:
                 updated.append(name)
+    resources.expose(response, _characters_etag(book))
     return {"ok": True, "created": created, "updated": updated,
             "relationship_rows_added": rel_added}
 
@@ -746,8 +1005,18 @@ def _find_rel_table(card: str) -> str:
 
 @app.get("/api/books/{book}/chapters/{no}")
 def chapter_workbench(book: str, no: int):
-    result: dict[str, Any] = {"no": no}
-    row = statemachine.get_row(book, no)
+    if no < 1:
+        raise HTTPException(status_code=422, detail={"code": "CHAPTER_NO_INVALID",
+                                                     "message": "章号必须是正整数"})
+    if not book_dir(book).is_dir():
+        raise HTTPException(status_code=404, detail={"code": "BOOK_NOT_FOUND",
+                                                     "message": f"书不存在: {book}"})
+    result: dict[str, Any] = {"no": no} | navigation.workbench_fields(book, no)
+    try:
+        row = statemachine.get_row(book, no)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail={"code": "BOOK_NOT_FOUND",
+                                                     "message": str(error) or f"书不存在: {book}"}) from error
     result["row"] = row
     result["status"] = row["status"] if row else "awaiting_outline"
     try:
@@ -780,10 +1049,13 @@ def chapter_workbench(book: str, no: int):
 
 
 @app.get("/api/books/{book}/chapters/{no}/outline/raw")
-def get_outline_raw(book: str, no: int):
+def get_outline_raw(book: str, no: int, response: Response):
+    if no < 1:
+        raise HTTPException(status_code=422, detail="章号必须是正整数")
     p = chapters.outline_path(book, no)
     if not p.exists():
         raise _err(FileNotFoundError("细纲未生成"), 404)
+    resources.expose(response, resources.etag(p))
     return {"content": p.read_text(encoding="utf-8")}
 
 
@@ -795,7 +1067,10 @@ class OutlineEditPayload(BaseModel):
 
 @app.put("/api/books/{book}/chapters/{no}/outline")
 @chapter_serialized
-def edit_outline_file(book: str, no: int, payload: OutlineEditPayload):
+def edit_outline_file(book: str, no: int, payload: OutlineEditPayload,
+                      request: Request, response: Response):
+    path = chapters.outline_path(book, no)
+    resources.check(request.headers.get("if-match"), resources.etag(path))
     st = statemachine.current_status(book, no)
     if st not in ("awaiting_outline", "outline_draft", "error"):
         raise _err(statemachine.StateError(
@@ -813,12 +1088,17 @@ def edit_outline_file(book: str, no: int, payload: OutlineEditPayload):
         chapters.write_outline_contract(book, no, fm, payload.body)
     except Exception as e:
         raise _err(e)
+    resources.expose(response, resources.etag(path))
     return {"ok": True}
 
 
 @app.post("/api/books/{book}/chapters/{no}/outline/generate")
 def gen_outline(book: str, no: int):
+    if no < 1:
+        raise HTTPException(status_code=422, detail={"code": "CHAPTER_NO_INVALID",
+                                                     "message": "章号必须是正整数"})
     try:
+        navigation.require_generation(book, no)
         fm = pipeline.generate_outline(book, no)
         return {"ok": True, "outline": fm}
     except Exception as e:
@@ -1623,9 +1903,11 @@ class ResolvePayload(BaseModel):
 def resolve_conflict(conflict_id: int, payload: ResolvePayload):
     try:
         item = conflicts.resolve(conflict_id, payload.action, payload.manual_value)
-    except Exception as e:
+    except KeyError as e:
         raise _err(e, 404)
-    return {"ok": True, "item": item}
+    except Exception as e:
+        raise _err(e, 500)
+    return {"ok": True, "item": item, "effect": item["effect"]}
 
 
 # ---------------------------------------------------------------------------

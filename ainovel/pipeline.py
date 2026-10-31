@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from . import (assembler, bible, books, chapters, characters, conflicts, db,
-               fts, frontmatter as FM, llm, mechcheck, outline, prompts,
+               fts, frontmatter as FM, llm, mechcheck, models, outline, prompts,
                settings, statemachine, summaries)
 from .memory_commit import memory_commit
 from .operations import chapter_serialized as serialized
@@ -53,23 +53,28 @@ class FixIneffective(FixOverreach):
 def _call(
     book: str, no: int | None, stage: str, prompt_id: str,
     variables: dict[str, Any], client=None, stream_cb: Callable[[str], None] | None = None,
-    extra_instruction: str = "",
+    extra_instruction: str = "", retry: bool = True,
 ) -> tuple[Any, Any, str]:
-    """（规格06 §5）实际请求先落证据，再调用；模板摘要与组合摘要分别记录。"""
+    """（规格06 §5、规格11 §3）请求先落证据；故事候选可显式禁止客户端重试。"""
     from uuid import uuid4
 
     from . import atomic
     from .paths import data_dir
 
+    from . import draftcontext
+
+    draftcontext.before_call(book, no, stage)
     cfg = books.load_config(book)
     p = prompts.get(prompt_id, book)
     request = assembler.render_request(book, prompt_id, variables, extra_instruction)
-    model = (settings.load().get("default_model") or ""
-             or cfg.get("model_stages", {}).get(p.fm.get("model_stage"), "deepseek-chat"))
+    # （规格12 §2.3）唯一解析入口：书级档位优先，全局只做兜底。
+    # 记录值直接取自 ModelRef，不再二次计算——否则 log 里的 model 会和真实请求分叉。
+    ref = models.resolve(book, p.fm.get("model_stage"), cfg)
+    model = ref.model
     temperature = float(p.fm.get("temperature", 0.7))
     request_id = str(uuid4())
-    meta = dict(request["meta"], request_id=request_id, model=model, temperature=temperature,
-                book=book, chapter_no=no, stage=stage)
+    meta = dict(request["meta"], request_id=request_id, model=model, model_source=ref.source,
+                temperature=temperature, book=book, chapter_no=no, stage=stage)
     record = {"request_id": request_id, "system": request["system"], "user": request["user"], "meta": meta}
     atomic.write_text(data_dir() / "assembly_previews" / book / "requests" / f"{request_id}.json",
                       json.dumps(record, ensure_ascii=False, indent=2))
@@ -77,24 +82,36 @@ def _call(
     log_id = db.log_generation(
         book_id=books.book_id(book), chapter_no=no, stage=stage, prompt_id=prompt_id,
         prompt_version=str(p.fm.get("version")), prompt_digest=p.digest, model=model,
+        provider=ref.provider, model_source=ref.source,
         request_id=request_id, request_meta=meta, status="error", error="请求已准备，结果尚未确认")
-    cli = client or llm.client()
+    # （规格13 §2.3）按解析出的端点选连接；显式注入的 client（测试/批产包装）优先。
+    cli = client or llm.client(ref.provider)
     try:
-        res = cli.chat(model=model, system=request["system"], user=request["user"],
-                       temperature=temperature, stream_cb=stream_cb)
-        cost_mc = settings.cost_millicents(model, res.input_tokens, res.output_tokens)
+        res = cli.chat(model=model, provider=ref.provider, system=request["system"],
+                       user=request["user"], temperature=temperature, stream_cb=stream_cb,
+                       **({"retry": False, "require_complete": True} if not retry else {}))
+        cost_mc = settings.cost_millicents(model, res.input_tokens, res.output_tokens,
+                                           provider=ref.provider)
+        if getattr(res, "cached_response", None):
+            meta["execution"] = "prepared_checkpoint_cache"
+            meta["cache_key"] = res.cached_response
+            record["meta"] = meta
+            atomic.write_text(data_dir() / "assembly_previews" / book / "requests" / f"{request_id}.json", json.dumps(record, ensure_ascii=False, indent=2))
         with db.tx() as conn:
             conn.execute("UPDATE generation_log SET input_tokens=?, output_tokens=?, cost_cents=?, "
                          "cost_millicents=?, status='ok', error=NULL WHERE id=?",
                          (res.input_tokens, res.output_tokens, round(cost_mc / 1000), cost_mc, log_id))
+            if getattr(res, "cached_response", None):
+                conn.execute("UPDATE generation_log SET request_meta_json=? WHERE id=?", (json.dumps(meta, ensure_ascii=False), log_id))
         res.request_id = request_id
         res.request_meta = meta
         return res, p, request["user"]
     except Exception as error:
-        # 不把供应商回显的连接配置、认证信息或正文放进错误日志。
+        # 不把供应商回显的连接配置、认证信息或正文放进错误日志；
+        # 但状态码与错误码必须留下，否则"模型不存在"和"超时"在日志里长得一样。
         with db.tx() as conn:
             conn.execute("UPDATE generation_log SET status='error', error=? WHERE id=?",
-                         (f"请求未完成：{type(error).__name__}", log_id))
+                         (f"请求未完成：{llm.error_brief(error)}", log_id))
         raise
 
 
@@ -110,6 +127,11 @@ def _feedback_instruction(error: str) -> str:
 @serialized
 def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
     conflicts.guard(book)  # 台账冲突队列非空 → 禁止开下一章细纲
+    # 规格08 §3.2：rolling 书独立重查规划链就绪（不依赖前端/预检缓存）
+    from . import navigation as _nav
+    gate = _nav.planning_gate(book, no)
+    if not gate["allowed"]:
+        raise PipelineError(gate["message"] or "规划门禁未通过")
     statemachine.ensure_chapter_row(book, no)
     st = statemachine.current_status(book, no)
     if st == "error":
@@ -187,6 +209,7 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
         "章号": str(no),
         "总章数": str(outline.total_chapters(book) or no + 9),
         "字数区间": f"{wr[0]}-{wr[1]}",
+        "批次计划说明": "单章实时输入：档案为正式档案；上章结尾仅使用真实正文，缺失时不伪造原文。",
     }
 
     recent_rhythm: list[dict[str, Any]] = []
@@ -200,6 +223,10 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
                               "hook": previous_contract.get("hook"),
                               "emotion_task": previous_contract.get("emotion_task")})
     variables["最近三章节奏"] = json.dumps(recent_rhythm, ensure_ascii=False)
+
+    # 规格08 §2.4/§3.4：G6 v5 新增「所属剧情单元」「本章规划边界」。
+    # rolling 书只装配当前单元闭包（不整读所有单元）；legacy 书补明确说明，不猜造单元。
+    variables["所属剧情单元"], variables["本章规划边界"] = _planning_closure(book, no, od)
     feedback = ""
     fm2: dict[str, Any] | None = None
     body2 = ""
@@ -225,6 +252,82 @@ def generate_outline(book: str, no: int, client=None) -> dict[str, Any]:
     chapters.write_outline_contract(book, no, fm2, body2)
     statemachine.transition(book, no, "generate_outline")
     return fm2
+
+
+def prepare_outline(book: str, no: int, *, projection: dict[str, Any],
+                    previous_contracts: list[dict[str, Any]], client=None) -> dict[str, Any]:
+    """（规格10 §2.3/§4）内存候选 G6，不写档、不迁移状态、不伪装人工采纳。"""
+    from . import draftcontext, volumeproduction
+
+    conflicts.guard(book)
+    od = projection["outline"]
+    row = next((r for r in od.get("chapter_rows") or [] if outline._row_no(r.get("章")) == no), None)
+    if row is None:
+        raise PipelineError(f"候选章纲缺第{no}章")
+    previous = []
+    for item in previous_contracts:
+        contract = item.get("fm", item)
+        if type(contract.get("chapter_no")) is not int or contract["chapter_no"] >= no:
+            raise PipelineError("计划承接含当前/未来合同")
+        previous.append(contract)
+    previous.sort(key=lambda contract: contract["chapter_no"])
+    prior = next((contract for contract in previous if contract["chapter_no"] == no - 1), {})
+    if not prior and no > 1 and chapters.outline_path(book, no - 1).exists():
+        prior = chapters.read_outline_contract(book, no - 1)
+    plots = projection["plot_rows"]
+    for contract in previous:
+        plots = draftcontext.apply_fo_ops(plots, contract.get("foreshadow_ops") or [], contract["chapter_no"])
+    actual_ending = ""
+    if no > 1 and not any(contract["chapter_no"] == no - 1 for contract in previous):
+        if chapters.prose_path(book, no - 1).exists():
+            actual_ending = chapters.read_prose(book, no - 1)["_body"].strip()[-600:]
+    vol = next((v for v in od.get("volumes") or [] if v.get("chapters")
+                and v["chapters"][0] <= no <= v["chapters"][1]), {})
+    unit = next((u for u in od.get("planning", {}).get("units") or []
+                 if u.get("chapters") and u["chapters"][0] <= no <= u["chapters"][1]), {})
+    wr = books.load_config(book)["chapter_word_range"]
+    variables = {
+        "全局大纲该章行": json.dumps(row, ensure_ascii=False),
+        "所属卷目标": json.dumps(vol, ensure_ascii=False),
+        "所属剧情单元": json.dumps(unit, ensure_ascii=False),
+        "本章规划边界": json.dumps({k: unit.get(k) for k in ("can_reveal", "must_hold")}, ensure_ascii=False),
+        "上一章钩子": str((prior.get("hook") or {}).get("content") or "（无前章钩子）"),
+        "上一章钩子类型": str((prior.get("hook") or {}).get("type") or "无"),
+        "上一章结尾原文": actual_ending or "（尚无已写原文；仅依据批次计划说明设计预期承接）",
+        "上一章场景结构": json.dumps(prior.get("scenes") or [], ensure_ascii=False),
+        "出场角色状态": json.dumps({name: {key: card.get(key) for key in ("role", "status")}
+                                    for name, card in projection["characters"].items()}, ensure_ascii=False),
+        "活跃伏笔线程": json.dumps([r for r in plots if r.get("状态") != "paid"], ensure_ascii=False),
+        "最近三章节奏": json.dumps(previous[-3:], ensure_ascii=False),
+        "章号": str(no), "总章数": str(max([outline._row_no(r.get("章")) or 0 for r in od["chapter_rows"]] + [no])),
+        "字数区间": f"{wr[0]}-{wr[1]}",
+        "批次计划说明": "卷准备阶段：全部上游为内存候选，未采纳、未确认。以下是前章计划合同而非已写原文："
+            + json.dumps(prior, ensure_ascii=False),
+    }
+    if "〖批次计划说明〗" not in prompts.get("G6", book).body:
+        raise PipelineError("PROMPT_UPGRADE_REQUIRED: G6 书级覆盖缺少批次计划说明")
+    feedback = ""
+    for _attempt in range(3):
+        res, _p, _t = _call(book, no, "outline", "G6", variables, client=client, extra_instruction=feedback)
+        try:
+            if res.finish_reason in ("length", "max_tokens", "max_output_tokens"):
+                raise PipelineError("G6 输出截断")
+            block = _extract_contract_block(res.text)
+            if block is None:
+                raise PipelineError("G6 缺少合同")
+            raw, _body = FM.parse("---\n" + block[0] + "\n---\n" + block[1])
+            if raw.get("chapter_no") != no or raw.get("confirmed") is not False:
+                raise PipelineError("G6 章号不一致或 confirmed 不是 false")
+            if not isinstance(raw.get("foreshadow_ops"), list):
+                raise PipelineError("G6 foreshadow_ops 必须为操作对象列表，不能静默丢弃")
+            fm, body = _parse_outline_output(res.text, no)
+            fm["word_range"] = list(wr)
+            volumeproduction.validate_contract(book, fm, body, no, projection, plots,
+                                               str((prior.get("hook") or {}).get("type") or ""))
+            return {"no": no, "fm": fm, "body": body}
+        except (FM.FrontmatterError, PipelineError, draftcontext.DraftContextError, ValueError) as error:
+            feedback = _feedback_instruction(str(error))
+    raise PipelineError(f"第{no}章候选细纲三次未通过校验：{feedback}")
 
 
 def _parse_outline_output(text: str, no: int) -> tuple[dict[str, Any], str]:
@@ -935,6 +1038,9 @@ def _check(book: str, no: int, wr: list[int] | None) -> mechcheck.CheckResult:
         from . import state as state_mod
 
         ctx = state_mod.mech_context(book, no)
+        from . import draftcontext
+
+        ctx = draftcontext.mech_context(book, no, ctx)
         ctx["timeline_hits"] = timeline_validate(book, prose["_body"])
     except Exception as e:  # 上下文取不到 → 让 M-13~M-17 如实报"未查"，不当成通过
         logger.warning("第%s章状态/时间线上下文读取失败: %s", no, e)
@@ -1174,13 +1280,21 @@ def build_suspect_list(book: str, no: int) -> str:
             try:
                 d = characters.read(book, name)
                 st = d.get("status", {})
+                from . import draftcontext
+
+                batch = draftcontext.current(book, no)
+                if batch is not None:
+                    st = batch["statuses"].get(name, st)
                 have = f"境界={st.get('realm','')}｜位置={st.get('location','')}｜伤势={st.get('injuries',[])}"
                 lines.append(f"[状态diff] {name}：细纲要求进入状态「{want}」，档案当前：{have}——请核对正文是否完成该状态迁移")
             except Exception:
                 lines.append(f"[缺档案] 角色 {name} 在细纲出场但 characters/ 无档案")
 
     # 伏笔编号核对
-    rows = {r.get("编号"): r for r in outline.read_plot_points(book)}
+    from . import draftcontext
+
+    batch = draftcontext.current(book, no)
+    rows = {r.get("编号"): r for r in (batch["plot_rows"] if batch is not None else outline.read_plot_points(book))}
     for op in contract.get("foreshadow_ops") or []:
         fo_id, kind = op.get("fo_id", ""), op.get("op", "")
         row = rows.get(fo_id)
@@ -1412,19 +1526,24 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
     prose = chapters.read_prose(book, no)
     _assert_current_check(book, no, prose["_body"])
     contract = chapters.read_outline_contract(book, no)
+    from . import draftcontext
+
+    batch = draftcontext.current(book, no)
     variables = {
         "系统段": assembler.render_system(book),
         "正文": prose["_body"],
         "章合同": assembler._render_contract(contract),
         "疑似冲突清单": build_suspect_list(book, no),
         "台账摘要": "\n".join(
-            f"{r.get('编号')}[{r.get('状态')}] {r.get('内容','')}" for r in outline.read_plot_points(book)
+            f"{r.get('编号')}[{r.get('状态')}] {r.get('内容','')}" for r in (batch["plot_rows"] if batch is not None else outline.read_plot_points(book))
         ) or "（台账为空）",
         "字数区间": f"{wr[0]}-{wr[1]}",
         "程序字数": str(mechcheck.count_words(prose["_body"])),
         "文风要点": _style_points(book),
         "检测器结果": _deslop_brief(prose["_body"]),
         "时间线约束": _timeline_constraints(book, no),
+        "批次临时上下文": draftcontext.evidence(batch) or "（单章调用，无批次临时事实）",
+        "上一章结尾原文": (batch["previous_body"].strip()[-600:] if batch is not None else "") or "（本次未提供）",
     }
 
     result: dict[str, Any] | None = None
@@ -1433,6 +1552,8 @@ def run_llm_review(book: str, no: int, client=None) -> dict[str, Any]:
         res, _p, _t = _call(book, no, "review", "V1", variables, client=client,
                             extra_instruction=feedback)
         try:
+            if res.finish_reason in ("length", "max_tokens", "max_output_tokens"):
+                raise llm.LLMError("V1 输出截断，不能当作完整审校")
             candidate = _validate_review(llm.extract_json(res.text))
             result = candidate
             break
@@ -1925,6 +2046,9 @@ def writeback_memory(book: str, no: int, client=None) -> dict[str, Any]:
 
 def _extract_memory(book: str, no: int, prose: dict[str, Any], client=None) -> dict[str, Any]:
     """（规格03 §2.7）只抽取并校验，不改档案；重试调用照常记账。"""
+    from . import draftcontext
+
+    batch = draftcontext.current(book, no)
     variables = {
         "正文": prose["_body"],
         "章号": str(no),
@@ -1932,7 +2056,7 @@ def _extract_memory(book: str, no: int, prose: dict[str, Any], client=None) -> d
         # 只给"本章之前已埋设"的伏笔：补做历史章时若把未来的编号给模型，
         # 它会写出"第 8 章推进第 12 章的伏笔"这种时序错误
         "活跃伏笔编号清单": "\n".join(
-            f"{r.get('编号')}[{r.get('状态')}]" for r in outline.active_foreshadows(book)
+            f"{r.get('编号')}[{r.get('状态')}]" for r in (batch["plot_rows"] if batch is not None else outline.active_foreshadows(book))
             if str(r.get("埋设章", "") or "").strip().isdigit()
             and int(str(r.get("埋设章")).strip()) <= no
         ) or "（无）",
@@ -1942,6 +2066,8 @@ def _extract_memory(book: str, no: int, prose: dict[str, Any], client=None) -> d
         res, _p, _t = _call(book, no, "memory", "V4", variables, client=client,
                             extra_instruction=feedback)
         try:
+            if res.finish_reason in ("length", "max_tokens", "max_output_tokens"):
+                raise llm.LLMError("V4 输出截断，不能作为完整记忆")
             candidate = llm.extract_json(res.text)
             if not isinstance(candidate, dict):
                 raise llm.LLMError("V4 必须输出 JSON 对象")
@@ -2145,3 +2271,50 @@ def audit_volume(book: str, last_chapter: int, client=None) -> dict[str, Any]:
                            "description": f"卷{vol_no} 审计报告", "suggestion": ""}],
                   verdict="pass")
     return {"report_path": str(path), "foreshadow_pay_rate": rate}
+
+
+def _planning_closure(book: str, no: int, od: dict[str, Any]) -> tuple[str, str]:
+    """（规格08 §3.4）G6 的最小规划闭包：当前单元详情 + 本章边界。
+
+    只装配**当前章所属单元**，不整读所有卷和单元；legacy 书返回明确的无单元说明，
+    不猜造。`od` 为已读的 OUTLINE frontmatter（含 planning 时）。
+    """
+    from . import planning as _planning
+
+    try:
+        info = _planning.read_planning(book)
+    except _planning.PlanningInvalid:
+        info = {"mode": "legacy", "planning": None}
+    if info["mode"] != "rolling":
+        return ("旧模式无单元：按既有章纲/卷目标执行，不猜造剧情单元。",
+                "旧模式：无单元信息边界，按既有章纲与已写事实控制信息释放。")
+
+    units = info["planning"].get("units") or []
+    unit = next((u for u in units
+                 if (u.get("chapters") or [0, 0])[0] <= no <= (u.get("chapters") or [0, 0])[-1]),
+                None)
+    if unit is None:
+        return ("本章未映射到剧情单元（规划页尚未采纳本批次章纲）；按既有章纲执行。",
+                "无单元边界信息；只依据已写事实与既有章纲。")
+
+    lines = [
+        f"单元「{unit.get('name') or unit.get('id')}」（第 {unit.get('chapters')} 章，规划而非已写事实）",
+        f"- 单元目标：{unit.get('goal') or '（未填）'}",
+        f"- 主要阻力：{unit.get('obstacle') or '（未填）'}",
+        f"- 关键选择：{'；'.join(unit.get('choices') or []) or '（未填）'}",
+        f"- 收束结果（计划）：{unit.get('outcome') or '（未填）'}",
+        f"- 可释放信息：{'；'.join(unit.get('can_reveal') or []) or '（无）'}",
+        f"- 必须保留（不得提前释放）：{'；'.join(unit.get('must_hold') or []) or '（无）'}",
+        "- 相邻单元信息不在本次上下文，不得引用其未释放内容",
+    ]
+    unit_text = "\n".join(lines)
+    rhythm = _planning.rhythm_batch(str(od.get("_rhythm") or ""),
+                                    str(unit.get("id")),
+                                    (unit.get("chapters") or [no, no])[0],
+                                    (unit.get("chapters") or [no, no])[-1])
+    boundary = (
+        f"本章属单元 {unit.get('id')} 第 {no} 章。"
+        f"单元节奏说明（已采纳批次小节）：{rhythm or '（无）'}。"
+        "「必须保留」信息一律不得在本章泄露；未来设定/角色建议不得冒充已确认世界。"
+    )
+    return unit_text, boundary

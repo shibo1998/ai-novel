@@ -1,0 +1,50 @@
+ M AGENTS.md
+ M README.md
+ M ainovel/api.py
+ M ainovel/books.py
+ M ainovel/characters.py
+ M ainovel/conflicts.py
+ M "docs/specs/04-UI\344\270\216\351\252\214\346\224\266\350\247\204\346\240\274.md"
+ M "docs/specs/05-\350\203\275\345\212\233\350\241\245\351\275\220\350\247\204\346\240\274.md"
+ M "docs/\344\275\277\347\224\250\346\211\213\345\206\214.md"
+ M "docs/\345\212\237\350\203\275\350\223\235\345\233\276\344\270\216\345\267\256\350\267\235.md"
+ M web/package.json
+ M web/scripts/test-spec06-ui.mjs
+ M web/src/App.vue
+ M web/src/api/client.ts
+ M web/src/api/index.ts
+ M web/src/api/types.ts
+ M web/src/components.d.ts
+ M web/src/router/index.ts
+ M web/src/stores/book.ts
+ M web/src/styles/main.scss
+ M web/src/utils/archiveAI.ts
+ M web/src/utils/status.ts
+ M web/src/views/ArchiveView.vue
+ M web/src/views/ConflictsView.vue
+ M web/src/views/OverviewView.vue
+ M web/src/views/SettingsView.vue
+ M web/src/views/ShelfView.vue
+ M web/src/views/StateView.vue
+ M web/src/views/WorkbenchView.vue
+?? .pi/
+?? ainovel/navigation.py
+?? ainovel/progress.py
+?? ainovel/resources.py
+?? docs/WORKFLOW.md
+?? "docs/specs/07-\345\211\215\347\253\257\344\275\223\351\252\214\346\225\264\346\224\271\350\247\204\346\240\274.md"
+?? "docs/specs/08-\345\206\205\345\256\271\350\247\204\345\210\222\344\270\216\351\252\214\346\224\266\350\241\245\351\275\220\350\247\204\346\240\274.md"
+?? docs/templates/
+?? "docs/\350\247\204\346\240\27407\345\256\236\346\226\275\351\252\214\346\224\266.md"
+?? tests/test_spec07_regressions.py
+?? web/scripts/test-spec07-ui.mjs
+?? web/src/components/ArchiveAI.vue
+?? web/src/components/ChapterSelect.vue
+?? web/src/components/MdView.vue
+?? web/src/components/SessionCenter.vue
+?? web/src/utils/conflicts.ts
+?? web/src/utils/editing.ts
+?? web/src/utils/errors.ts
+?? web/src/utils/prose.ts
+?? web/src/utils/stream.ts
+?? web/src/utils/tasks.ts

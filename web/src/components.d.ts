@@ -11,7 +11,9 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    ArchiveAI: typeof import('./components/ArchiveAI.vue')['default']
     AssemblyPreview: typeof import('./components/AssemblyPreview.vue')['default']
+    ChapterSelect: typeof import('./components/ChapterSelect.vue')['default']
     DiffViewer: typeof import('./components/DiffViewer.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElBadge: typeof import('element-plus/es')['ElBadge']
@@ -24,6 +26,10 @@ declare module 'vue' {
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
     ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDivider: typeof import('element-plus/es')['ElDivider']
+    ElDropdown: typeof import('element-plus/es')['ElDropdown']
+    ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
+    ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']
+    ElEmpty: typeof import('element-plus/es')['ElEmpty']
     ElForm: typeof import('element-plus/es')['ElForm']
     ElFormItem: typeof import('element-plus/es')['ElFormItem']
     ElInput: typeof import('element-plus/es')['ElInput']
@@ -35,7 +41,9 @@ declare module 'vue' {
     ElRadio: typeof import('element-plus/es')['ElRadio']
     ElRadioButton: typeof import('element-plus/es')['ElRadioButton']
     ElRadioGroup: typeof import('element-plus/es')['ElRadioGroup']
+    ElResult: typeof import('element-plus/es')['ElResult']
     ElSelect: typeof import('element-plus/es')['ElSelect']
+    ElSkeleton: typeof import('element-plus/es')['ElSkeleton']
     ElSwitch: typeof import('element-plus/es')['ElSwitch']
     ElTable: typeof import('element-plus/es')['ElTable']
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
@@ -44,9 +52,16 @@ declare module 'vue' {
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTree: typeof import('element-plus/es')['ElTree']
     MdTableEditor: typeof import('./components/MdTableEditor.vue')['default']
+    MdView: typeof import('./components/MdView.vue')['default']
+    ModelSelect: typeof import('./components/ModelSelect.vue')['default']
     PolishPanel: typeof import('./components/PolishPanel.vue')['default']
+    ProductionProgress: typeof import('./components/ProductionProgress.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SessionCenter: typeof import('./components/SessionCenter.vue')['default']
+    StoryIdeaPicker: typeof import('./components/StoryIdeaPicker.vue')['default']
     StyleEditor: typeof import('./components/StyleEditor.vue')['default']
+    VolumePlanPreview: typeof import('./components/VolumePlanPreview.vue')['default']
+    VolumeReviewPanel: typeof import('./components/VolumeReviewPanel.vue')['default']
   }
 }

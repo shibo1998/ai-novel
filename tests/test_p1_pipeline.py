@@ -37,7 +37,7 @@ class _ScriptedReview(MockLLM):
         self.payload = payload
         self.review_calls = 0
 
-    def chat(self, *, model, system, user, temperature, stream_cb=None):
+    def chat(self, *, model, system, user, temperature, stream_cb=None, provider=None):
         if "五维审校" in user or "评分锚点" in user or "复审指令" in user:
             self.review_calls += 1
             self.calls.append({"model": model, "system": system, "user": user})
@@ -150,7 +150,7 @@ class TestFinalizedGuard:
 class _WriteThenFail(MockLLM):
     """先流式吐出一些内容，再模拟连接中断。"""
 
-    def chat(self, *, model, system, user, temperature, stream_cb=None):
+    def chat(self, *, model, system, user, temperature, stream_cb=None, provider=None):
         if "本章上下文" in user or "黄金三章" in user:
             if stream_cb:
                 stream_cb("林寒走进青云坊，四周人声嘈杂。" * 40)

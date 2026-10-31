@@ -94,6 +94,9 @@ def render(prompt_id: str, variables: dict[str, Any], book: str | None = None) -
     """（规格06 §5.2）只渲染body；完整文件仍用于编辑和历史digest。"""
     p = get(prompt_id, book)
     text = p.body
+    # 规格11 §2：T1新增的可选模式仅给本ID补默认，旧报告必填仍严格。
+    if prompt_id == "T1":
+        variables = {"输出模式": "选题六问报告", "作者偏好": "无额外偏好", "既有候选摘要": "[]"} | variables
     missing: set[str] = set()
 
     def repl(m: re.Match) -> str:

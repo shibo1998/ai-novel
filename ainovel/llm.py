@@ -17,7 +17,10 @@ from . import settings
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT_SECONDS = 300.0
+TIMEOUT_SECONDS = 300.0        # 单次读写超时（两次收到数据之间）
+# 整次调用上限。httpx 的 timeout 只管"两次收到数据之间"：服务端只要持续发心跳或
+# 思考分片，一次调用就能无限期挂着——批量生产里表现为"任务一直卡着、界面无进展"。
+MAX_CALL_SECONDS = 600.0
 RETRY_BASE_DELAY = 1.0
 MAX_RETRIES = 3
 
@@ -29,29 +32,63 @@ class LLMResult:
     output_tokens: int
     finish_reason: str = "stop"
     model: str = ""
+    provider: str = ""
+    stream_complete: bool = True
 
 
 class LLMError(Exception):
     pass
 
 
+# 供应商错误码白名单：只放行这些可公开的诊断码，其余响应体一律不透传
+# （响应体可能回显连接配置、认证信息或提示词内容）。
+_SAFE_ERROR_CODES = frozenset({
+    "model_not_found", "invalid_api_key", "insufficient_quota", "invalid_request_error",
+    "context_length_exceeded", "rate_limit_exceeded", "content_filter", "authentication_error",
+})
+_HTTP_STATUS_RE = re.compile(r"HTTP (\d{3})")
+_ERROR_CODE_RE = re.compile(r'"code"\s*:\s*"([A-Za-z0-9_.\-]{1,40})"')
+
+
+def error_brief(error: BaseException) -> str:
+    """把异常压成"可诊断但不泄密"的短摘要，供错误消息与 generation_log 使用。
+
+    （规格11 §3、规格12）改前上层只记 `type(error).__name__`，用户看到的是
+    "选题请求未完成"这种通用话，日志里也只有 `LLMError`——模型名不存在（中转站 503
+    `model_not_found`）和网络超时长得一模一样，无从判断。这里只保留 HTTP 状态码与
+    白名单错误码，够定位、又不把响应体原文写进日志。
+    """
+    text = str(error)
+    parts: list[str] = []
+    status = _HTTP_STATUS_RE.search(text)
+    if status:
+        parts.append(f"HTTP {status.group(1)}")
+    code = _ERROR_CODE_RE.search(text)
+    if code and code.group(1).lower() in _SAFE_ERROR_CODES:
+        parts.append(code.group(1))
+    return " / ".join(parts) if parts else type(error).__name__
+
+
 def est_tokens(text: str) -> int:
     return round(len(re.sub(r"\s+", "", text)) * 0.75)
 
 
-# ---------------------------------------------------------------------------
-# OpenAI 兼容（DeepSeek 等）
-# ---------------------------------------------------------------------------
-
 class OpenAICompatClient:
     name = "openai-compat"
 
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(self, base_url: str, api_key: str, provider: str = ""):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
+        self.provider = provider or settings.DEFAULT_PROVIDER
 
     def chat(self, *, model: str, system: str, user: str, temperature: float,
-             stream_cb: Callable[[str], None] | None = None) -> LLMResult:
+             stream_cb: Callable[[str], None] | None = None, retry: bool = True,
+             require_complete: bool = False, provider: str = "") -> LLMResult:
+        """（规格11 §3）故事候选显式单次调用并校验完整流；其它调用保留默认重试。
+
+        provider 只对"包装型客户端"有意义（如批产的任务客户端要按端点选真实连接）；
+        本类已绑定单一端点，收到也只用于回显与计费归属（规格13 §2.3）。
+        """
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": system},
@@ -64,19 +101,24 @@ class OpenAICompatClient:
         url = f"{self.base_url}/chat/completions"
 
         def once() -> LLMResult:
+            started = time.monotonic()
             chunks: list[str] = []
-            finish = "stop"
+            finish = ""
             usage: dict[str, Any] = {}
-            with httpx.Client(timeout=TIMEOUT_SECONDS) as client:
-                with client.stream("POST", url, json=payload, headers=headers) as resp:
+            done = False
+            with httpx.Client(timeout=TIMEOUT_SECONDS) as session:
+                with session.stream("POST", url, json=payload, headers=headers) as resp:
                     if resp.status_code >= 400:
                         body = resp.read().decode("utf-8", "replace")[:500]
                         raise LLMError(f"HTTP {resp.status_code}: {body}")
                     for line in resp.iter_lines():
+                        if time.monotonic() - started > MAX_CALL_SECONDS:
+                            raise LLMError(f"调用超时（超过 {int(MAX_CALL_SECONDS)} 秒未完成）")
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":
+                            done = True
                             break
                         try:
                             obj = json.loads(data)
@@ -92,26 +134,26 @@ class OpenAICompatClient:
                                 chunks.append(piece)
                                 if stream_cb:
                                     stream_cb(piece)
-                            fr = choices[0].get("finish_reason")
-                            if fr:
-                                finish = fr
+                            reason = choices[0].get("finish_reason")
+                            if reason:
+                                finish = reason
             text = "".join(chunks)
+            if require_complete and (not done or not finish):
+                raise LLMError("模型流未收到完整结束标记")
             if not text:
                 raise LLMError("模型返回空内容")
             return LLMResult(
                 text=text,
                 input_tokens=int(usage.get("prompt_tokens") or est_tokens(system + user)),
                 output_tokens=int(usage.get("completion_tokens") or est_tokens(text)),
-                finish_reason=finish,
+                finish_reason=finish or "stop",
                 model=model,
+                provider=provider or self.provider,
+                stream_complete=done,
             )
 
-        return _with_retry(once)
+        return _with_retry(once) if retry else once()
 
-
-# ---------------------------------------------------------------------------
-# 重试 / 工厂
-# ---------------------------------------------------------------------------
 
 _RETRYABLE = (httpx.TimeoutException, httpx.TransportError, ConnectionError)
 
@@ -122,7 +164,9 @@ def _with_retry(fn) -> LLMResult:
         try:
             return fn()
         except LLMError as e:
-            # 429/5xx/限流可重试；其余 4xx 参数类错误不重试
+            # 总时长超时重试只会再等一轮（还可能是同一份长提示词），直接失败交人工决定。
+            if str(e).startswith("调用超时"):
+                raise
             m = re.search(r"HTTP (\d{3})", str(e))
             if m and m.group(1) != "429" and 400 <= int(m.group(1)) < 500:
                 raise
@@ -137,18 +181,21 @@ def _with_retry(fn) -> LLMResult:
     raise LLMError(f"重试 {MAX_RETRIES} 次后仍失败: {last_err}")
 
 
-def client() -> OpenAICompatClient:
-    """唯一连接：OpenAI 兼容协议（官方 / 第三方中转站通用）。"""
-    s = settings.load()
-    prov = s.get("providers", {}).get("openai")
-    if not isinstance(prov, dict) or not prov.get("api_key"):
-        raise LLMError("未配置 API key（设置页或 data/settings.json 填写）")
-    return OpenAICompatClient(prov["base_url"], prov["api_key"])
+def client(provider: str = "") -> OpenAICompatClient:
+    """按端点取连接（规格13 §2.3）：省略 = 默认接口 openai，兼容旧调用。
 
+    端点不存在或没有密钥都直接报错，不静默回落到默认接口——那会悄悄换到
+    另一个中转站和另一份账单。
+    """
+    key = (provider or settings.DEFAULT_PROVIDER).strip().lower()
+    try:
+        prov = settings.provider(key)
+    except KeyError as error:
+        raise LLMError(str(error).strip("'\"")) from None
+    if not prov.get("api_key"):
+        raise LLMError(f"接口 {key} 未配置密钥（设置页填写）")
+    return OpenAICompatClient(prov["base_url"], prov["api_key"], provider=key)
 
-# ---------------------------------------------------------------------------
-# JSON 抽取（V1/V3/V4 等结构化输出用；解析失败由管线回喂重试）
-# ---------------------------------------------------------------------------
 
 def extract_json(text: str) -> Any:
     """剥掉 markdown 代码栅栏，取第一个平衡的 JSON 对象/数组。"""

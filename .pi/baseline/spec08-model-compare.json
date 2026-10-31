@@ -1,0 +1,870 @@
+{
+  "book": "流程测试书",
+  "chapter": 14,
+  "temp_root": "D:\\software\\_workbuddy-isolated\\cn-tmp\\ainovel-model-compare-ky6giu_j",
+  "model": "gemini-3.8-flash-high",
+  "plan": {
+    "steps": [
+      {
+        "scope": "global",
+        "target": {
+          "volume_no": null,
+          "unit_id": null,
+          "chapters": null
+        },
+        "requirements": "本书已写到第 13 章，前两卷内容已完成。只需给出后续走向：本轮只分卷不细化。logline 与尽头方向必须原文照抄，不得改写。",
+        "attempts": 1,
+        "elapsed_s": 40.1,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "global",
+          "target": {
+            "volume_no": null,
+            "unit_id": null,
+            "chapters": null
+          },
+          "volumes_added": [
+            4,
+            5
+          ],
+          "volumes_touched": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        "adopted": {
+          "added_numbers": [],
+          "changed_numbers": [],
+          "units_added": []
+        }
+      },
+      {
+        "scope": "volume",
+        "target": {
+          "volume_no": 3,
+          "unit_id": null,
+          "chapters": null
+        },
+        "requirements": "只展开卷 3（第 14 章之后的内容）：单元骨架必须从第 14 章起连续覆盖本卷，不得回头改动第 13 章及更早的章行。",
+        "attempts": 1,
+        "elapsed_s": 22.2,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "volume",
+          "target": {
+            "volume_no": 3,
+            "unit_id": null,
+            "chapters": null
+          },
+          "volume_no": 3,
+          "volume_range": [
+            14,
+            27
+          ],
+          "units_added": [
+            "U-0418d351d4a254439c040e1de194d373",
+            "U-8cfaeafc3d335f12a23ce8863b7fe0c6",
+            "U-ccfbd39ce4405a36b198ecb008ea7377",
+            "U-501166cf1c0a53c19faf7070dd82bdc6"
+          ]
+        },
+        "adopted": {
+          "added_numbers": [],
+          "changed_numbers": [],
+          "units_added": [
+            "U-0418d351d4a254439c040e1de194d373",
+            "U-8cfaeafc3d335f12a23ce8863b7fe0c6",
+            "U-ccfbd39ce4405a36b198ecb008ea7377",
+            "U-501166cf1c0a53c19faf7070dd82bdc6"
+          ]
+        }
+      },
+      {
+        "scope": "unit",
+        "target": {
+          "volume_no": 3,
+          "unit_id": "U-0418d351d4a254439c040e1de194d373",
+          "chapters": null
+        },
+        "requirements": "本单元是第 14-17 章，其中第 13 章已定稿、第 14 章是本次要写的第一章。信息边界要写清楚：哪些能在本章露出、哪些必须压住。",
+        "attempts": 1,
+        "elapsed_s": 28.1,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "unit",
+          "target": {
+            "volume_no": 3,
+            "unit_id": "U-0418d351d4a254439c040e1de194d373",
+            "chapters": null
+          },
+          "unit_id": "U-0418d351d4a254439c040e1de194d373"
+        },
+        "adopted": {
+          "added_numbers": [],
+          "changed_numbers": [],
+          "units_added": []
+        }
+      },
+      {
+        "scope": "chapters",
+        "target": {
+          "volume_no": 3,
+          "unit_id": "U-0418d351d4a254439c040e1de194d373",
+          "chapters": [
+            14,
+            16
+          ]
+        },
+        "requirements": "本批只写第 14-16 章七列章纲；第 14 章要有可直接写正文的目标/冲突/爽点/钩子；不得改写第 13 章及更早的行。",
+        "attempts": 1,
+        "elapsed_s": 24.1,
+        "prompt_version": 3,
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "impact": {
+          "scope": "chapters",
+          "target": {
+            "volume_no": 3,
+            "unit_id": "U-0418d351d4a254439c040e1de194d373",
+            "chapters": [
+              14,
+              16
+            ]
+          },
+          "added_numbers": [
+            14,
+            15,
+            16
+          ],
+          "changed_numbers": [],
+          "batch": [
+            14,
+            16
+          ]
+        },
+        "adopted": {
+          "added_numbers": [
+            14,
+            15,
+            16
+          ],
+          "changed_numbers": [],
+          "units_added": []
+        }
+      }
+    ],
+    "requirements": {},
+    "row": {
+      "章": "14",
+      "卷": "3",
+      "本章目标": "潜入南关防空洞地底废弃煞穴，避开外围特事局封锁线并寻找适宜突破的阴煞泉眼",
+      "冲突来源": "特事局特勤组在外围拉设符文警戒线，洞内地脉被云腾集团安装的工业高压抽煞阀粗暴截断，废煞泄漏狂暴肆虐",
+      "爽点/揭露": "揭露云腾集团粗暴抽采地煞的工业化流水线黑幕；林寒以玄铁令暗中分流废煞化险为夷，避开警戒网潜入阀门核心",
+      "钩子类型": "悬念",
+      "重要度★": "4"
+    },
+    "unit_closure": {
+      "unit_id": "U-0418d351d4a254439c040e1de194d373",
+      "name": "南关煞穴与煞气淬骨",
+      "chapters": [
+        14,
+        17
+      ]
+    },
+    "log": [
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5085,
+        "output_tokens": 3554,
+        "cost_millicents": 69,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5405,
+        "output_tokens": 1826,
+        "cost_millicents": 44,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5451,
+        "output_tokens": 2568,
+        "cost_millicents": 55,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "planning",
+        "prompt_id": "G5",
+        "prompt_version": "3",
+        "prompt_digest": "694dfe9372a65dae9fa14e5ffab501d496aa27e33601cb1d5a59ee4760b713f9",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5704,
+        "output_tokens": 2374,
+        "cost_millicents": 53,
+        "status": "ok",
+        "error": null
+      }
+    ]
+  },
+  "arm_legacy": {
+    "arm": "legacy",
+    "chapter": 14,
+    "steps": [],
+    "outline": {
+      "elapsed_s": 39.0,
+      "contract": {
+        "chapter_no": 14,
+        "volume": 3,
+        "stage": "发展",
+        "emotion_task": "小扬",
+        "purpose": [
+          "推进主线",
+          "推进伏笔",
+          "制造悬念"
+        ],
+        "core_event": "林寒借玄铁令化解车体自洁喷淋脱险潜入南关防空洞，避开特事局封锁线并揭露云腾集团工业化粗暴抽煞的黑幕，借废煞分流直插深层泉眼。",
+        "opening_bridge": "就在运料车狭窄冰冷的排渣夹层内，猩红自检倒计时跳向最后五秒，林寒反手将玄铁令死死抵在车顶喷淋注煞阀口。",
+        "scenes": [
+          {
+            "goal": "在三十秒自洁喷淋与车底重火力之间求生并脱离运料车",
+            "conflict": "高浓度地煞喷淋倾泻而下足以融穿肉身经脉，而下方地面有巡逻守卫游弋无法直接跳车",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "冷静决绝/运料车排渣夹层/断肋刺肺吐血但死守生路"
+              },
+              {
+                "name": "苏婉",
+                "state": "濒死昏迷/排渣夹层角落/被林寒死死护在身下"
+              }
+            ],
+            "end_state": "林寒以玄铁令残铭吞噬分流狂暴喷淋，趁运料车减速拐入南关地下轨道时撬开底阀滑入废渣沉降深井"
+          },
+          {
+            "goal": "避开特事局外围符文警戒线，潜入南关防空洞废弃煞穴",
+            "conflict": "特事局特勤组因地脉异动封锁主洞口，沿途布设光导符文绊线与热敏巡逻哨",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "极度警惕/南关防空洞下水排废管网/背负苏婉潜行"
+              },
+              {
+                "name": "苏婉",
+                "state": "微弱呼吸/林寒背部束带中/体温因深入煞穴进一步降低"
+              }
+            ],
+            "end_state": "借助骨簪对地脉煞气的共鸣指引，林寒绕过三道符文警戒岗哨，摸入未被官方探明的地下废弃煞穴"
+          },
+          {
+            "goal": "穿越废煞肆虐的工业抽采区，锁定适合借力突破的阴煞泉眼",
+            "conflict": "云腾集团架设的重型高压抽煞阀粗暴截断灵脉导致废煞管路爆裂泄漏，暴虐煞风形成致命阻断墙",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "震撼且冷厉/高压抽煞作业平面前/寻找地脉突破口"
+              }
+            ],
+            "end_state": "亲眼目睹云腾集团将地脉灵根当做矿石野蛮抽榨的黑幕，林寒以玄铁令强行逆转泄漏废煞开出通路，潜抵阀门核心泉眼"
+          }
+        ],
+        "emotion_arc": {
+          "from": "命悬一线的窒息紧迫",
+          "via": "潜行避开官府围剿的步步惊心与目睹门阀资本掠夺的愤恨",
+          "to": "逆行控煞破局后的冷冽笃定与探向更深层禁区的悬疑感"
+        },
+        "must_include": [
+          "揭露云腾集团利用高压抽煞阀将活地脉粗暴截断抽采、致使地煞失控外泄并嫁祸天灾的工业化黑幕",
+          "林寒主动选择不走安全退路，而是冒险以玄铁令分流狂暴废煞，顺着逆流管线反潜入重明峰深层泉眼"
+        ],
+        "hook": {
+          "content": "狂暴的地煞在抽煞阀后方诡异地安静下来，那口被机械臂强行焊死的幽黑泉眼深处，竟隐隐传出某种只有金属齿轮咬合与人类心跳交织的规律轰鸣。",
+          "type": "悬念"
+        },
+        "foreshadow_ops": [
+          {
+            "op": "advance",
+            "fo_id": "FO-001",
+            "note": "林寒利用玄铁令背面铭文强行吸纳并分流高浓度工业废煞，证实其对狂暴地脉具有天然压制与疏导特性"
+          },
+          {
+            "op": "advance",
+            "fo_id": "FO-012",
+            "note": "玄黑骨簪在南关防空洞地底废煞中剧烈颤动，精准指向被云腾截断的古灵脉暗穴，坐实其与重明峰底部的空间联系"
+          }
+        ],
+        "word_range": [
+          2200,
+          2800
+        ],
+        "pov": "林寒",
+        "confirmed": false
+      }
+    },
+    "prose": {
+      "elapsed_s": 105.3,
+      "word_count": 2587,
+      "version": 1,
+      "finish_reason": "stop",
+      "mode": "scene",
+      "length_fit": []
+    },
+    "mech": {
+      "elapsed_s": 0.1,
+      "verdict": "pass",
+      "blocks": [
+        {
+          "rule": "M-12",
+          "word": "41",
+          "message": "文风规则提示 41（历史阈值<45）：D-05×1、D-05×1、D-01×1；仅建议，非AI生成概率"
+        }
+      ],
+      "warns": [
+        {
+          "rule": "M-02",
+          "word": "下意识"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒将她死死护在身下，弓起脊背，断裂的肋"
+        },
+        {
+          "rule": "M-05",
+          "word": "狂暴喷涌的墨绿色煞气没有融穿皮肉，在触碰"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒迅速收起玄铁令，双臂死死箍住昏迷的苏"
+        },
+        {
+          "rule": "M-05",
+          "word": "右侧上方，第一道巡逻哨换防，两支枪口移开"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒脚下骤然发力，踏着浮油与污水，身形如"
+        },
+        {
+          "rule": "M-05",
+          "word": "第二道符文绊线横在前方坍塌的拱券下，离地"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒伏低身体，反手拔出外卖箱里的螺丝刀，"
+        },
+        {
+          "rule": "M-05",
+          "word": "断口处，地脉如被斩断的巨蟒，青灰色的灵髓"
+        },
+        {
+          "rule": "M-05",
+          "word": "右侧管路早已不堪重负，焊缝崩裂，暴虐的废"
+        },
+        {
+          "rule": "M-06",
+          "word": "8个感叹号"
+        }
+      ],
+      "ineffective": [
+        {
+          "rule": "M-13..M-15",
+          "reason": "unparsed"
+        }
+      ],
+      "status_after": "llm_review"
+    },
+    "review": {
+      "elapsed_s": 23.9,
+      "scores": {
+        "ai_flavor": 95,
+        "plot": 93,
+        "pacing": 94,
+        "prose": 92,
+        "hook": 96
+      },
+      "issues": [
+        {
+          "category": "plot",
+          "severity": "warning",
+          "location": "章末+钢印铭牌段",
+          "quote": "管道底座的铭牌上，焊着冰冷的钢印——“云腾工程·特种开采二号井”。",
+          "description": "细纲与must_include要求明确揭露「云腾集团」的工业化粗暴抽采黑幕，正文虽然揭露了门阀白手套罪行与工业化抽采，但仅在钢印处使用了项目代号「云腾工程」，未完整浮现「云腾集团」主体规范术语，存在轻微术语缺席风险。",
+          "suggestion": "可将钢印或林寒心内判断顺带补齐主体全称，例如改作“云腾重工/云腾集团·特种开采二号井”或在后句点明“云腾集团这帮门阀白手套”，保证集团设定词条检索闭环。"
+        }
+      ],
+      "verdict": "pass"
+    },
+    "text": {
+      "chars": 2587,
+      "opening": "就在运料车狭窄冰冷的排渣夹层内，猩红自检倒计时跳向最后五秒。\n\n“五。”\n\n“四。”\n\n刺鼻的防腐液混合着冰水浸透衣物，冻得骨缝发紧。\n\n下方传来六轴履带碾压碎石的轰鸣，巡逻守卫粗重的靴声与防暴枪机头的碰撞声就在几米外回荡，任何破板跳车的动静都会引来集火扫射。\n\n逃不掉。\n\n苏婉在阴湿的角落里毫无知觉，呼吸微弱得几近于无。\n\n林寒将她死死护在身下，弓起脊背，断裂的肋骨在剧烈活动下刺入肺泡，喉头涌上一股腥甜。\n\n右手掌心里，那枚坚硬粗粝的",
+      "prev_tail": "啸。\n\n落下的根本不是干燥粗糙的原矿渣。\n\n成吨带着恶臭与化学防腐剂气味的刺鼻冷冻液从导流孔疯狂倒灌，瞬间浇透了两人的衣服，冻得骨头缝发麻发紧。\n\n蜂鸣器短促炸响三次。\n\n夹层内侧原本暗着的自检面板亮起猩红警报。\n\n高频电子音机械播报：\n\n“检测到非标生物填料，三十秒后启动高浓度地煞自洁喷淋。”\n\n三十秒。\n\n要么踹开脚下的排渣阀跳车，在荒滩上被几十支重火力枪管打成筛子；要么缩在暗箱里，被车顶喷下的地煞把经脉和血肉活生生熔成一滩烂泥。\n",
+      "names_in_opening": [
+        "林寒",
+        "苏婉"
+      ],
+      "names_in_prev_tail": []
+    },
+    "log": [
+      {
+        "stage": "outline",
+        "prompt_id": "G6",
+        "prompt_version": "5",
+        "prompt_digest": "656f352c43978c5a054e96878198a17487bce3604c2ccaf9cd980e5f29828f4d",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5257,
+        "output_tokens": 3384,
+        "cost_millicents": 67,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10543,
+        "output_tokens": 1963,
+        "cost_millicents": 61,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10709,
+        "output_tokens": 2535,
+        "cost_millicents": 70,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10717,
+        "output_tokens": 5164,
+        "cost_millicents": 110,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "review",
+        "prompt_id": "V1",
+        "prompt_version": "3",
+        "prompt_digest": "42719564f8bdf52552cf70d5c042786802bfdc4db582960642cffa3113c0b24a",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 9940,
+        "output_tokens": 1966,
+        "cost_millicents": 59,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "total_elapsed_s": 168.4
+  },
+  "arm_rolling": {
+    "arm": "rolling",
+    "chapter": 14,
+    "steps": [],
+    "outline": {
+      "elapsed_s": 49.6,
+      "contract": {
+        "chapter_no": 14,
+        "volume": 3,
+        "stage": "引入",
+        "emotion_task": "小扬",
+        "purpose": [
+          "推进主线",
+          "推进伏笔"
+        ],
+        "core_event": "林寒借玄铁令导引地煞破开车底死局，潜入南关防空洞地底废弃煞穴，避开特事局警戒线并锁定深层阴煞泉眼",
+        "opening_bridge": "在太昊重型运料车闭锁的排渣夹层内，头顶倒灌的刺鼻冷冻液刚没过脚踝，猩红警报倒计时还剩二十八秒。",
+        "scenes": [
+          {
+            "goal": "在三十秒自洁喷淋启动前破局脱困，避免肉身经脉被高浓度地煞熔烂",
+            "conflict": "外围有重装守卫与猎犬无法跳车，头顶喷淋阀已进入增压阶段，夹层铁板被气压死锁",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "冷静决然/运料车排渣导流斗夹层/断肋骨戳肺叶、内伤吐血、后颈烫伤/全力破拆自洁阀门"
+              },
+              {
+                "name": "苏婉",
+                "state": "重度昏迷濒死/夹层铁板内侧/义眼眶皮肉裂损、体温僵冷/无意识受庇护"
+              }
+            ],
+            "end_state": "林寒以长柄螺丝刀硬撬导流感应器并催动玄铁令吸纳首波地煞喷流，趁车体过减速坎震颤撕开底阀，带苏婉跌落防空洞沉降排污竖井"
+          },
+          {
+            "goal": "避开特事局拉设的符文警戒网，潜入南关防空洞地下主坑道",
+            "conflict": "特事局特勤组在防空洞地面入口与换气坑口拉设电磁符文警戒线，全频段探针密集扫测，云腾现场监工正与特勤交涉",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "警惕潜行/排污竖井检修凹槽/背负苏婉/寻找封锁盲区"
+              },
+              {
+                "name": "苏婉",
+                "state": "深度休克/林寒后背/脉搏微弱但义眼稳压回路暂未爆裂/昏迷"
+              }
+            ],
+            "end_state": "林寒借云腾排污阀泄煞引发的灵能乱流遮蔽自身气息，穿过符文警报盲区，将苏婉安置在废弃配电间暗格"
+          },
+          {
+            "goal": "探明废弃煞穴深处通路，寻找用于突破凝煞境的阴煞泉眼",
+            "conflict": "防空洞地脉被云腾粗暴截断，高压合金抽煞管道锈蚀崩漏，工业废煞暴烈狂虐，吸入即可烧灼气海",
+            "chars": [
+              {
+                "name": "林寒",
+                "state": "坚毅专注/防空洞地下五十米工业煞穴核心区/探寻纯净地脉节点准备筑基突破"
+              }
+            ],
+            "end_state": "目睹云腾工业化粗暴榨取地煞的黑幕，借玄铁令残铭分流压制暴虐废煞，在抽煞阀后方寻获一口未被抽干的深层阴煞古泉"
+          }
+        ],
+        "emotion_arc": {
+          "from": "命悬一线的窒息紧绷",
+          "via": "避敌潜行的沉着冷静",
+          "to": "发现生路与灵泉的杀意振奋"
+        },
+        "must_include": [
+          "揭露云腾集团用高压抽煞阀粗暴截断地脉、将地煞像工业原油般抽采装罐的黑幕",
+          "林寒决定放弃地面退路，就地以狂暴地脉阴煞行险强冲凝煞境淬骨"
+        ],
+        "hook": {
+          "content": "林寒正欲踏入深层阴煞泉眼，泉底被铁链锁死的泄压铁门突然传出密集的液压排气声，门缝后赫然亮起太昊门阀专用识别码的微弱冷光。",
+          "type": "悬念"
+        },
+        "foreshadow_ops": [
+          {
+            "op": "advance",
+            "fo_id": "FO-001",
+            "note": "玄铁令在接触狂暴工业地煞时主动吞吐分流，背面残缺铭文微光流转，压制地脉暴动"
+          },
+          {
+            "op": "advance",
+            "fo_id": "FO-012",
+            "note": "骨簪在进入防空洞地底后与重明峰主脉方向的脉冲共振进一步加剧，簪尾指向泄压门深处"
+          }
+        ],
+        "word_range": [
+          2200,
+          2800
+        ],
+        "pov": "林寒",
+        "confirmed": false
+      }
+    },
+    "prose": {
+      "elapsed_s": 70.2,
+      "word_count": 2571,
+      "version": 1,
+      "finish_reason": "stop",
+      "mode": "scene",
+      "length_fit": []
+    },
+    "mech": {
+      "elapsed_s": 0.1,
+      "verdict": "pass",
+      "blocks": [],
+      "warns": [
+        {
+          "rule": "M-05",
+          "word": "林寒反手死死一别，合金面板连同三根绝缘铜"
+        },
+        {
+          "rule": "M-05",
+          "word": "青黑色的煞气在半空中扭曲、旋转，大半被玄"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒眼中凶光毕露，左臂一把揽过昏迷的苏婉"
+        },
+        {
+          "rule": "M-05",
+          "word": "冰冷的污水混合着残留的地煞狂涌而出，林寒"
+        },
+        {
+          "rule": "M-05",
+          "word": "她的右眼眶皮肉裂损，冷翡翠色的光芒微弱闪"
+        },
+        {
+          "rule": "M-05",
+          "word": "上方七八米处的换气坑口与坑道主闸门前，泛"
+        },
+        {
+          "rule": "M-05",
+          "word": "“长官，这车里装的是太昊加急调运的高危活"
+        },
+        {
+          "rule": "M-05",
+          "word": "林寒脚下猛地发力，踩碎污泥，整个人如同一"
+        },
+        {
+          "rule": "M-05",
+          "word": "背面残缺的古老铭文泛起一层幽微流光，如同"
+        },
+        {
+          "rule": "M-06",
+          "word": "22个感叹号"
+        },
+        {
+          "rule": "M-12",
+          "word": "56"
+        }
+      ],
+      "ineffective": [
+        {
+          "rule": "M-13..M-15",
+          "reason": "unparsed"
+        }
+      ],
+      "status_after": "llm_review"
+    },
+    "review": {
+      "elapsed_s": 23.1,
+      "scores": {
+        "ai_flavor": 93,
+        "plot": 95,
+        "pacing": 94,
+        "prose": 92,
+        "hook": 96
+      },
+      "issues": [
+        {
+          "category": "plot",
+          "severity": "warning",
+          "location": "章中+特事局与监工交涉处",
+          "quote": "特事局办案，云腾的重料车全部熄火受检！",
+          "description": "细纲must_include与程序检测点名术语为「云腾集团」，正文中通篇使用「云腾」或「云腾车队」，虽不影响剧情理解，但缺乏集团全称的首现规范锚定。",
+          "suggestion": "可在监工交涉对话或林寒内心识别背景时，将其中一处「云腾」补全为「云腾集团」，以确保企业全称设定严格统一。"
+        }
+      ],
+      "verdict": "pass"
+    },
+    "text": {
+      "chars": 2571,
+      "opening": "倒计时还剩二十八秒。\n\n猩红的数字在狭窄铁箱里跳动，将刺鼻的冷冻液照得一片暗红。\n\n冷液已经漫过了小臂。\n\n刺骨的寒气顺着毛孔往骨缝里钻，苏婉软倒在铁板内侧，体温低得像块刚从冰库里拖出来的生肉。她右眼眶边缘皮肉翻卷，渗出的血丝混进防腐液里，化开一缕极淡的青黑。\n\n头顶上方，液压泵的尖啸由远及近。\n\n轰——！！\n\n沉重的气压在管道深处疯狂汇聚。\n\n增压。\n\n那是冲洗工业废渣的超高压地煞。哪怕是凝煞境修士被正面浇中，肉身和经脉也会被瞬间溶成",
+      "prev_tail": "啸。\n\n落下的根本不是干燥粗糙的原矿渣。\n\n成吨带着恶臭与化学防腐剂气味的刺鼻冷冻液从导流孔疯狂倒灌，瞬间浇透了两人的衣服，冻得骨头缝发麻发紧。\n\n蜂鸣器短促炸响三次。\n\n夹层内侧原本暗着的自检面板亮起猩红警报。\n\n高频电子音机械播报：\n\n“检测到非标生物填料，三十秒后启动高浓度地煞自洁喷淋。”\n\n三十秒。\n\n要么踹开脚下的排渣阀跳车，在荒滩上被几十支重火力枪管打成筛子；要么缩在暗箱里，被车顶喷下的地煞把经脉和血肉活生生熔成一滩烂泥。\n",
+      "names_in_opening": [
+        "苏婉"
+      ],
+      "names_in_prev_tail": []
+    },
+    "unit_boundary": {
+      "unit_id": "U-0418d351d4a254439c040e1de194d373",
+      "name": "南关煞穴与煞气淬骨",
+      "goal": "潜入南关防空洞地底的工业煞穴，引地脉阴煞完成感气境向凝煞境（淬骨）的跨越，并摸清云腾清运车队的启运排班。",
+      "must_hold": [
+        "玄铁令为旧神意念活体囚笼的真相（保留至长线第120章）",
+        "灵根觉醒实为太古灵毒侵蚀变异的本质（保留至长线第80章）",
+        "林寒父母具体的活体接驳状态与生死结论（本单元仅能锁定账册线索，不得提前确证）",
+        "凝刃及化罡境界能力的提前施展（本单元严格限制在淬骨期肉身战力）"
+      ],
+      "can_reveal": [
+        "南关煞穴作为工业化抽采地煞据点的粗暴运作模式",
+        "特事局符文枪械弹头涂层掺杂死刑犯骨灰以克制地煞反噬的内幕（第15章释放）",
+        "云腾车队押运九号灵井账册及活体人料走南关高架桥的必经路线与护卫规模",
+        "凝煞境（淬骨）带来的力量暴涨与伴随的朔望蚀骨隐患"
+      ],
+      "must_hold_hit_in_text": []
+    },
+    "log": [
+      {
+        "stage": "outline",
+        "prompt_id": "G6",
+        "prompt_version": "5",
+        "prompt_digest": "656f352c43978c5a054e96878198a17487bce3604c2ccaf9cd980e5f29828f4d",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 5966,
+        "output_tokens": 4168,
+        "cost_millicents": 80,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10686,
+        "output_tokens": 1847,
+        "cost_millicents": 60,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10821,
+        "output_tokens": 1447,
+        "cost_millicents": 54,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "prose",
+        "prompt_id": "W1",
+        "prompt_version": "6",
+        "prompt_digest": "cc99d0ddd8ed61d7010622095fd3bc602cd20a50b136f56190d9b82ac67bc7a3",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 10825,
+        "output_tokens": 2461,
+        "cost_millicents": 69,
+        "status": "ok",
+        "error": null
+      },
+      {
+        "stage": "review",
+        "prompt_id": "V1",
+        "prompt_version": "3",
+        "prompt_digest": "42719564f8bdf52552cf70d5c042786802bfdc4db582960642cffa3113c0b24a",
+        "model": "gemini-3.8-flash-high",
+        "input_tokens": 9933,
+        "output_tokens": 2224,
+        "cost_millicents": 63,
+        "status": "ok",
+        "error": null
+      }
+    ],
+    "total_elapsed_s": 143.1
+  },
+  "compare": {
+    "outline_chars": {
+      "legacy": 1632,
+      "rolling": 1620
+    },
+    "outline_elapsed_s": {
+      "legacy": 39.0,
+      "rolling": 49.6
+    },
+    "words": {
+      "legacy": 2587,
+      "rolling": 2571
+    },
+    "prose_elapsed_s": {
+      "legacy": 105.3,
+      "rolling": 70.2
+    },
+    "mech": {
+      "legacy": "pass",
+      "rolling": "pass",
+      "legacy_blocks": [
+        "M-12"
+      ],
+      "rolling_blocks": [],
+      "legacy_warns": 11,
+      "rolling_warns": 11
+    },
+    "review_verdict": {
+      "legacy": "pass",
+      "rolling": "pass"
+    },
+    "scores": {
+      "legacy": {
+        "ai_flavor": 95,
+        "plot": 93,
+        "pacing": 94,
+        "prose": 92,
+        "hook": 96
+      },
+      "rolling": {
+        "ai_flavor": 93,
+        "plot": 95,
+        "pacing": 94,
+        "prose": 92,
+        "hook": 96
+      }
+    },
+    "continuity": {
+      "legacy": {
+        "names_in_opening": [
+          "林寒",
+          "苏婉"
+        ],
+        "names_in_prev_tail": []
+      },
+      "rolling": {
+        "names_in_opening": [
+          "苏婉"
+        ],
+        "names_in_prev_tail": []
+      }
+    },
+    "unit_boundary": {
+      "unit_id": "U-0418d351d4a254439c040e1de194d373",
+      "name": "南关煞穴与煞气淬骨",
+      "goal": "潜入南关防空洞地底的工业煞穴，引地脉阴煞完成感气境向凝煞境（淬骨）的跨越，并摸清云腾清运车队的启运排班。",
+      "must_hold": [
+        "玄铁令为旧神意念活体囚笼的真相（保留至长线第120章）",
+        "灵根觉醒实为太古灵毒侵蚀变异的本质（保留至长线第80章）",
+        "林寒父母具体的活体接驳状态与生死结论（本单元仅能锁定账册线索，不得提前确证）",
+        "凝刃及化罡境界能力的提前施展（本单元严格限制在淬骨期肉身战力）"
+      ],
+      "can_reveal": [
+        "南关煞穴作为工业化抽采地煞据点的粗暴运作模式",
+        "特事局符文枪械弹头涂层掺杂死刑犯骨灰以克制地煞反噬的内幕（第15章释放）",
+        "云腾车队押运九号灵井账册及活体人料走南关高架桥的必经路线与护卫规模",
+        "凝煞境（淬骨）带来的力量暴涨与伴随的朔望蚀骨隐患"
+      ],
+      "must_hold_hit_in_text": []
+    },
+    "planning_steps": [
+      {
+        "scope": "global",
+        "elapsed_s": 40.1,
+        "version": 3
+      },
+      {
+        "scope": "volume",
+        "elapsed_s": 22.2,
+        "version": 3
+      },
+      {
+        "scope": "unit",
+        "elapsed_s": 28.1,
+        "version": 3
+      },
+      {
+        "scope": "chapters",
+        "elapsed_s": 24.1,
+        "version": 3
+      }
+    ],
+    "cost_millicents": {
+      "planning": 221,
+      "legacy_chapter": 367,
+      "rolling_chapter": 326
+    }
+  }
+}

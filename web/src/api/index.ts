@@ -11,14 +11,23 @@ import type {
   CharacterData,
   CheckStatus,
   Conflict,
+  ConflictResolveResult,
   DeslopResult,
   DraftInfo,
   FinalizeResult,
   ImportPreview,
   MechHit,
   MemoryPendingItem,
+  ModelList,
   OutlineFull,
+  OutlinePreview,
   Overview,
+  PlanningAdoptResult,
+  PlanningCandidate,
+  PlanningModel,
+  PlanningPreview,
+  PlanningScope,
+  PlanningTarget,
   PolishResult,
   PolishPayload,
   PolishSummary,
@@ -38,11 +47,25 @@ import type {
   TimelineData,
   TimelineRow,
   VersionInfo,
+  Versioned,
   WorkbenchData,
 } from './types'
 
 const enc = encodeURIComponent
 const unwrap = <T>(p: Promise<{ data: T }>): Promise<T> => p.then((r) => r.data)
+const etagOf = (headers: Record<string, unknown>): string | null => {
+  const value = headers.etag
+  return typeof value === 'string' ? value : null
+}
+const versioned = async <T>(
+  p: Promise<{ data: T; headers: Record<string, unknown> }>,
+): Promise<Versioned<T>> => {
+  const response = await p
+  return { data: response.data, etag: etagOf(response.headers) }
+}
+const matchHeaders = (etag: string): { headers: { 'If-Match': string } } => ({
+  headers: { 'If-Match': etag },
+})
 
 // —— 系统 ——
 export const getFtsMode = (): Promise<{ mode: string }> => unwrap(http.get('/api/fts/mode'))
@@ -56,6 +79,10 @@ export interface BookCreatePayload {
   target_words: number
   author: string
   platform: string
+  /** 规格08 §3.2：显式 rolling 只初始化空规划（零模型调用）；省略保持 legacy */
+  planning_mode?: 'legacy' | 'rolling'
+  /** 规格12 §3：建书即选型，只接受 plan/prose/polish/review/longctx 五档 */
+  model_stages?: Record<string, string>
 }
 
 export const listBooks = (): Promise<BookCard[]> => unwrap(http.get('/api/books'))
@@ -71,43 +98,84 @@ export const getOverview = (book: string): Promise<Overview> =>
 // platform/benchmark_book/compliance_note/status 十个字段，UI 侧做成结构化表单。
 export const getMeta = (book: string): Promise<BookMeta> =>
   unwrap(http.get(`/api/books/${enc(book)}/meta`))
-export const putMeta = (book: string, meta: BookMeta): Promise<BookMeta> =>
-  unwrap(http.put(`/api/books/${enc(book)}/meta`, meta))
+export const getMetaVersioned = (book: string): Promise<Versioned<BookMeta>> =>
+  versioned(http.get(`/api/books/${enc(book)}/meta`))
+export const putMeta = (book: string, meta: BookMeta, etag?: string): Promise<BookMeta> =>
+  unwrap(http.put(`/api/books/${enc(book)}/meta`, meta, etag ? matchHeaders(etag) : undefined))
 
 // 书级配置（规格01 §1 config.json）：model_stages 五档位 / chapter_word_range /
 // review_fix_max_rounds / scene_mode / lint_whitelist。
 export const getBookConfig = (book: string): Promise<BookConfig> =>
   unwrap(http.get(`/api/books/${enc(book)}/config`))
-export const putBookConfig = (book: string, cfg: BookConfig): Promise<BookConfig> =>
-  unwrap(http.put(`/api/books/${enc(book)}/config`, cfg))
+export const getBookConfigVersioned = (book: string): Promise<Versioned<BookConfig>> =>
+  versioned(http.get(`/api/books/${enc(book)}/config`))
+export const putBookConfig = (book: string, cfg: BookConfig, etag?: string): Promise<BookConfig> =>
+  unwrap(http.put(`/api/books/${enc(book)}/config`, cfg, etag ? matchHeaders(etag) : undefined))
 
 // —— 档案：Bible / 角色 / 大纲 / 台账 / 地点 / 文风 ——
 export const getBible = (book: string): Promise<Record<string, string>> =>
   unwrap(http.get(`/api/books/${enc(book)}/bible`))
-export const putBible = (book: string, sections: Record<string, string>): Promise<unknown> =>
-  unwrap(http.put(`/api/books/${enc(book)}/bible`, sections))
+export const getBibleVersioned = (book: string): Promise<Versioned<Record<string, string>>> =>
+  versioned(http.get(`/api/books/${enc(book)}/bible`))
+export const putBible = (
+  book: string,
+  sections: Record<string, string>,
+  etag?: string,
+): Promise<unknown> =>
+  unwrap(http.put(`/api/books/${enc(book)}/bible`, sections, etag ? matchHeaders(etag) : undefined))
 
 export const listCharactersFull = (book: string): Promise<CharacterData[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/characters`))
+export const listCharactersVersioned = (book: string): Promise<Versioned<CharacterData[]>> =>
+  versioned(http.get(`/api/books/${enc(book)}/characters`))
 export const getCharacter = (book: string, name: string): Promise<CharacterData> =>
   unwrap(http.get(`/api/books/${enc(book)}/characters/${enc(name)}`))
+export const getCharacterVersioned = (
+  book: string,
+  name: string,
+): Promise<Versioned<CharacterData>> =>
+  versioned(http.get(`/api/books/${enc(book)}/characters/${enc(name)}`))
 export const putCharacter = (
   book: string,
   name: string,
   payload: CharacterData,
-): Promise<unknown> => unwrap(http.put(`/api/books/${enc(book)}/characters/${enc(name)}`, payload))
+  etag?: string,
+): Promise<unknown> =>
+  unwrap(
+    http.put(
+      `/api/books/${enc(book)}/characters/${enc(name)}`,
+      payload,
+      etag ? matchHeaders(etag) : undefined,
+    ),
+  )
 export const createCharacter = (book: string, name: string, role: string): Promise<unknown> =>
   unwrap(http.post(`/api/books/${enc(book)}/characters`, { name, role }))
 
 export const getOutlineFull = (book: string): Promise<OutlineFull> =>
   unwrap(http.get(`/api/books/${enc(book)}/outline`))
-export const putOutlineFull = (book: string, od: OutlineFull): Promise<unknown> =>
-  unwrap(http.put(`/api/books/${enc(book)}/outline`, od))
+export const getOutlineVersioned = (book: string): Promise<Versioned<OutlineFull>> =>
+  versioned(http.get(`/api/books/${enc(book)}/outline`))
+export const putOutlineFull = (book: string, od: OutlineFull, etag?: string): Promise<unknown> =>
+  unwrap(http.put(`/api/books/${enc(book)}/outline`, od, etag ? matchHeaders(etag) : undefined))
 
 export const getPlotPoints = (book: string): Promise<Record<string, string>[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/plot_points`))
-export const putPlotPoints = (book: string, rows: Record<string, string>[]): Promise<unknown> =>
-  unwrap(http.put(`/api/books/${enc(book)}/plot_points`, { rows }))
+export const getPlotPointsVersioned = (
+  book: string,
+): Promise<Versioned<Record<string, string>[]>> =>
+  versioned(http.get(`/api/books/${enc(book)}/plot_points`))
+export const putPlotPoints = (
+  book: string,
+  rows: Record<string, string>[],
+  etag?: string,
+): Promise<unknown> =>
+  unwrap(
+    http.put(
+      `/api/books/${enc(book)}/plot_points`,
+      { rows },
+      etag ? matchHeaders(etag) : undefined,
+    ),
+  )
 // 伏笔超期预警（规格01 PLOT_POINTS 校验之一）：planted 超 30 章未进 building。
 // 后端只读重算，章号缺省按已有章节最大号；不传 chapter 即"按当前进度看"。
 export const getOverdueForeshadows = (
@@ -123,8 +191,16 @@ export const getOverdueForeshadows = (
 // 地点档案（规格01 §2.6，5 列）：原先只有 GET、前端零入口，规格04 §1 要求可编辑。
 export const getLocations = (book: string): Promise<Record<string, string>[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/locations`))
-export const putLocations = (book: string, rows: Record<string, string>[]): Promise<unknown> =>
-  unwrap(http.put(`/api/books/${enc(book)}/locations`, { rows }))
+export const getLocationsVersioned = (book: string): Promise<Versioned<Record<string, string>[]>> =>
+  versioned(http.get(`/api/books/${enc(book)}/locations`))
+export const putLocations = (
+  book: string,
+  rows: Record<string, string>[],
+  etag?: string,
+): Promise<unknown> =>
+  unwrap(
+    http.put(`/api/books/${enc(book)}/locations`, { rows }, etag ? matchHeaders(etag) : undefined),
+  )
 
 export const getStyle = (book: string): Promise<StyleData> =>
   unwrap(http.get(`/api/books/${enc(book)}/style`))
@@ -163,21 +239,54 @@ export const aiGenerate = (
   book: string,
   prompt_id: string,
   variables: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<AIGenResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/ai/generate`, { prompt_id, variables }, { timeout: 0 }))
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/ai/generate`,
+      { prompt_id, variables },
+      { timeout: 0, signal },
+    ),
+  )
 
 export const adoptArchive = (
   book: string,
   target: 'bible' | 'characters' | 'outline',
   content: string,
+  etag?: string,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> =>
-  unwrap(http.post(`/api/books/${enc(book)}/adopt/${target}`, { content }))
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/adopt/${target}`,
+      { content },
+      { ...(etag ? matchHeaders(etag) : {}), signal },
+    ),
+  )
+
+// 规格08 A-T04：G5 采纳影响预览。服务端纯计算（不写档、不调模型），因此无需 If-Match；
+// 并发写入的最终保护仍由 adopt 的 ETag 校验负责。
+export const previewOutlineAdopt = (
+  book: string,
+  content: string,
+  signal?: AbortSignal,
+): Promise<OutlinePreview> =>
+  unwrap(http.post(`/api/books/${enc(book)}/preview/outline`, { content }, { signal }))
 
 // —— 章节工作台 ——
 export const getWorkbench = (book: string, no: number): Promise<WorkbenchData> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}`))
-export const generateOutlineG6 = (book: string, no: number): Promise<unknown> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/outline/generate`, null, { timeout: 0 }))
+export const generateOutlineG6 = (
+  book: string,
+  no: number,
+  signal?: AbortSignal,
+): Promise<unknown> =>
+  unwrap(
+    http.post(`/api/books/${enc(book)}/chapters/${no}/outline/generate`, null, {
+      timeout: 0,
+      signal,
+    }),
+  )
 export const confirmOutline = (
   book: string,
   no: number,
@@ -185,6 +294,11 @@ export const confirmOutline = (
   unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/outline/confirm`))
 export const getOutlineRaw = (book: string, no: number): Promise<{ content: string }> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/outline/raw`))
+export const getOutlineRawVersioned = (
+  book: string,
+  no: number,
+): Promise<Versioned<{ content: string }>> =>
+  versioned(http.get(`/api/books/${enc(book)}/chapters/${no}/outline/raw`))
 export interface ChapterOutlinePayload {
   fm?: Record<string, unknown>
   fm_raw?: string
@@ -194,22 +308,46 @@ export const putChapterOutline = (
   book: string,
   no: number,
   payload: ChapterOutlinePayload,
-): Promise<unknown> => unwrap(http.put(`/api/books/${enc(book)}/chapters/${no}/outline`, payload))
+  etag?: string,
+): Promise<unknown> =>
+  unwrap(
+    http.put(
+      `/api/books/${enc(book)}/chapters/${no}/outline`,
+      payload,
+      etag ? matchHeaders(etag) : undefined,
+    ),
+  )
 export const getAssemblyPreview = (book: string, no: number): Promise<PreviewResult> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/preview`))
 export const runMechcheck = (
   book: string,
   no: number,
+  signal?: AbortSignal,
 ): Promise<{ hits: MechHit[]; status: string }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/mechcheck`, null, { timeout: 0 }))
-export const runReview = (book: string, no: number): Promise<ReviewResult & { status: string }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/review`, null, { timeout: 0 }))
-export const runFix = (book: string, no: number): Promise<{ ok: boolean; word_count: number }> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/fix`, {}, { timeout: 0 }))
+  unwrap(
+    http.post(`/api/books/${enc(book)}/chapters/${no}/mechcheck`, null, { timeout: 0, signal }),
+  )
+export const runReview = (
+  book: string,
+  no: number,
+  signal?: AbortSignal,
+): Promise<ReviewResult & { status: string }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/review`, null, { timeout: 0, signal }))
+export const runFix = (
+  book: string,
+  no: number,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; word_count: number }> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/fix`, {}, { timeout: 0, signal }))
 export const getPolishBlocks = (book: string, no: number): Promise<PolishBlocks> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/polish/blocks`))
-export const runPolish = (book: string, no: number, body: PolishPayload): Promise<PolishResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish`, body, { timeout: 0 }))
+export const runPolish = (
+  book: string,
+  no: number,
+  body: PolishPayload,
+  signal?: AbortSignal,
+): Promise<PolishResult> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/polish`, body, { timeout: 0, signal }))
 export const listPolishCandidates = (book: string, no: number): Promise<PolishSummary[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/polish/candidates`))
 export const getPolishCandidate = (book: string, no: number, id: string): Promise<PolishResult> =>
@@ -219,9 +357,12 @@ export const approvePolishCandidate = (
   no: number,
   id: string,
   body: PolishApproval,
+  signal?: AbortSignal,
 ): Promise<PolishApplyResult> =>
   unwrap(
-    http.post(`/api/books/${enc(book)}/chapters/${no}/polish/candidates/${enc(id)}/approve`, body),
+    http.post(`/api/books/${enc(book)}/chapters/${no}/polish/candidates/${enc(id)}/approve`, body, {
+      signal,
+    }),
   )
 export const discardPolishCandidate = (
   book: string,
@@ -240,8 +381,12 @@ export const retryChapter = (book: string, no: number): Promise<{ ok: boolean; s
 // 定稿含 V4 记忆卡回写 + V6 卷末审计两次 LLM 调用（末章才触发 V6），
 // 真实模型下长上下文必超 30s 默认超时 → 前端先报错、后端其实已定稿，用户重复提交得 400。
 // 与 review/fix/polish/audit 一致：这条走 timeout: 0（不设前端超时，由后端决定）。
-export const finalizeChapter = (book: string, no: number): Promise<FinalizeResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/finalize`, null, { timeout: 0 }))
+export const finalizeChapter = (
+  book: string,
+  no: number,
+  signal?: AbortSignal,
+): Promise<FinalizeResult> =>
+  unwrap(http.post(`/api/books/${enc(book)}/chapters/${no}/finalize`, null, { timeout: 0, signal }))
 // 定稿返工：finalized → pending_finalize。定稿后正文受快照保护，
 // 要手改/修复/重写得先解锁（否则后端一律 400「已定稿，请先解锁」）。
 export const unlockChapter = (book: string, no: number): Promise<{ ok: boolean; status: string }> =>
@@ -282,37 +427,57 @@ export const putProse = (
 // 快照正文回看（规格04 §2「版本列表可回看任意快照」——只读，不触发重写）。
 export const getSnapshot = (book: string, no: number, version: number): Promise<SnapshotDetail> =>
   unwrap(http.get(`/api/books/${enc(book)}/chapters/${no}/snapshots/${version}`))
-export const runAudit = (book: string, lastChapter: number): Promise<AuditResult> =>
-  unwrap(http.post(`/api/books/${enc(book)}/audit/${lastChapter}`, null, { timeout: 0 }))
+export const runAudit = (
+  book: string,
+  lastChapter: number,
+  signal?: AbortSignal,
+): Promise<AuditResult> =>
+  unwrap(http.post(`/api/books/${enc(book)}/audit/${lastChapter}`, null, { timeout: 0, signal }))
 // 卷末审计报告回看：审计结论写进 review_records，报告正文落在 books/<书名>/audits/*.md
 export const listAudits = (book: string): Promise<AuditReport[]> =>
   unwrap(http.get(`/api/books/${enc(book)}/audits`))
 
 // —— 裁决队列 ——
-export const listConflicts = (): Promise<Conflict[]> => unwrap(http.get('/api/conflicts'))
+export const listConflicts = (book?: string): Promise<Conflict[]> =>
+  unwrap(
+    http.get('/api/conflicts', {
+      params: book ? { book } : {},
+      errorContext: { operation: '读取裁决队列', background: true },
+    }),
+  )
 export const resolveConflictApi = (
   id: number,
   action: string,
   manualValue?: unknown,
-): Promise<unknown> =>
+): Promise<ConflictResolveResult> =>
   unwrap(http.post(`/api/conflicts/${id}/resolve`, { action, manual_value: manualValue ?? null }))
 
 // —— 设置 ——
 export const getSettings = (): Promise<AppSettings> => unwrap(http.get('/api/settings'))
+/** 规格12 §3 / 规格13 §3：指定接口的模型清单；ok=false 时前端退回手填，不阻断 */
+export const listModels = (provider?: string): Promise<ModelList> =>
+  unwrap(http.get('/api/models', { params: provider ? { provider } : {} }))
 export const putSettings = (settings: Record<string, unknown>): Promise<unknown> =>
   unwrap(http.put('/api/settings', { settings }))
 export interface ConnTestResult {
   ok: boolean
+  provider?: string
   reply?: string
   model?: string
   error?: string
 }
-export const testConnection = (): Promise<ConnTestResult> =>
-  unwrap(http.post('/api/settings/test', {}, { timeout: 60_000 }))
-export const getLint = (which: string): Promise<{ which: string; content: string }> =>
-  unwrap(http.get(`/api/lint/${which}`))
-export const putLint = (which: string, content: string): Promise<unknown> =>
-  unwrap(http.put(`/api/lint/${which}`, { which, content }))
+export const testConnection = (
+  payload: { provider?: string; model?: string } = {},
+): Promise<ConnTestResult> => unwrap(http.post('/api/settings/test', payload, { timeout: 60_000 }))
+export interface LintResource {
+  which: string
+  content: string
+  exists: boolean
+}
+export const getLint = (which: string): Promise<Versioned<LintResource>> =>
+  versioned(http.get(`/api/lint/${which}`))
+export const putLint = (which: string, content: string, etag?: string): Promise<unknown> =>
+  unwrap(http.put(`/api/lint/${which}`, { which, content }, etag ? matchHeaders(etag) : undefined))
 
 // —— 导出（后端为 POST；blob 下载。旧版 window.open 走 GET 会 405，此处一并修正） ——
 async function downloadBlob(url: string): Promise<void> {
@@ -357,19 +522,27 @@ export const discardDraft = (book: string, no: number): Promise<{ ok: boolean }>
 /** 缺卡章列表（导入待补 / 回写失败 / 卡过期） */
 export const listMemoryPending = (book: string): Promise<{ chapters: MemoryPendingItem[] }> =>
   unwrap(http.get(`/api/books/${enc(book)}/memory-card/pending`))
-export const rebuildMemoryCard = (book: string, no: number): Promise<Record<string, unknown>> =>
+export const rebuildMemoryCard = (
+  book: string,
+  no: number,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> =>
   unwrap(
-    http.post(`/api/books/${enc(book)}/chapters/${no}/memory-card/rebuild`, null, { timeout: 0 }),
+    http.post(`/api/books/${enc(book)}/chapters/${no}/memory-card/rebuild`, null, {
+      timeout: 0,
+      signal,
+    }),
   )
 export const rebuildMemoryBatch = (
   book: string,
   chapters?: number[],
+  signal?: AbortSignal,
 ): Promise<{ queued: number; done: number[]; failed: { no: number; error: string }[] }> =>
   unwrap(
     http.post(
       `/api/books/${enc(book)}/memory-card/rebuild-batch`,
       chapters ? { chapters } : { all_missing: true },
-      { timeout: 0 },
+      { timeout: 0, signal },
     ),
   )
 /** 挂载已存在的书稿目录（原地接管，不搬迁） */
@@ -429,4 +602,74 @@ export const putTimeline = (
       released,
       ...(expectedFingerprint === undefined ? {} : { expected_fingerprint: expectedFingerprint }),
     }),
+  )
+
+// —— 内容规划（规格08 §3.1 阶段B：rolling 书分层规划）——
+// 写入口一律强 If-Match：缺版本由后端 428 PLANNING_VERSION_REQUIRED 拒绝，
+// 不沿用旧端点「缺 If-Match 也允许写」的兼容豁免。
+export const getPlanningVersioned = (book: string): Promise<Versioned<PlanningModel>> =>
+  versioned(http.get(`/api/books/${enc(book)}/planning`))
+
+export const enablePlanning = (
+  book: string,
+  etag: string,
+  signal?: AbortSignal,
+): Promise<PlanningModel> =>
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/planning/enable`,
+      { mode: 'rolling' },
+      { ...matchHeaders(etag), signal },
+    ),
+  )
+
+export const generatePlanning = (
+  book: string,
+  scope: PlanningScope,
+  target: PlanningTarget,
+  requirements: string,
+  etag: string,
+  signal?: AbortSignal,
+): Promise<PlanningCandidate> =>
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/planning/generate`,
+      { scope, target, requirements },
+      { ...matchHeaders(etag), timeout: 0, signal },
+    ),
+  )
+
+export const previewPlanning = (
+  book: string,
+  scope: PlanningScope,
+  target: PlanningTarget,
+  content: string,
+  inputVersion: string,
+  etag: string,
+  rebase = false,
+): Promise<PlanningPreview> =>
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/planning/preview`,
+      { scope, target, content, input_version: inputVersion, rebase },
+      { ...matchHeaders(etag) },
+    ),
+  )
+
+export const adoptPlanning = (
+  book: string,
+  scope: PlanningScope,
+  target: PlanningTarget,
+  content: string,
+  inputVersion: string,
+  previewDigest: string,
+  etag: string,
+  signal?: AbortSignal,
+): Promise<PlanningAdoptResult> =>
+  unwrap(
+    http.post(
+      `/api/books/${enc(book)}/planning/adopt`,
+      { scope, target, content, input_version: inputVersion, preview_digest: previewDigest },
+      { ...matchHeaders(etag), timeout: 0, signal },
+    ),
   )

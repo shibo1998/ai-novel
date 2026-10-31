@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "scope": "仅本地候选来源记录，不是运行时自动启用配置",
+  "packages": [
+    {
+      "id": "restrained", "status": "candidate", "approved_by_user": false,
+      "source_path": "C:\\Users\\shibo\\Desktop\\拆书\\「忘语作品」\\《凡人修仙传》（精校全本）作者：忘语.txt",
+      "source_encoding": "gb18030", "source_sha256": "af759a9d1bf3753d73f7f02ddc043afec311565200da3c00d1f3d0803a6ac01a",
+      "corpus_fingerprint": "f8f55287b06455298ffd1c9bf04d9a5cbc33c553bf7693efb0dcf49a68beefbe",
+      "normalization": "原非空物理行经通读确认为段落，统一空行分段与UTF-8/LF；段内原文不改",
+      "examples": [
+        {"source_start_line": 128, "source_end_line": 133, "source_text_sha256": "0b84c3fd128e8c4aba67afedc2a4de656171d98d1085983465e80dd8e37dd870", "start_paragraph": 1, "end_paragraph": 6, "scene_types": ["action", "general"], "content_fingerprint": "2f854b896edaf499c4d7948caa5fc7349afc569fd2eea7d516c64bd7d749b8be", "visible_chars": 422},
+        {"source_start_line": 145, "source_end_line": 149, "source_text_sha256": "f5b89b40e9bb65f7af7008f4a76197eeb708b7598236b52785a51b7d013852f4", "start_paragraph": 7, "end_paragraph": 11, "scene_types": ["general", "reasoning"], "content_fingerprint": "3f8477eb8c9e9d08f678b81df902b767c348726e6b7e39841d9080da5f538ef1", "visible_chars": 298}
+      ]
+    },
+    {
+      "id": "clear_action", "status": "candidate", "approved_by_user": false,
+      "source_path": "C:\\Users\\shibo\\Desktop\\拆书\\「我吃西红柿作品」\\《雪鹰领主》（校对版全本）作者：我吃西红柿.txt",
+      "source_encoding": "gb18030", "source_sha256": "3a0101cb6e82c5b90c90fab6d37da2ce3a687bc9c84e7e46829f6cd6a199dfc8",
+      "corpus_fingerprint": "f5c05efa9400ec999038e449bf91ebedadce1001852aaa38265b51652949b8f6",
+      "normalization": "原非空物理行经通读确认为段落，统一空行分段与UTF-8/LF；段内原文不改",
+      "examples": [
+        {"source_start_line": 415, "source_end_line": 426, "source_text_sha256": "bb0c3dafa476521faba5a609f18df11331348158b65d2c4a30ad98e4741907e6", "start_paragraph": 1, "end_paragraph": 12, "scene_types": ["action", "general"], "content_fingerprint": "54bdc5dbcd1da3de3591a588f683e00ae48953097a393b9fffe125df1df8920b", "visible_chars": 400},
+        {"source_start_line": 433, "source_end_line": 441, "source_text_sha256": "e6e3167b96818245c518bf8920d8352a2fe3a1e4408d2cb75dcc724d586abf81", "start_paragraph": 13, "end_paragraph": 21, "scene_types": ["action", "general"], "content_fingerprint": "588cadf595361a18d51cc677b9923b8510c015fa85c9aebeec07fb5f01ab8277", "visible_chars": 379}
+      ]
+    },
+    {
+      "id": "suspense", "status": "candidate", "approved_by_user": false,
+      "source_path": "C:\\Users\\shibo\\Desktop\\拆书\\悬疑脑洞\\十日终焉-2025060210.txt",
+      "source_encoding": "utf-8-sig", "source_sha256": "e38b60c90777c5a324e4034265e7d73c33d6d70842aac8a1407dd55e1158a103",
+      "corpus_fingerprint": "63a43f74261e5aef178a2e9007b81b3d85e70afebb412b5c256deb41c95d1cab",
+      "normalization": "原非空物理行经通读确认为段落，统一空行分段与UTF-8/LF；段内原文不改",
+      "examples": [
+        {"source_start_line": 28, "source_end_line": 38, "source_text_sha256": "7d3c5f4ebce8d403c5225264c3da45a603920862b846dbea732e836cc863533d", "start_paragraph": 1, "end_paragraph": 11, "scene_types": ["general", "reasoning"], "content_fingerprint": "e123ec5b3b6c0a2889a082def71809cc7a02cd05df59126794a09afb29d009b8", "visible_chars": 305},
+        {"source_start_line": 39, "source_end_line": 48, "source_text_sha256": "d166a504b34aaf79d00fe6bafa9b3c50a6297372aa813ee7dab0b73404395abb", "start_paragraph": 12, "end_paragraph": 21, "scene_types": ["dialogue", "general"], "content_fingerprint": "b9a688a398d6d32b3ebdc7119fb6d0f676b67142bab9695a80a0edbb459cbbd0", "visible_chars": 561}
+      ]
+    },
+    {
+      "id": "urban", "status": "candidate", "approved_by_user": false,
+      "source_path": "C:\\Users\\shibo\\Desktop\\拆书\\都市高武\\《我在精神病院学斩神》-+三九音域.txt",
+      "source_encoding": "utf-8-sig", "source_sha256": "44098b5f7ff92198cfd095b1b919e1f77aff2de7dc552b43fefed9edd26708fe",
+      "corpus_fingerprint": "6f68b2d8e22cbea92529c76d5e927c7da5bac38f77aab8d2619c499c0a7c5cdd",
+      "normalization": "原非空物理行经通读确认为段落，统一空行分段与UTF-8/LF；段内原文不改",
+      "examples": [
+        {"source_start_line": 21, "source_end_line": 39, "source_text_sha256": "0f50b61df137e8a15e0558025a3706b784d8ec8a12fadc23f30abb0710dcb203", "start_paragraph": 1, "end_paragraph": 10, "scene_types": ["dialogue", "general", "opening"], "content_fingerprint": "25d778c92d501883687aa122c34c56cd42d25d2de2534ed5b9e0e784ddc5f4cc", "visible_chars": 411},
+        {"source_start_line": 57, "source_end_line": 81, "source_text_sha256": "5cec2c45f6555d4a8bd0c6217036ecca825bad2f05043880ad8b78a256776867", "start_paragraph": 11, "end_paragraph": 23, "scene_types": ["action", "general"], "content_fingerprint": "c0ffdd574bd22a3e6fe58cb69561e2147e4350537453a26f53566fbaf561e960", "visible_chars": 338}
+      ]
+    },
+    {
+      "id": "historical", "status": "candidate", "approved_by_user": false,
+      "source_path": "C:\\Users\\shibo\\Desktop\\拆书\\历史古代\\冒姓琅琊-2026061721.txt",
+      "source_encoding": "utf-8-sig", "source_sha256": "b4fb00ff5e0e52495b0e4b572824b654866b523c500817b26c01b385cffce2b2",
+      "corpus_fingerprint": "d646ef85589313f66f966b3a5783b1b60b2ae655e34014d85d37408ac77a613d",
+      "normalization": "原非空物理行经通读确认为段落，统一空行分段与UTF-8/LF；段内原文不改",
+      "examples": [
+        {"source_start_line": 64, "source_end_line": 79, "source_text_sha256": "718e25f09515f5404863f3a3540cf2136979e1f1b8c43058a86d98419e4793c5", "start_paragraph": 1, "end_paragraph": 16, "scene_types": ["dialogue", "general", "reasoning"], "content_fingerprint": "630df261fe5839b6220669ca1488aeb1c5dbf9f984cd3049aa2ae66fe93013f1", "visible_chars": 583},
+        {"source_start_line": 239, "source_end_line": 246, "source_text_sha256": "855fb91355b188f20550c5c3a025764f38317e964906e35295140b9cff325968", "start_paragraph": 17, "end_paragraph": 24, "scene_types": ["dialogue", "general", "reasoning"], "content_fingerprint": "1d896d94893ae91355ccd43c772b88ffec9b093f65a8c41d3d29dbde706f7f39", "visible_chars": 259}
+      ]
+    },
+    {
+      "id": "light_daily", "status": "candidate", "approved_by_user": false,
+      "source_path": "C:\\Users\\shibo\\Desktop\\拆书\\玄幻脑洞\\开局长生万古，苟到天荒地老-2026041910.txt",
+      "source_encoding": "utf-8-sig", "source_sha256": "5d8cb9ef5d3572e6876c4aa96a6e118c8658ab30524c79c62dfcdd2e9a9ce934",
+      "corpus_fingerprint": "42c918be79bd97e98934edf862234b707100b135747d72431fab8907d681e01e",
+      "normalization": "原非空物理行经通读确认为段落，统一空行分段与UTF-8/LF；段内原文不改",
+      "examples": [
+        {"source_start_line": 209, "source_end_line": 224, "source_text_sha256": "766311fe345581c7e700dd64d1c1c4e1629700d3f257181b0a3e82bed5e41344", "start_paragraph": 1, "end_paragraph": 16, "scene_types": ["general", "transition"], "content_fingerprint": "cb48c1dd056c14ea77f019c53fb8a5c3911984046c4dee7b5a97f77b6053c7e1", "visible_chars": 450},
+        {"source_start_line": 225, "source_end_line": 238, "source_text_sha256": "9a5bff0aa1a9be48598cc28897d203bcbc5e54ac8421b703a823977f825fef22", "start_paragraph": 17, "end_paragraph": 30, "scene_types": ["dialogue", "general", "transition"], "content_fingerprint": "26b92814e7832836187cf9e277283f578eaa54e6be80868f4c4567f31a294720", "visible_chars": 369}
+      ]
+    }
+  ]
+}

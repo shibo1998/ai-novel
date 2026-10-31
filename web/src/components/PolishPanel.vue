@@ -419,7 +419,7 @@ onUnmounted(() => {
         size="small"
         :disabled="!!busy || disabled || request.payload.expected_revision !== revision"
         @click="generateCandidate(true)"
-        >查询同一请求结果（原 ID）</el-button
+        >查询同一请求结果（原请求编号）</el-button
       >
     </el-alert>
     <div v-if="lastRequestId" class="dim mb-2">本次请求 ID：{{ lastRequestId }}</div>

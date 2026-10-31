@@ -1,0 +1,545 @@
+{
+  "book": "流程测试书",
+  "temp_home": "D:\\software\\_workbuddy-isolated\\cn-tmp\\ainovel-a-t09-bjjjig_a",
+  "original_files": 64,
+  "chapters": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13
+  ],
+  "rebuild": {
+    "books": 1,
+    "chapters": 13,
+    "fts_reindexed": 1,
+    "dropped": []
+  },
+  "original_untouched": true,
+  "problems": [],
+  "result": "pass",
+  "before": {
+    "chapter_numbers": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ],
+    "per_chapter": {
+      "1": {
+        "status": "finalized",
+        "words": 2789,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在出租屋遭黑道围堵夺令，暗运微末灵力引发电磁紊乱反杀破局，逼问出幕后买家后遁入夜色。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "2": {
+        "status": "finalized",
+        "words": 2557,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒避开黑伞女监视将刀疤强拖入管道死角，以玄铁令强镇噬魂禁制逼其吐露修真资本爪牙的买令内幕",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-06",
+          "M-06"
+        ],
+        "mech_ineffective": []
+      },
+      "3": {
+        "status": "finalized",
+        "words": 2613,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒直面黑伞主人苏婉，以玄铁令暗纹破局换取隐气散与暂时同盟",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "4": {
+        "status": "finalized",
+        "words": 2492,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒遭门阀精锐破门袭杀，吞毒借死遁入地下排污暗渠，引爆工业沼气绝地反杀感气境洗髓杀手并夺得空间道标。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-18"
+        ],
+        "mech_ineffective": []
+      },
+      "5": {
+        "status": "finalized",
+        "words": 2702,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在材料断供绝境下以废弃芯片融合灵砂手搓阵引，成功修复玄铁令并反向瘫痪门阀侦测网络",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "6": {
+        "status": "finalized",
+        "words": 2745,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在烂尾楼夹层绝境中融合科技线圈与灵气越级反杀金牌杀手首领，夺得青云坊入场券并激活林父手表暗藏的坐标信标。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-06",
+          "M-18"
+        ],
+        "mech_ineffective": []
+      },
+      "7": {
+        "status": "finalized",
+        "words": 2897,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "苏婉假借监察特派员之势震慑坊门巡检，林寒暗催玄铁令铭文瘫痪照魄灵镜，二人涉险潜入青云坊外市。",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "8": {
+        "status": "finalized",
+        "words": 2761,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒顺藤摸瓜潜入青云坊暗阁，当场识破情报贩子联合门阀的伏杀陷阱并暴力反制，强势夺取失踪绝密玉简。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "9": {
+        "status": "finalized",
+        "words": 2953,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒与暗门监察使苏婉会合，避开门阀巡察使宵禁搜捕并潜入灵枢阁通风灵道",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "10": {
+        "status": "finalized",
+        "words": 2717,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒以玄铁令残铭完美共鸣古阵阵眼，强行破除灵枢阁高阶杀阵并瘫痪门阀死士防线，成功杀入核心资料室。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-02",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-06",
+          "M-12"
+        ],
+        "mech_ineffective": []
+      },
+      "11": {
+        "status": "finalized",
+        "words": 3370,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在自爆倒计时极值中强杀异化门阀执事夺得灵枢核心，破开休眠舱却发现父母已被提前转移留下一枚黑伞骨簪。",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-02",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-06",
+          "M-12"
+        ],
+        "mech_ineffective": []
+      },
+      "12": {
+        "status": "finalized",
+        "words": 3263,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒携苏婉于地舱绝境中借玄铁令觉醒撕开古灵脉暗道遁走，反手引爆残阵瓦解门阀围剿并获悉父母转移真相",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-12"
+        ],
+        "mech_ineffective": []
+      },
+      "13": {
+        "status": "finalized",
+        "words": 2666,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒荒滩抢修苏婉崩血义眼，借报废发电机零件改道供能，赶在搜山队合围前潜入太昊最后一班运料车夹层",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      }
+    },
+    "outline_row_count": 13,
+    "outline_rows_digest": "4a928ac1280670711defb1bad503ef36091a463328843a353b260b2cc7ddf310"
+  },
+  "after": {
+    "chapter_numbers": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13
+    ],
+    "per_chapter": {
+      "1": {
+        "status": "finalized",
+        "words": 2789,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在出租屋遭黑道围堵夺令，暗运微末灵力引发电磁紊乱反杀破局，逼问出幕后买家后遁入夜色。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "2": {
+        "status": "finalized",
+        "words": 2557,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒避开黑伞女监视将刀疤强拖入管道死角，以玄铁令强镇噬魂禁制逼其吐露修真资本爪牙的买令内幕",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-02",
+          "M-02",
+          "M-02",
+          "M-06",
+          "M-06"
+        ],
+        "mech_ineffective": []
+      },
+      "3": {
+        "status": "finalized",
+        "words": 2613,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒直面黑伞主人苏婉，以玄铁令暗纹破局换取隐气散与暂时同盟",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "4": {
+        "status": "finalized",
+        "words": 2492,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒遭门阀精锐破门袭杀，吞毒借死遁入地下排污暗渠，引爆工业沼气绝地反杀感气境洗髓杀手并夺得空间道标。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-18"
+        ],
+        "mech_ineffective": []
+      },
+      "5": {
+        "status": "finalized",
+        "words": 2702,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在材料断供绝境下以废弃芯片融合灵砂手搓阵引，成功修复玄铁令并反向瘫痪门阀侦测网络",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "6": {
+        "status": "finalized",
+        "words": 2745,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在烂尾楼夹层绝境中融合科技线圈与灵气越级反杀金牌杀手首领，夺得青云坊入场券并激活林父手表暗藏的坐标信标。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-06",
+          "M-18"
+        ],
+        "mech_ineffective": []
+      },
+      "7": {
+        "status": "finalized",
+        "words": 2897,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "苏婉假借监察特派员之势震慑坊门巡检，林寒暗催玄铁令铭文瘫痪照魄灵镜，二人涉险潜入青云坊外市。",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "8": {
+        "status": "finalized",
+        "words": 2761,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒顺藤摸瓜潜入青云坊暗阁，当场识破情报贩子联合门阀的伏杀陷阱并暴力反制，强势夺取失踪绝密玉简。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "9": {
+        "status": "finalized",
+        "words": 2953,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒与暗门监察使苏婉会合，避开门阀巡察使宵禁搜捕并潜入灵枢阁通风灵道",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      },
+      "10": {
+        "status": "finalized",
+        "words": 2717,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒以玄铁令残铭完美共鸣古阵阵眼，强行破除灵枢阁高阶杀阵并瘫痪门阀死士防线，成功杀入核心资料室。",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-02",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-06",
+          "M-12"
+        ],
+        "mech_ineffective": []
+      },
+      "11": {
+        "status": "finalized",
+        "words": 3370,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒在自爆倒计时极值中强杀异化门阀执事夺得灵枢核心，破开休眠舱却发现父母已被提前转移留下一枚黑伞骨簪。",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-02",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-05",
+          "M-06",
+          "M-12"
+        ],
+        "mech_ineffective": []
+      },
+      "12": {
+        "status": "finalized",
+        "words": 3263,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒携苏婉于地舱绝境中借玄铁令觉醒撕开古灵脉暗道遁走，反手引爆残阵瓦解门阀围剿并获悉父母转移真相",
+        "memory_present": true,
+        "mech_verdict": "blocked",
+        "mech_blocks": [
+          "M-01"
+        ],
+        "mech_warns": [
+          "M-12"
+        ],
+        "mech_ineffective": []
+      },
+      "13": {
+        "status": "finalized",
+        "words": 2666,
+        "prose_status_field": "final",
+        "outline_confirmed": true,
+        "outline_core_event": "林寒荒滩抢修苏婉崩血义眼，借报废发电机零件改道供能，赶在搜山队合围前潜入太昊最后一班运料车夹层",
+        "memory_present": true,
+        "mech_verdict": "pass",
+        "mech_blocks": [],
+        "mech_warns": [
+          "M-05",
+          "M-05"
+        ],
+        "mech_ineffective": []
+      }
+    },
+    "outline_row_count": 13,
+    "outline_rows_digest": "4a928ac1280670711defb1bad503ef36091a463328843a353b260b2cc7ddf310"
+  }
+}

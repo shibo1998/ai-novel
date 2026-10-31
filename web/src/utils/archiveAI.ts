@@ -1,11 +1,9 @@
-// G 链（G1-G5 档案 AI 生成）的提示词变量装配（规格02 §4）。
-// 提示词渲染是严格模式：缺任何 〖变量〗 后端直接拒绝（404/502），
-// 所以变量必须按 prompts/generate/G*.md 的清单逐一提供。
+// G 链共用参数装配（规格07 UI-17）：取消由表单层处理，空值不再被默认值吞掉。
+// 规格08 A-T04：G5 影响预览的中文摘要与 diff 文本组装也在这里，避免两个入口各写一份。
 import type { AIGenResult } from '@/api'
-import { aiGenerate, getBible, listCharactersFull } from '@/api'
-import type { CharacterData } from '@/api/types'
+import { aiGenerate } from '@/api'
+import type { BookConfig, BookMeta, CharacterData, OutlinePreview } from '@/api/types'
 
-/** 各 G 链的采纳目标（决定调 /adopt/{target}）。 */
 export const G_TARGETS: Record<string, 'bible' | 'characters' | 'outline'> = {
   G1: 'bible',
   G2: 'bible',
@@ -13,7 +11,6 @@ export const G_TARGETS: Record<string, 'bible' | 'characters' | 'outline'> = {
   G4: 'characters',
   G5: 'outline',
 }
-
 export const G_LABELS: Record<string, string> = {
   G1: 'G1 世界观',
   G2: 'G2 力量体系',
@@ -21,19 +18,49 @@ export const G_LABELS: Record<string, string> = {
   G4: 'G4 关系网',
   G5: 'G5 全书大纲',
 }
+export interface ArchiveAIParams {
+  genre: string
+  story_core: string
+  benchmark: string
+  character_requirements: string
+  logline: string
+  target_chapters: string
+  chapter_word_range: string
+}
 
-/** 交互式补充单个提示词变量（UI 弹 prompt 输入框）；取消返回空串。 */
-export type AskFn = (label: string, value?: string) => Promise<string>
+export function defaultAIParams(meta: BookMeta, config: BookConfig): ArchiveAIParams {
+  const range = config.chapter_word_range ?? meta.chapter_word_range ?? [2200, 2800]
+  return {
+    genre: meta.genre ?? '',
+    story_core: '',
+    benchmark: meta.benchmark_book ?? '',
+    character_requirements: '',
+    logline: meta.logline ? String(meta.logline) : '',
+    target_chapters: '120',
+    chapter_word_range: `${range[0] ?? 2200}-${range[1] ?? 2800}`,
+  }
+}
 
-/** 世界观摘要：圣经各节压成「【节名】内容」单行段，跳过空节与自检节。 */
+export function validateAIParams(pid: string, params: ArchiveAIParams): string | null {
+  if ((pid === 'G1' || pid === 'G2') && (!params.genre.trim() || !params.story_core.trim()))
+    return '题材与故事核必填'
+  if ((pid === 'G3' || pid === 'G4') && !params.character_requirements.trim())
+    return '角色需求清单必填'
+  if (pid === 'G5') {
+    if (!params.logline.trim()) return '一句话故事必填'
+    const chapters = Number(params.target_chapters)
+    if (!Number.isInteger(chapters) || chapters <= 0) return '目标总章数须为正整数'
+    if (!/^\d+\s*-\s*\d+$/.test(params.chapter_word_range)) return '单章字数区间格式应为 2200-2800'
+  }
+  return null
+}
+
 export function bibleSummary(b: Record<string, string>): string {
   const lines = Object.entries(b)
     .filter(([title, content]) => content.trim() && !title.includes('自检'))
     .map(([title, content]) => `【${title}】${content.trim().replace(/\s+/g, ' ').slice(0, 600)}`)
   return lines.length ? lines.join('\n') : '（世界观圣经暂为空：请按题材常识构建）'
 }
-
-/** 角色卡摘要：每角色一行「名字（role）：境界/位置/情绪/存亡」关键动态状态。 */
 export function charSummary(cs: CharacterData[]): string {
   const lines = cs.map((c) => {
     const st = (c.status ?? {}) as Record<string, unknown>
@@ -48,80 +75,106 @@ export function charSummary(cs: CharacterData[]): string {
   return lines.length ? lines.join('\n') : '（暂无角色卡）'
 }
 
-/** 读圣经摘要：读失败也返回占位串，保证提示词变量齐全（缺失会被严格渲染拒绝）。 */
-export async function bibleDigest(book: string): Promise<string> {
-  try {
-    return bibleSummary(await getBible(book))
-  } catch {
-    return '（世界观圣经读取失败）'
-  }
-}
-
-/** 读角色卡摘要：同上，失败不阻断 G5。 */
-export async function charDigest(book: string): Promise<string> {
-  try {
-    return charSummary(await listCharactersFull(book))
-  } catch {
-    return '（角色卡读取失败）'
-  }
-}
-
-/** 按 prompt_id 装配全部变量并调用 AI 生成（G1-G5）。 */
-export async function genArchive(book: string, pid: string, ask: AskFn): Promise<AIGenResult> {
+export function archiveVariables(
+  pid: string,
+  params: ArchiveAIParams,
+  bible: Record<string, string>,
+  characters: CharacterData[],
+): Record<string, string> {
   const vars: Record<string, string> = {}
-  // G3/G4/G5 的提示词都要真实世界观摘要。G3/G4 早前硬编码 "见圣经"——模型收到的
-  // 就是这三个字，等于没给世界观；G5 则因漏传该变量被后端严格渲染直接拒绝（404）。
-  if (pid === 'G3' || pid === 'G4' || pid === 'G5') {
-    vars['世界观摘要'] = await bibleDigest(book)
-  }
+  if (['G3', 'G4', 'G5'].includes(pid)) vars['世界观摘要'] = bibleSummary(bible)
   if (pid === 'G5') {
-    // G5 必需 5 个变量：世界观摘要 / 角色卡摘要 / logline / 目标总章数 / 单章字数区间
-    vars['角色卡摘要'] = await charDigest(book)
-    vars['目标总章数'] = (await ask('目标总章数', '120')) || '120'
-    vars['单章字数区间'] = '2200-2800'
-    vars['logline'] = await ask('一句话故事（主角为了X必须做Y但障碍是Z）')
+    vars['角色卡摘要'] = charSummary(characters)
+    vars['目标总章数'] = params.target_chapters
+    vars['单章字数区间'] = params.chapter_word_range
+    vars['logline'] = params.logline
   }
   if (pid === 'G1' || pid === 'G2') {
-    try {
-      const b = await getBible(book)
-      vars['既有设定摘要'] = b['基础设定'] ?? ''
-      vars['基础设定'] = b['基础设定'] ?? ''
-      vars['既有力量体系'] = b['力量体系'] ?? ''
-    } catch {
-      // 无圣经时留空
-    }
-    vars['题材'] = '都市'
-    vars['故事核'] = await ask('故事核（一句话）')
-    vars['对标书'] = ''
+    vars['既有设定摘要'] = bible['基础设定'] ?? ''
+    vars['基础设定'] = bible['基础设定'] ?? ''
+    vars['既有力量体系'] = bible['力量体系'] ?? ''
+    vars['题材'] = params.genre
+    vars['故事核'] = params.story_core
+    vars['对标书'] = params.benchmark
   }
   if (pid === 'G3' || pid === 'G4') {
-    try {
-      const cs = await listCharactersFull(book)
-      vars['角色卡合集'] = cs.map((c) => c._body ?? '').join('\n\n')
-    } catch {
-      // 无角色时留空
-    }
-    vars['角色需求清单'] =
-      (await ask('角色需求清单（每行：名字+定位+要求）', '林寒+主角+底层逆袭')) || ''
+    vars['角色卡合集'] = characters.map((c) => c._body ?? '').join('\n\n')
+    vars['角色需求清单'] = params.character_requirements
   }
-  return aiGenerate(book, pid, vars)
+  return vars
 }
 
-/** 采纳结果的「人话摘要」（后端原始响应是 dict，直接 JSON.stringify 给用户看不懂）。 */
+export async function genArchive(
+  book: string,
+  pid: string,
+  variables: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<AIGenResult> {
+  return aiGenerate(book, pid, variables, signal)
+}
+
 export function adoptSummary(target: string, r: Record<string, unknown>): string {
-  if (target === 'bible') {
-    const updated = Array.isArray(r.updated) ? r.updated.length : 0
-    return `圣经已合并：更新 ${updated} 节（其余节保留原内容）`
-  }
+  if (target === 'bible')
+    return `圣经已合并：更新 ${Array.isArray(r.updated) ? r.updated.length : 0} 节（其余节保留）`
   if (target === 'characters') {
     const created = Array.isArray(r.created) ? (r.created as string[]) : []
     const kept = Array.isArray(r.kept) ? (r.kept as string[]) : []
-    const relations = typeof r.relations_written === 'number' ? r.relations_written : 0
-    return `角色卡已落盘：新建 ${created.length} 个${created.length ? `（${created.join('、')}）` : ''}，保留已有 ${kept.length} 个，写回关系行 ${relations} 条`
+    return `角色卡已落盘：新建 ${created.length} 个${created.length ? `（${created.join('、')}）` : ''}，保留已有 ${kept.length} 个，写回关系 ${Number(r.relations_written ?? 0)} 条`
   }
-  const rows = typeof r.chapter_rows === 'number' ? r.chapter_rows : 0
-  const vols = typeof r.volumes === 'number' ? r.volumes : 0
-  const added = typeof r.foreshadows_added === 'number' ? r.foreshadows_added : 0
-  const kept = typeof r.foreshadows_kept === 'number' ? r.foreshadows_kept : 0
-  return `大纲已合并：章节 ${rows} 行 / 卷 ${vols} 个；伏笔新增 ${added} 条、保留 ${kept} 条（不删已有台账）`
+  return `大纲已采纳：章节 ${Number(r.chapter_rows ?? 0)} 行 / 卷 ${Number(r.volumes ?? 0)} 个；伏笔新增 ${Number(r.foreshadows_added ?? 0)} 条、保留 ${Number(r.foreshadows_kept ?? 0)} 条；正文未重写`
+}
+
+/** 章号列表压成区间文本：7-12 / 1、3、7-9（规格08 A-T04 展示用）。 */
+export function compressNumbers(numbers: number[]): string {
+  if (!numbers.length) return '无'
+  const sorted = [...numbers].sort((a, b) => a - b)
+  const parts: string[] = []
+  let start = sorted[0]
+  let prev = sorted[0]
+  for (const n of sorted.slice(1)) {
+    if (n === prev + 1) {
+      prev = n
+      continue
+    }
+    parts.push(start === prev ? String(start) : `${start}-${prev}`)
+    start = n
+    prev = n
+  }
+  parts.push(start === prev ? String(start) : `${start}-${prev}`)
+  return parts.join('、')
+}
+
+/**
+ * G5 影响预览的中文摘要（规格08 A-T04）。
+ * 关键：未知一律说"无法判定"，绝不显示成 0，避免作者把"查不了"当成"没影响"。
+ */
+export function outlineImpactText(p: OutlinePreview): string {
+  const lines: string[] = []
+  lines.push(
+    `替换 OUTLINE.md 章节总表/卷规划/爽点节奏（${p.chapter_rows} 行、${p.volumes} 卷），并合并 PLOT_POINTS.md（新增 ${p.foreshadows_added} 条、保留 ${p.foreshadows_kept} 条）。`,
+  )
+  if (p.written.known) {
+    const affected = p.affected_total === null ? '无法判定' : `${p.affected_total} 章`
+    lines.push(
+      `已有正文 ${p.written.total} 章（${compressNumbers(p.written.numbers)}）；本次替换范围内命中 ${affected}：${compressNumbers(p.affected_numbers)}。正文不会随大纲采纳自动重写。`,
+    )
+  } else {
+    lines.push('已有正文章数无法判定（章节文件读取失败），不要据此认为"没有影响"；修复后再采纳。')
+  }
+  lines.push(
+    `新增章号：${compressNumbers(p.added_numbers)}｜删除章号：${compressNumbers(p.removed_numbers)}｜内容变化：${compressNumbers(p.changed_numbers)}`,
+  )
+  if (!p.old_readable) lines.push('旧 OUTLINE.md 读取失败，差异与旧章号无法判定。')
+  if (!p.plot_readable) lines.push('旧 PLOT_POINTS.md 读取失败，伏笔基线无法判定。')
+  for (const w of p.warnings) lines.push(`警告：${w}`)
+  return lines.join('\n')
+}
+
+/** 预览里的旧/新全文（含伏笔台账）拼成 diff 文本，标记缺失以免被当成"删空了"。 */
+export function outlineDiffText(
+  outlineText: string,
+  plotText: string | null,
+  label: string,
+): string {
+  return `${outlineText.trim()}\n\n## 伏笔台账\n\n${plotText === null ? `（${label}：无法判定）` : plotText.trim()}`
 }

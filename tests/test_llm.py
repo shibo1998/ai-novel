@@ -83,3 +83,39 @@ def test_single_openai_client(home):
     assert isinstance(cli, llm.OpenAICompatClient)
     assert cli.base_url == "https://relay.example.com/v1"
     assert cli.api_key == "sk-xxx"
+
+
+def test_call_timeout_is_not_retried(monkeypatch):
+    """（规格12 §5）总时长超时不能自动重试：再等一轮还是同一份长提示词。"""
+    from ainovel import llm
+
+    monkeypatch.setattr(llm, "RETRY_BASE_DELAY", 0)
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        raise llm.LLMError("调用超时（超过 600 秒未完成）")
+
+    import pytest
+
+    with pytest.raises(llm.LLMError, match="调用超时"):
+        llm._with_retry(fn)
+    assert calls["n"] == 1
+
+
+def test_call_timeout_is_not_retried(monkeypatch):
+    """（规格12 §5）总时长超时不能自动重试：再等一轮还是同一份长提示词。"""
+    from ainovel import llm
+
+    monkeypatch.setattr(llm, "RETRY_BASE_DELAY", 0)
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        raise llm.LLMError("调用超时（超过 600 秒未完成）")
+
+    import pytest
+
+    with pytest.raises(llm.LLMError, match="调用超时"):
+        llm._with_retry(fn)
+    assert calls["n"] == 1

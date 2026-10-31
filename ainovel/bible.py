@@ -97,6 +97,11 @@ def write(book: str, sections: dict[str, str]) -> None:
     power_rows()/realm_order()/terms() 静默返回空，下游的境界倒退检测、
     术语一致性比对随之失效——这类"不报错的失效"比崩溃更难发现。
     """
+    atomic.write_text(books.book_dir(book) / "STORY_BIBLE.md", render(sections))
+
+
+def render(sections: dict[str, str]) -> str:
+    """（规格10 §2.3）候选与正式写回共用纯渲染，不发布档案。"""
     problems = validate_sections(sections)
     if problems:
         raise BibleError("；".join(problems))
@@ -104,7 +109,7 @@ def write(book: str, sections: dict[str, str]) -> None:
         s for s in sections if s not in books.BIBLE_SECTIONS
     ]
     body = "\n".join(f"## {s}\n\n{sections[s].strip()}\n" for s in ordered if sections[s] is not None)
-    atomic.write_text(books.book_dir(book) / "STORY_BIBLE.md", f"# 世界观圣经\n\n{body}")
+    return f"# 世界观圣经\n\n{body}"
 
 
 def update_section(book: str, title: str, content: str) -> None:

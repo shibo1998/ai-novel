@@ -54,15 +54,15 @@ function display(value: unknown): string {
           class="mb-2"
           :title="display(w)"
         />
-        <h4 class="font-bold">实际 system</h4>
+        <h4 class="font-bold">实际系统提示词</h4>
         <pre class="stream-box">{{ r.system || '（空）' }}</pre>
-        <h4 class="mt-2 font-bold">实际 user</h4>
+        <h4 class="mt-2 font-bold">实际用户消息</h4>
         <pre class="stream-box">{{ r.user || '（空）' }}</pre>
-        <h4 class="mt-2 font-bold">输入 token 估算 / 各块预算</h4>
+        <h4 class="mt-2 font-bold">输入词元估算 / 各块预算</h4>
         <pre class="stream-box">{{
           display(r.meta?.est_tokens ?? r.meta?.token_estimates ?? r.meta?.tokens)
         }}</pre>
-        <h4 class="mt-2 font-bold">参与模板（ID / version / source / digest）</h4>
+        <h4 class="mt-2 font-bold">参与模板（编号 / 版本 / 来源 / 摘要）</h4>
         <pre class="stream-box">{{ display(r.meta?.templates) }}</pre>
         <h4 class="mt-2 font-bold">有效文风 / 开关 / 特征指纹 / 范例引用</h4>
         <pre class="stream-box">{{ display(r.meta?.style) }}</pre>

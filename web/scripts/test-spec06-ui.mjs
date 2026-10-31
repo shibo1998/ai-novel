@@ -9,6 +9,11 @@ const require = createRequire(import.meta.url)
 const { compileScript, parse } = require('@vue/compiler-sfc')
 const ts = require('typescript')
 const vue = require('vue')
+const storage = new Map()
+globalThis.localStorage = {
+  getItem: (key) => storage.get(key) ?? null,
+  setItem: (key, value) => storage.set(key, String(value)),
+}
 const flush = async () => {
   await vue.nextTick()
   await new Promise((resolve) => setImmediate(resolve))
@@ -32,6 +37,24 @@ function setupSfc(relative, props, imports) {
   const defaults = {
     vue: { ...vue, onUnmounted: (hook) => hooks.push(hook) },
     axios: { isAxiosError: () => false },
+    '@/utils/prose': {
+      buildProseMapping: () => ({ paragraphs: [], lineToParagraph: [] }),
+      paragraphForLine: () => null,
+      paragraphForUniqueQuote: () => null,
+    },
+    '@/utils/stream': {
+      StreamTextBuffer: class {
+        flush() {}
+        dispose() {}
+        append() {}
+      },
+      updateFollowState: () => ({ following: true, showReturn: false }),
+    },
+    '@/utils/errors': { recordError() {}, reportValidation() {} },
+    '@/utils/tasks': {
+      withTask: async (_options, execute) => execute(new AbortController().signal, {}),
+    },
+    '@/utils/editing': { registerDirtyGuard: () => () => {} },
     'element-plus': {
       ElMessage: {
         success: log('success'),
@@ -96,13 +119,21 @@ for (const phase of ['mechcheck', 'review', 'unmount']) {
       {
         '@/api': api,
         'vue-router': { useRoute: () => route, useRouter: () => ({ push() {} }) },
-        '@/stores/book': { useBookStore: () => ({ setCurrentBook() {} }) },
-        '@/utils/status': { tagType: () => 'info' },
+        '@/stores/book': { useBookStore: () => ({ setCurrentBook() {}, rememberChapter() {} }) },
+        '@/utils/status': {
+          tagType: () => 'info',
+          statusLabel: String,
+          verdictLabel: String,
+          levelLabel: String,
+          ruleLabel: String,
+          stageLabel: String,
+        },
       },
     )
     try {
       await flush()
       const running = component.state.runAuto()
+      await flush()
       await flush()
       if (phase === 'unmount') component.unmount()
       else {
@@ -120,6 +151,7 @@ for (const phase of ['mechcheck', 'review', 'unmount']) {
               ['review', '书A', 1],
             ]
           : [['mechcheck', '书A', 1]],
+        JSON.stringify(component.state.autoLog.value),
       )
       if (phase !== 'unmount') assert.equal(component.state.autoRunning.value, false)
     } finally {

@@ -3,7 +3,7 @@
 为什么要有它：
 - V1 审校的 `ai_flavor` 是 LLM 主观分——不可解释（说不出哪句像 AI）、不可回归
   （换模型就漂）、可被讨好（模型倾向给高分）。规则检测器的分数是可复现的客观证据。
-- 它只输出「命中清单 + 干净度分」，不改正文：改写仍由 V2/V5 做，且改写后要重新过机检。
+- 输出「命中清单 + 规则参考分」及规格09的独立透明计量，不改正文；计量不扣分、不进入模型摘要。
 
 方向约定（踩过坑）：`score` 是**干净度**，越高越干净，与 V1 的 `ai_flavor` 同向。
 """
@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 import yaml
 
+from . import stylemetrics
 from .paths import lint_dir
 
 CONFIG_NAME = "deslop.yaml"
@@ -55,6 +56,7 @@ class DeslopResult:
     word_count: int = 0
     density_penalty: float = 0.0
     raw_penalty: float = 0.0
+    metrics: dict[str, Any] = field(default_factory=dict)  # 规格09 §2：不影响旧评分和命中
 
     @property
     def blocking(self) -> list[DeslopHit]:
@@ -69,6 +71,7 @@ class DeslopResult:
             "hits_count": {"blocking": len(self.blocking),
                            "advisory": len(self.hits) - len(self.blocking)},
             "density_penalty": round(self.density_penalty, 2),
+            "metrics": self.metrics,
         }
 
     def top_hits(self, n: int = 8) -> str:
@@ -321,9 +324,10 @@ def analyze(body: str, *, config: dict[str, Any] | None = None) -> DeslopResult:
 
     text = body or ""
     words = len(re.sub(r"\s+", "", text))
+    metrics = stylemetrics.analyze(text)
     min_chars = int(config["score"].get("min_body_chars", MIN_BODY_CHARS))
     if words < min_chars:
-        return DeslopResult(score=-1, hits=[], word_count=words,
+        return DeslopResult(score=-1, hits=[], word_count=words, metrics=metrics,
                             ineffective=ineffective + [{
                                 "rule": "deslop", "reason": "unparsed",
                                 "detail": f"正文仅 {words} 字（<{min_chars}），不评分"}])
@@ -556,7 +560,7 @@ def analyze(body: str, *, config: dict[str, Any] | None = None) -> DeslopResult:
     hits.sort(key=lambda h: (h.line or 10**6, h.rule))
     return DeslopResult(score=score, hits=hits, ineffective=ineffective,
                         word_count=words, density_penalty=density_penalty,
-                        raw_penalty=raw)
+                        raw_penalty=raw, metrics=metrics)
 
 
 def _len_close(a: str, b: str, gap: float) -> bool:

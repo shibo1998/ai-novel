@@ -19,11 +19,12 @@ class MockLLM:
 
     # ------------------------------------------------------------------
     def chat(self, *, model: str, system: str, user: str, temperature: float,
-             stream_cb=None) -> llm.LLMResult:
+             stream_cb=None, retry: bool = True, require_complete: bool = False,
+             provider: str = "") -> llm.LLMResult:
         if self.fail_next:
             err, self.fail_next = self.fail_next, None
             raise err
-        self.calls.append({"model": model, "system": system, "user": user})
+        self.calls.append({"model": model, "provider": provider, "system": system, "user": user})
         text = self._route(system, user)
         if stream_cb:
             step = max(1, len(text) // 40)
@@ -33,16 +34,36 @@ class MockLLM:
             text=text,
             input_tokens=llm.est_tokens(system + user),
             output_tokens=llm.est_tokens(text),
-            finish_reason="stop", model=model,
+            finish_reason="stop", model=model, provider=provider,
         )
 
     # ------------------------------------------------------------------
     def _route(self, system: str, user: str) -> str:
+        if "- 输出模式：结构化故事候选" in user:
+            return self._default_story_ideas(user)
+        if "- 输出模式：选题六问报告" in user:
+            return "## 选题六问报告\n\n（离线Mock选题报告，等待作者选择，不写正文）"
+        if "资深世界观架构师" in user:
+            return self._default_bible()
+        if "资深玄幻/仙侠修炼体系设计师" in user:
+            from . import bible
+            from .mdtable import dump_table
+
+            return dump_table(bible.POWER_COLS, [["炼气", "一层/二层/三层", "引气入体", "不能飞行", "壮汉", "百年", "经脉受损", "无"]])
+        if "资深角色设计师" in user:
+            return self._default_cards()
+        if "设计他们之间的关系网络" in user:
+            return ("===角色:林寒===\n| 对象 | 关系 | 不稳定因素 |\n|---|---|---|\n| 老周 | 合作 | 隐瞒线索 |\n"
+                    "===角色:老周===\n| 对象 | 关系 | 不稳定因素 |\n|---|---|---|\n| 林寒 | 合作 | 不信任 |\n")
+        if "- 规划作用域：" in user and "target 回显：" in user:
+            return self._default_planning(user)
         if "单章细纲" in user:
             no = self._grab_no(user)
             if self.outline_factory:
                 return self.outline_factory(no, user)
-            return self._default_outline(no)
+            text = self._default_outline(no)
+            volume = re.search(r"所属卷目标：[^\n]*\"no\"\s*:\s*(\d+)", user)
+            return text.replace("volume: 1", f"volume: {volume[1]}") if volume else text
         if ("本章上下文" in user or "黄金三章" in user or "专写本场景对话" in user
                 or "突破场景" in user or "高潮对决" in user):
             no = self._grab_no(user)
@@ -106,7 +127,8 @@ class MockLLM:
         return "（Mock 默认输出）"
 
     def _grab_no(self, text: str) -> int:
-        m = re.search(r"第?(\d+)章", text) or re.search(r"chapter_no[：:\s]*(\d+)", text)
+        m = (re.search(r"章号\s+(\d+)\s*/", text) or re.search(r"第?(\d+)章", text)
+             or re.search(r"chapter_no[：:\s]*(\d+)", text))
         return int(m.group(1)) if m else 1
 
     def _grab_range(self, text: str) -> tuple[int, int]:
@@ -115,6 +137,94 @@ class MockLLM:
             return (2200, 2800)
         lo, hi = ms[-1]  # 取最后一个（场景任务等更具体的指令在文末）
         return (int(lo), int(hi))
+    def _default_story_ideas(self, user: str) -> str:
+        """（规格11 §6）四题材离线候选，换批用不同身份/冲突；非质量证据。"""
+        match = re.search(r"题材方向：(urban|xuanhuan|romance|suspense)", user)
+        genre = match[1] if match else "urban"
+        sources = {
+            "urban": [("修表人的旧城", "修表学徒", "挽救将被拆除的老店", "开发商藏起了旧契约"),
+                      ("最后一班配送", "失业配送员", "找回被冒领的救命药", "每名签收人都否认自己在场"),
+                      ("街巷账本", "社区会计", "守住居民合办的食堂", "账本里出现不存在的支出"),
+                      ("城边的回声", "电台实习生", "调查停播节目的来信", "当事人要求他保持沉默"),
+                      ("夜校的灯", "夜校老师", "帮助学生保住工作", "工厂正隐瞒事故"),
+                      ("地铁末站", "维修工", "找到失联的师傅", "检修记录被改写")],
+            "xuanhuan": [("废炉守灯", "守炉杂役", "救出困在古炉中的师妹", "宗门将古炉认作祭器"),
+                         ("山契行者", "山神信使", "找回被卖掉的山契", "买主能篡改山民记忆"),
+                         ("断脉医师", "无灵脉医师", "治好城中反复出现的怪病", "病源是护城阵的代价"),
+                         ("渡桥拾骨", "渡桥匠", "接回被流放的家人", "桥每过一人便索取一段寿命"),
+                         ("不鸣的钟", "守钟弟子", "查清灵钟停鸣的真相", "长老以禁令掩盖山门裂缝"),
+                         ("雪原契师", "驯兽学徒", "解救被契约束缚的异兽", "解除契约会暴露自己的身世")],
+            "romance": [("雨夜合租", "修复古籍的女孩", "保住祖母留下的书店", "合租的律师受雇负责清退她"),
+                        ("旧信未寄", "乡村医生", "寻找失踪病人的家属", "同行记者是曾误解她的旧友"),
+                        ("灯光之外", "剧场替补演员", "争取自己的第一场主角戏", "导演必须履行一份不公平合同"),
+                        ("归港之日", "渔村教师", "重建停办的小学", "工程师前任接手了拆迁项目"),
+                        ("春天的修补", "服装学徒", "完成亡母未完成的礼服", "委托人不肯公开婚约真相"),
+                        ("四季记事", "植物研究员", "抢救将毁的试验田", "合作伙伴背负着事故责任")],
+            "suspense": [("消失的门牌", "户籍调查员", "找到档案中的失踪街道", "住户声称那条街从未存在"),
+                        ("深夜修复室", "录音修复师", "辨认母亲最后一次求救", "录音里藏着尚未发生的案发声"),
+                        ("渡口无名客", "退休法医", "确认漂来尸体的身份", "指纹属于仍活着的人"),
+                        ("空白证言", "法庭速记员", "补全被删掉的庭审记录", "每位证人都改变了说法"),
+                        ("最后的值班表", "护士", "查清消失病人的去向", "值班表上出现了自己的旧签名"),
+                        ("雨幕寻人", "出租车司机", "找到乘客遗留行李的主人", "失主正在新闻里被宣告死亡")],
+        }
+        previous = re.search(r"既有候选摘要：(.*)", user)
+        offset = 3 if previous and previous[1].strip() != "[]" else 0
+        ideas = []
+        for title, protagonist, goal, obstacle in sources[genre][offset:offset + 3]:
+            ideas.append({"title": title, "logline": f"{protagonist}为了{goal}必须追查线索，但{obstacle}。",
+                          "synopsis": f"{protagonist}发现日常秩序背后的秘密，为了{goal}开始调查。阻碍迫使其在真相与安全之间作出选择。",
+                          "protagonist": protagonist, "core_conflict": f"{goal}，但{obstacle}。",
+                          "selling_point": "身份反差与具体选择推动冲突，不作市场保证", "volume_goal": goal,
+                          "volume_hook": f"第一卷取得关键证据，却发现{obstacle}背后还有新的交易。"})
+        return _to_json({"schema_version": 1, "genre_template": genre, "ideas": ideas})
+
+
+    def _default_bible(self) -> str:
+        from . import bible
+        from .mdtable import dump_table
+
+        return bible.render({
+            "基础设定": "灵气复苏初期，主角在青云坊查找玄铁令的来历。",
+            "力量体系": dump_table(bible.POWER_COLS, [["炼气", "一层/二层/三层", "引气入体", "不能飞行", "壮汉", "百年", "经脉受损", "无"]]),
+            "势力格局": "青云坊护卫控制坊市入口。", "历史脉络": "三年前灵气复苏。",
+            "隐藏规则": dump_table(bible.HIDDEN_COLS, [["令牌是钥匙", "高", "15"]]),
+            "术语表": dump_table(bible.TERM_COLS, [["玄铁令", "上古信物"], ["青云坊", "中立坊市"]]),
+            "日常细节": "坊市雨多，货物靠挑担运输。",
+        })
+
+    def _default_cards(self) -> str:
+        from . import frontmatter as FM
+
+        cards = []
+        for name, role in (("林寒", "主角"), ("老周", "重要配角")):
+            status = {"realm": "炼气", "location": "青云坊", "injuries": [], "inventory": [],
+                      "emotion": "警觉", "alive": True, "known_info": [], "updated_chapter": 0}
+            body = "\n\n".join(f"## {section}\n\n{name}谨慎行事，先验证线索再做决定。" for section in
+                               ("表层信息", "声音特征", "核心三要素", "内在矛盾", "过往创伤", "标志行为",
+                                "关系网络", "行为底线", "弧光预设", "对话试金石"))
+            cards.append(f"===角色:{name}===\n" + FM.dump({"name": name, "role": role, "status": status}, body))
+        return "\n\n".join(cards)
+
+    def _default_planning(self, user: str) -> str:
+        import json
+
+        target = json.loads(re.search(r"target 回显：(\{[^\n]+\})", user)[1])
+        scope = re.search(r"- 规划作用域：\s*(\w+)", user)[1]
+        if scope == "volume":
+            rng = re.search(r"本次只准备第(\d+)-(\d+)章", user)
+            lo, hi = int(rng[1]), int(rng[2])
+            data = {"chapter_count": hi - lo + 1, "volume_detail": {"core_conflict": "坊市争夺", "goal": "验证令牌",
+                    "climax": "取回线索", "hook_out": "令牌背后另有主人", "ending_state": "计划拿到线索"},
+                    "unit_skeletons": [{"name": "验令", "chapters": [lo, hi], "goal": "验证令牌", "obstacle": "护卫"}]}
+        elif scope == "unit":
+            data = {"unit_detail": {"goal": "验证令牌", "obstacle": "护卫阻拦", "choices": ["暂不暴露"],
+                    "outcome": "拿到线索", "can_reveal": ["令牌发热"], "must_hold": ["令牌主人"], "story_lines": ["主线"]}}
+        else:
+            lo, hi = target["chapters"]
+            data = {"chapter_rows": [{"章": str(no), "卷": str(target["volume_no"]), "本章目标": f"验令{no}",
+                    "冲突来源": "护卫", "爽点/揭露": f"线索{no}", "钩子类型": ["悬念", "选择", "反转"][no % 3],
+                    "重要度★": "3"} for no in range(lo, hi + 1)], "rhythm_note": "每章线索推进，保留令牌主人。"}
+        return _to_json({"scope": scope, "target": target, "data": data})
 
     def _default_outline(self, no: int) -> str:
         hook_type = ["悬念", "选择", "反转"][no % 3]

@@ -1,0 +1,79 @@
+{
+  "base": "http://127.0.0.1:8899",
+  "book": "规格08假书B",
+  "at": "2026-10-28T15:21:17.753Z",
+  "faultAt": 17,
+  "networkAt": 18,
+  "steps": [
+    {
+      "step": "A-T08 取消二次确认",
+      "visible": "选择当前筛选可见项（0）",
+      "cancel": {
+        "appeared": true,
+        "buttons": [
+          "",
+          "Cancel",
+          "OK"
+        ],
+        "clicked": "clicked"
+      },
+      "resolveRequests": 0,
+      "messages": []
+    },
+    {
+      "step": "A-T08 第17条失败 / 第18条断网",
+      "confirm": {
+        "appeared": true,
+        "buttons": [
+          "",
+          "Cancel",
+          "OK"
+        ],
+        "clicked": "clicked"
+      },
+      "resolveRequests": 18,
+      "badges": {
+        "明确失败": 1,
+        "结果待确认": 1,
+        "未执行": 2
+      },
+      "messages": [
+        "请求：磁盘不可写（注入故障）。下一步：检查服务后可重试；写操作需先确认实际结果，避免重复写入",
+        "请求：网络连接或请求超时，请检查服务状态。下一步：检查服务后可重试；写操作需先确认实际结果，避免重复写入",
+        "批量结束：成功 16，明确失败 1，待确认 1，未执行 2"
+      ],
+      "termsWrittenBefore": 0,
+      "termsWrittenAfter": 10,
+      "duplicated": []
+    },
+    {
+      "step": "A-T08 重试失败/未执行项",
+      "confirm": {
+        "appeared": true,
+        "buttons": [
+          "",
+          "Cancel",
+          "OK"
+        ],
+        "clicked": "clicked"
+      },
+      "retryRequests": 3,
+      "badges": {},
+      "messages": [
+        "请求：磁盘不可写（注入故障）。下一步：检查服务后可重试；写操作需先确认实际结果，避免重复写入",
+        "请求：网络连接或请求超时，请检查服务状态。下一步：检查服务后可重试；写操作需先确认实际结果，避免重复写入",
+        "批量结束：成功 3，明确失败 0，待确认 0，未执行 0"
+      ],
+      "termsWrittenAfterRetry": 10,
+      "duplicatedAfterRetry": [],
+      "allOnce": true
+    }
+  ],
+  "filters": {
+    "pickBook": "picked",
+    "afterBook": 26,
+    "pickKind": "picked",
+    "afterKind": 20
+  },
+  "resolveRequestsTotal": 21
+}
